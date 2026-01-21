@@ -1,0 +1,42 @@
+version: "1.0"
+
+rules:
+  enabled: true
+  strict_mode: false
+  
+  code_quality:
+    enabled: true
+    max_complexity: 10
+    action: "block_commit"
+  
+  security:
+    enabled: true
+    scan_secrets: true
+    action: "block_commit"
+  
+  naming_convention:
+    enabled: true
+    action: "warning"
+  
+  business_logic:
+    enabled: true
+    action: "block_commit"
+
+ai_review:
+  enabled: true
+  api_endpoint: "https://internal-api.company.com/review"
+  api_key: "${AGENT_REVIEW_API_KEY}"
+  timeout: 30000
+  action: "warning"
+
+git_hooks:
+  auto_install: true
+  pre_commit_enabled: true
+
+exclusions:
+  files:
+    - "**/*.min.js"
+    - "**/node_modules/**"
+  directories:
+    - ".git"
+    - "dist"

@@ -1,0 +1,67 @@
+{
+  "name": "agentreview",
+  "displayName": "AgentReview",
+  "description": "代码审查插件，支持规则检查和AI审查，在commit时强制执行",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentreview.review",
+        "title": "AgentReview: 执行代码审查"
+      },
+      {
+        "command": "agentreview.showReport",
+        "title": "AgentReview: 显示审查报告"
+      },
+      {
+        "command": "agentreview.installHooks",
+        "title": "AgentReview: 安装Git Hooks"
+      }
+    ],
+    "configuration": {
+      "title": "AgentReview",
+      "properties": {
+        "agentreview.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用AgentReview插件"
+        },
+        "agentreview.configPath": {
+          "type": "string",
+          "default": ".agentreview.yaml",
+          "description": "配置文件路径"
+        },
+        "agentreview.strictMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "严格模式：所有问题都阻止提交"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@types/js-yaml": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "axios": "^1.6.0"
+  }
+}
