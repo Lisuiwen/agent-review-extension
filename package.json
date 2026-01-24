@@ -16,6 +16,11 @@
   "contributes": {
     "commands": [
       {
+        "command": "agentreview.run",
+        "title": "执行代码审查",
+        "icon": "$(play)"
+      },
+      {
         "command": "agentreview.review",
         "title": "AgentReview: 执行代码审查"
       },
@@ -26,8 +31,40 @@
       {
         "command": "agentreview.installHooks",
         "title": "AgentReview: 安装Git Hooks"
+      },
+      {
+        "command": "agentreview.refresh",
+        "title": "刷新",
+        "icon": "$(refresh)"
       }
     ],
+    "views": {
+      "agentReview": [
+        {
+          "id": "agentReview.results",
+          "name": "审查结果",
+          "when": "true"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentreview.refresh",
+          "when": "view == agentReview.results",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentReview",
+          "title": "AgentReview",
+          "icon": "$(checklist)"
+        }
+      ]
+    },
     "configuration": {
       "title": "AgentReview",
       "properties": {
