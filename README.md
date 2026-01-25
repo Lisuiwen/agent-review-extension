@@ -61,4 +61,59 @@ npm run watch
 
 ## 配置
 
-在项目根目录创建 `.agentreview.yaml` 配置文件。
+### 配置文件
+
+在项目根目录创建 `.agentreview.yaml` 配置文件。详细配置示例请参考 `.agentreview.yaml.example`。
+
+### 环境变量配置
+
+支持通过 `.env` 文件配置敏感信息（如API密钥），避免将敏感信息提交到版本控制。
+
+#### 使用步骤
+
+1. **创建 `.env` 文件**
+   在项目根目录创建 `.env` 文件（此文件已在 `.gitignore` 中排除，不会被提交）
+
+2. **配置环境变量**
+   在 `.env` 文件中添加你的环境变量，格式如下：
+   ```env
+   # OpenAI API 配置
+   OPENAI_API_KEY=your_openai_api_key_here
+   
+   # 或其他AI服务API密钥
+   AGENT_REVIEW_API_KEY=your_api_key_here
+   ```
+
+3. **在配置文件中引用**
+   在 `.agentreview.yaml` 或 VSCode Settings 中使用 `${VAR_NAME}` 格式引用：
+   ```yaml
+   ai_review:
+     api_key: "${OPENAI_API_KEY}"
+   ```
+
+#### 环境变量优先级
+
+环境变量的查找优先级（从高到低）：
+1. **系统环境变量**（`process.env`）- 优先级最高
+2. **`.env` 文件** - 作为补充，不会覆盖系统环境变量
+3. **未找到** - 保持原值（`${VAR_NAME}` 不会被替换）
+
+#### `.env` 文件格式说明
+
+- 支持 `KEY=value` 格式
+- 支持引号包裹的值：`KEY="value with spaces"` 或 `KEY='value'`
+- 支持注释：以 `#` 开头的行会被忽略
+- 空行会被忽略
+- 示例：
+  ```env
+  # 这是注释
+  OPENAI_API_KEY=sk-1234567890abcdef
+  API_ENDPOINT="https://api.example.com"
+  TIMEOUT=30000
+  ```
+
+#### 注意事项
+
+- `.env` 文件包含敏感信息，**不要提交到版本控制**
+- 如果系统环境变量中已存在同名变量，`.env` 文件中的值会被忽略（系统环境变量优先级更高）
+- 修改 `.env` 文件后，插件会自动重新加载配置

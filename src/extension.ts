@@ -57,6 +57,8 @@ export const activate = async (context: vscode.ExtensionContext) => {
         // ReviewEngine 是核心组件，负责协调规则引擎和文件扫描器
         // 它接收配置管理器，以便在审查时读取配置
         reviewEngine = new ReviewEngine(configManager);
+        // 初始化审查引擎（包括AI审查器）
+        await reviewEngine.initialize();
 
         // 步骤3：初始化Git Hooks管理器
         // GitHookManager 负责在 .git/hooks 目录下安装 pre-commit 脚本
@@ -89,18 +91,22 @@ export const activate = async (context: vscode.ExtensionContext) => {
         const runCommand = vscode.commands.registerCommand('agentreview.run', async () => {
             logger.info('执行代码审查命令');
             if (!reviewEngine || !reviewPanel || !statusBar) {
+                logger.error('组件未初始化', { reviewEngine: !!reviewEngine, reviewPanel: !!reviewPanel, statusBar: !!statusBar });
                 vscode.window.showErrorMessage('组件未初始化');
                 return;
             }
             
             try {
+                logger.info('开始执行审查流程');
                 // 更新状态为审查中
                 statusBar.updateStatus('reviewing');
                 reviewPanel.setStatus('reviewing');
                 reviewPanel.reveal();
 
+                logger.info('调用 reviewEngine.reviewStagedFiles()');
                 // 执行审查
                 const result = await reviewEngine.reviewStagedFiles();
+                logger.info(`审查完成，结果: passed=${result.passed}, errors=${result.errors.length}, warnings=${result.warnings.length}, info=${result.info.length}`);
                 
                 // 更新GUI
                 reviewPanel.showReviewResult(result, 'completed');

@@ -78,10 +78,21 @@ export class ReviewEngine {
         this.logger = new Logger('ReviewEngine');
         // 规则引擎：负责执行具体的规则检查
         this.ruleEngine = new RuleEngine(configManager);
-        // AI审查器：未来功能，用于AI代码审查
+        // AI审查器：用于AI代码审查
         this.aiReviewer = new AIReviewer(configManager);
         // 文件扫描器：用于获取文件列表和读取文件内容
         this.fileScanner = new FileScanner();
+    }
+
+    /**
+     * 初始化审查引擎
+     * 初始化AI审查器（如果启用）
+     */
+    async initialize(): Promise<void> {
+        const config = this.configManager.getConfig();
+        if (config.ai_review?.enabled) {
+            await this.aiReviewer.initialize();
+        }
     }
 
     /**
@@ -97,6 +108,8 @@ export class ReviewEngine {
      * @returns 审查结果对象
      */
     async review(files: string[]): Promise<ReviewResult> {
+        // 强制显示日志通道，确保日志可见
+        this.logger.show();
         this.logger.info(`开始审查 ${files.length} 个文件`);
         
         const result: ReviewResult = {
@@ -113,7 +126,9 @@ export class ReviewEngine {
 
         // 步骤1：获取配置，过滤掉排除的文件
         // 用户可以在配置文件中指定要排除的文件或目录
+        this.logger.info('获取配置信息...');
         const config = this.configManager.getConfig();
+        this.logger.info(`配置加载完成: rules.enabled=${config.rules.enabled}, ai_review=${config.ai_review ? `enabled=${config.ai_review.enabled}, endpoint=${config.ai_review.api_endpoint || '未配置'}` : '未配置'}`);
         const filteredFiles = files.filter(file => {
             if (config.exclusions) {
                 // shouldExclude 方法检查文件是否在排除列表中
@@ -131,9 +146,49 @@ export class ReviewEngine {
         // ruleEngine.checkFiles 会读取每个文件的内容，并应用所有启用的规则
         const ruleIssues = await this.ruleEngine.checkFiles(filteredFiles);
         
-        // 步骤3：按严重程度分类问题
-        // 规则引擎返回的问题已经带有 severity 属性，我们按此分类
-        for (const issue of ruleIssues) {
+        // 步骤2.5：调用AI审查（如果启用）
+        let aiIssues: ReviewIssue[] = [];
+        // 检查AI审查配置
+        if (config.ai_review) {
+            this.logger.info(`AI审查配置存在: enabled=${config.ai_review.enabled}, endpoint=${config.ai_review.api_endpoint || '未配置'}`);
+            if (config.ai_review.enabled) {
+                try {
+                    // 准备AI审查请求
+                    // 注意：不传content字段，让AIReviewer自动读取文件内容
+                    // 这样可以避免传递空字符串导致的问题
+                    const aiRequest = {
+                        files: filteredFiles.map(file => ({ path: file }))
+                    };
+                    
+                    this.logger.info(`开始调用AI审查，文件数量: ${aiRequest.files.length}`);
+                    // 调用AI审查
+                    aiIssues = await this.aiReviewer.review(aiRequest);
+                    this.logger.info(`AI审查完成: 发现 ${aiIssues.length} 个问题`);
+                } catch (error) {
+                    // AI审查失败，记录错误但不阻塞审查流程
+                    this.logger.error('AI审查失败', error);
+                    // 如果配置为block_commit，AI审查失败应该阻止提交
+                    if (config.ai_review.action === 'block_commit') {
+                        result.errors.push({
+                            file: '',
+                            line: 1,
+                            column: 1,
+                            message: `AI审查失败: ${error instanceof Error ? error.message : String(error)}`,
+                            rule: 'ai_review_error',
+                            severity: 'error'
+                        });
+                    }
+                }
+            } else {
+                this.logger.info('AI审查已配置但未启用（enabled=false）');
+            }
+        } else {
+            this.logger.info('AI审查未配置（config.ai_review 不存在）');
+        }
+        
+        // 步骤3：合并规则引擎和AI审查的结果，并按严重程度分类
+        const allIssues = [...ruleIssues, ...aiIssues];
+        for (const issue of allIssues) {
             switch (issue.severity) {
                 case 'error':
                     result.errors.push(issue);  // 错误：会阻止提交
@@ -155,6 +210,13 @@ export class ReviewEngine {
         const hasBlockingErrors = result.errors.some(error => {
             // 检查对应的规则配置是否为 block_commit
             // 只有配置为 block_commit 的错误才会真正阻止提交
+            
+            // AI审查的错误
+            if (error.rule === 'ai_review' || error.rule === 'ai_review_error') {
+                return config.ai_review?.action === 'block_commit';
+            }
+            
+            // 规则引擎的错误
             if (error.rule === 'no_space_in_filename') {
                 return configRules.naming_convention?.action === 'block_commit';
             }
@@ -189,15 +251,19 @@ export class ReviewEngine {
      * @returns 审查结果对象
      */
     async reviewStagedFiles(): Promise<ReviewResult> {
+        // 强制显示日志通道，确保日志可见
+        this.logger.show();
         this.logger.info('审查staged文件');
         
         // 获取所有 staged 文件
         // getStagedFiles 内部使用 'git diff --cached --name-only' 命令
+        this.logger.info('正在获取staged文件列表...');
         const stagedFiles = await this.fileScanner.getStagedFiles();
+        this.logger.info(`获取到 ${stagedFiles.length} 个staged文件`);
         
         // 如果没有 staged 文件，直接返回通过
         if (stagedFiles.length === 0) {
-            this.logger.info('没有staged文件需要审查');
+            this.logger.info('没有staged文件需要审查，跳过审查');
             return {
                 passed: true,
                 errors: [],
@@ -206,9 +272,10 @@ export class ReviewEngine {
             };
         }
 
-        this.logger.info(`找到 ${stagedFiles.length} 个staged文件`);
+        this.logger.info(`找到 ${stagedFiles.length} 个staged文件，开始审查: ${stagedFiles.slice(0, 3).join(', ')}${stagedFiles.length > 3 ? '...' : ''}`);
         
         // 调用 review 方法审查这些文件
+        this.logger.info('调用 review() 方法开始审查');
         return this.review(stagedFiles);
     }
 }

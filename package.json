@@ -82,6 +82,77 @@
           "type": "boolean",
           "default": false,
           "description": "严格模式：所有问题都阻止提交"
+        },
+        "agentreview.ai.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "启用AI审查功能"
+        },
+        "agentreview.ai.apiFormat": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "custom"
+          ],
+          "default": "openai",
+          "description": "AI API格式：openai（OpenAI兼容格式）或 custom（自定义格式）"
+        },
+        "agentreview.ai.apiEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "AI API端点URL（支持环境变量，如 ${API_KEY}）"
+        },
+        "agentreview.ai.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "AI API密钥（支持环境变量，如 ${API_KEY}）"
+        },
+        "agentreview.ai.model": {
+          "type": "string",
+          "default": "gpt-4",
+          "description": "模型名称（如 gpt-4, gpt-3.5-turbo, claude-3）"
+        },
+        "agentreview.ai.timeout": {
+          "type": "number",
+          "default": 30000,
+          "description": "API请求超时时间（毫秒）"
+        },
+        "agentreview.ai.temperature": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "温度参数（0-2），控制输出的随机性"
+        },
+        "agentreview.ai.maxTokens": {
+          "type": "number",
+          "default": 2000,
+          "description": "最大token数"
+        },
+        "agentreview.ai.systemPrompt": {
+          "type": "string",
+          "default": "你是一个专业的代码审查助手。请仔细审查代码，找出潜在的问题、bug、性能问题、安全问题等，并给出具体的改进建议。",
+          "description": "系统提示词，用于指导AI审查行为"
+        },
+        "agentreview.ai.retryCount": {
+          "type": "number",
+          "default": 3,
+          "description": "API请求失败时的重试次数"
+        },
+        "agentreview.ai.retryDelay": {
+          "type": "number",
+          "default": 1000,
+          "description": "重试延迟时间（毫秒）"
+        },
+        "agentreview.ai.action": {
+          "type": "string",
+          "enum": [
+            "block_commit",
+            "warning",
+            "log"
+          ],
+          "default": "warning",
+          "description": "AI审查发现问题时的行为：block_commit（阻止提交）、warning（警告但允许）、log（仅记录）"
         }
       }
     }
@@ -92,13 +163,14 @@
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.0",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.80.0",
-    "@types/js-yaml": "^4.0.0",
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "axios": "^1.6.0",
     "js-yaml": "^4.1.0",
-    "axios": "^1.6.0"
+    "zod": "^4.3.6"
   }
 }

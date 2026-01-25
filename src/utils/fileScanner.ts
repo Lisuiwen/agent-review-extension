@@ -64,6 +64,8 @@ export class FileScanner {
      * ```
      */
     async getStagedFiles(): Promise<string[]> {
+        // 强制显示日志通道，确保日志可见
+        this.logger.show();
         this.logger.info('获取staged文件');
         
         // 检查是否有工作区

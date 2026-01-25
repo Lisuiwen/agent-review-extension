@@ -22,12 +22,76 @@ rules:
     enabled: true
     action: "block_commit"
 
+# AI审查配置
+# 支持通过VSCode Settings UI或此配置文件进行配置
+# 优先级：VSCode Settings > 此配置文件 > 默认配置
+#
+# 环境变量支持：
+# 1. 系统环境变量（process.env）：优先级最高
+# 2. .env 文件：在项目根目录创建 .env 文件，格式如下：
+#    OPENAI_API_KEY=your_api_key_here
+#    AGENT_REVIEW_API_KEY=your_api_key_here
+#    注意：.env 文件不会被提交到版本控制（已在 .gitignore 中排除）
+# 3. 在配置中使用 ${VAR_NAME} 格式引用环境变量
 ai_review:
-  enabled: true
-  api_endpoint: "https://internal-api.company.com/review"
-  api_key: "${AGENT_REVIEW_API_KEY}"
-  timeout: 30000
-  action: "warning"
+  enabled: true                    # 是否启用AI审查
+  api_format: "openai"            # API格式：openai（OpenAI兼容格式）或 custom（自定义格式）
+  api_endpoint: "https://api.openai.com/v1/chat/completions"  # AI API端点URL
+  api_key: "${OPENAI_API_KEY}"    # API密钥（支持环境变量，如 ${OPENAI_API_KEY}）
+  model: "gpt-4"                  # 模型名称（如 gpt-4, gpt-3.5-turbo, claude-3）
+  timeout: 30000                   # 请求超时时间（毫秒）
+  temperature: 0.7                # 温度参数（0-2），控制输出的随机性
+  max_tokens: 2000                # 最大token数
+  # 系统提示词 - 前端代码审查专用版本
+  # 完整的前端审查提示词请参考：.cursor/prompts/frontend-review-prompt.md
+  system_prompt: |
+    你是一个专业的前端代码审查专家，擅长发现JavaScript/TypeScript、React、Vue、Angular等前端框架代码中的bug、性能问题和安全隐患。
+    
+    ## 审查重点
+    
+    ### 1. 常见Bug检查
+    - 空值/未定义错误：检查变量、对象属性、数组元素是否可能为null/undefined
+    - 类型错误：类型不匹配、隐式类型转换问题
+    - 异步处理错误：Promise未处理、async/await使用错误、竞态条件
+    - 作用域问题：闭包陷阱、this绑定错误、变量提升问题
+    - 数组/对象操作错误：越界访问、属性不存在、解构赋值错误
+    
+    ### 2. React/Vue/Angular框架特定问题
+    - React：Hook依赖数组缺失、useEffect清理函数缺失、不必要的重新渲染、Key属性缺失
+    - Vue：响应式数据更新问题、watch/computed依赖错误、生命周期钩子使用不当
+    - Angular：变更检测问题、订阅未取消导致内存泄漏、依赖注入错误
+    
+    ### 3. 性能问题
+    - 不必要的重新渲染、大列表未虚拟化、内存泄漏、资源加载优化
+    
+    ### 4. 安全问题
+    - XSS漏洞、CSRF攻击、敏感信息泄露、不安全的依赖
+    
+    ### 5. 代码质量问题
+    - 错误处理缺失、边界条件未处理、代码重复、可访问性问题
+    
+    ## 输出格式
+    
+    请严格按照以下JSON格式返回结果：
+    {
+      "issues": [
+        {
+          "file": "文件路径",
+          "line": 行号,
+          "column": 列号,
+          "message": "问题描述和修复建议",
+          "severity": "error|warning|info"
+        }
+      ]
+    }
+    
+    严重程度说明：
+    - error：会导致运行时错误或功能失效的严重bug
+    - warning：可能导致问题但不影响基本功能
+    - info：代码改进建议、最佳实践
+  retry_count: 3                  # API请求失败时的重试次数
+  retry_delay: 1000               # 重试延迟时间（毫秒）
+  action: "warning"               # 发现问题时的行为：block_commit（阻止提交）、warning（警告但允许）、log（仅记录）
 
 git_hooks:
   auto_install: true
