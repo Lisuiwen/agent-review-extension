@@ -56,7 +56,8 @@ interface AgentReviewConfig {
     rules: {
         enabled: boolean;
         strict_mode: boolean;
-        code_quality?: { enabled: boolean; action: string; no_todo?: boolean };
+        builtin_rules_enabled?: boolean;  // 是否启用内置规则引擎
+        code_quality?: { enabled: boolean; action: string; no_todo?: boolean; no_todo_pattern?: string };
         naming_convention?: { enabled: boolean; action: string; no_space_in_filename?: boolean };
     };
     exclusions?: {
@@ -184,7 +185,10 @@ class StandaloneRuleEngine {
     async checkFile(filePath: string, content: string): Promise<ReviewIssue[]> {
         const issues: ReviewIssue[] = [];
 
-        if (!this.config.rules.enabled) {
+        // 检查是否启用内置规则引擎
+        // 如果 builtin_rules_enabled 为 false 或未设置，则跳过内置规则检查
+        const builtinRulesEnabled = this.config.rules.builtin_rules_enabled !== false && this.config.rules.enabled;
+        if (!builtinRulesEnabled) {
             return issues;
         }
 
@@ -205,8 +209,10 @@ class StandaloneRuleEngine {
         }
 
         // 检查 TODO
+        // 从配置读取正则表达式模式，如果没有配置则使用默认值
         if (this.config.rules.code_quality?.enabled && this.config.rules.code_quality.no_todo) {
-            const todoRegex = /(TODO|FIXME|XXX)/i;
+            const todoPattern = this.config.rules.code_quality.no_todo_pattern || '(TODO|FIXME|XXX)';
+            const todoRegex = new RegExp(todoPattern, 'i');
             const lines = content.split('\n');
             
             for (let i = 0; i < lines.length; i++) {

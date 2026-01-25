@@ -36,6 +36,16 @@
         "command": "agentreview.refresh",
         "title": "刷新",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "agentreview.fixIssue",
+        "title": "修复此问题",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "agentreview.fixAll",
+        "title": "一键全修复",
+        "icon": "$(check)"
       }
     ],
     "views": {
@@ -53,6 +63,18 @@
           "command": "agentreview.refresh",
           "when": "view == agentReview.results",
           "group": "navigation"
+        },
+        {
+          "command": "agentreview.fixAll",
+          "when": "view == agentReview.results",
+          "group": "navigation"
+        }
+      ],
+      "view/item": [
+        {
+          "command": "agentreview.fixIssue",
+          "when": "view == agentReview.results && viewItem == reviewIssueFixable",
+          "group": "inline"
         }
       ]
     },

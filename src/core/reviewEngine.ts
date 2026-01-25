@@ -5,16 +5,23 @@
  * 
  * 主要职责：
  * 1. 接收文件列表，执行代码审查
- * 2. 调用规则引擎检查代码问题
- * 3. 根据配置决定是否阻止提交
- * 4. 返回结构化的审查结果
+ * 2. 根据配置决定是否调用内置规则引擎检查代码问题
+ * 3. 调用AI审查器进行AI代码审查（如果启用）
+ * 4. 根据配置决定是否阻止提交
+ * 5. 返回结构化的审查结果
  * 
  * 工作流程：
  * 1. 获取需要审查的文件列表（通常是 git staged 文件）
  * 2. 根据配置过滤掉排除的文件
- * 3. 调用规则引擎检查每个文件
- * 4. 将问题按严重程度分类（error/warning/info）
- * 5. 根据配置判断是否通过审查
+ * 3. 如果启用内置规则引擎（rules.builtin_rules_enabled），调用规则引擎检查每个文件
+ * 4. 如果启用AI审查（ai_review.enabled），调用AI审查器
+ * 5. 合并规则引擎和AI审查的结果，并去重
+ * 6. 将问题按严重程度分类（error/warning/info）
+ * 7. 根据配置判断是否通过审查
+ * 
+ * 注意：
+ * - 内置规则引擎默认禁用（builtin_rules_enabled: false），避免与项目自有规则冲突
+ * - 如果项目已有自己的规则引擎，建议保持 builtin_rules_enabled: false
  */
 
 import { RuleEngine } from './ruleEngine';
@@ -22,6 +29,7 @@ import { AIReviewer } from './aiReviewer';
 import { ConfigManager } from '../config/configManager';
 import { Logger } from '../utils/logger';
 import { FileScanner } from '../utils/fileScanner';
+import { IssueDeduplicator } from './issueDeduplicator';
 
 /**
  * 审查结果接口
@@ -38,6 +46,19 @@ export interface ReviewResult {
  * 审查问题接口
  * 描述一个具体的代码问题，包含位置、消息、规则等信息
  */
+/**
+ * 自动修复信息
+ * 
+ * 使用 1-based 行列号，便于与 ReviewIssue 的定位信息保持一致
+ */
+export interface ReviewIssueFix {
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
+    newText: string;
+}
+
 export interface ReviewIssue {
     file: string;              // 文件路径
     line: number;              // 问题所在行号（从1开始）
@@ -45,7 +66,8 @@ export interface ReviewIssue {
     message: string;           // 问题描述消息
     rule: string;              // 触发的规则名称（如 'no_space_in_filename'）
     severity: 'error' | 'warning' | 'info';  // 严重程度
-    fixable?: boolean;         // 是否可自动修复（未来功能）
+    fixable?: boolean;         // 是否可自动修复
+    fix?: ReviewIssueFix;      // 自动修复信息（可选）
 }
 
 /**
@@ -144,50 +166,96 @@ export class ReviewEngine {
 
         // 步骤2：调用规则引擎检查所有文件
         // ruleEngine.checkFiles 会读取每个文件的内容，并应用所有启用的规则
-        const ruleIssues = await this.ruleEngine.checkFiles(filteredFiles);
-        
-        // 步骤2.5：调用AI审查（如果启用）
+        const ruleActionMap = new Map<string, 'block_commit' | 'warning' | 'log' | undefined>([
+            ['ai_review', config.ai_review?.action],
+            ['ai_review_error', config.ai_review?.action],
+            ['no_space_in_filename', config.rules.naming_convention?.action],
+            ['no_todo', config.rules.code_quality?.action],
+        ]);
+
+        const aiErrorIssues: ReviewIssue[] = [];
+        const runAiReview = async (): Promise<ReviewIssue[]> => {
+            if (!config.ai_review?.enabled) {
+                this.logger.info('AI审查已配置但未启用（enabled=false）');
+                return [];
+            }
+
+            try {
+                const aiRequest = {
+                    files: filteredFiles.map(file => ({ path: file }))
+                };
+                this.logger.info(`开始调用AI审查，文件数量: ${aiRequest.files.length}`);
+                const aiIssues = await this.aiReviewer.review(aiRequest);
+                this.logger.info(`AI审查完成: 发现 ${aiIssues.length} 个问题`);
+                return aiIssues;
+            } catch (error) {
+                this.logger.error('AI审查失败', error);
+                if (config.ai_review?.action === 'block_commit') {
+                    aiErrorIssues.push({
+                        file: '',
+                        line: 1,
+                        column: 1,
+                        message: `AI审查失败: ${error instanceof Error ? error.message : String(error)}`,
+                        rule: 'ai_review_error',
+                        severity: 'error'
+                    });
+                }
+                return [];
+            }
+        };
+
+        let ruleIssues: ReviewIssue[] = [];
         let aiIssues: ReviewIssue[] = [];
-        // 检查AI审查配置
+
         if (config.ai_review) {
             this.logger.info(`AI审查配置存在: enabled=${config.ai_review.enabled}, endpoint=${config.ai_review.api_endpoint || '未配置'}`);
-            if (config.ai_review.enabled) {
-                try {
-                    // 准备AI审查请求
-                    // 注意：不传content字段，让AIReviewer自动读取文件内容
-                    // 这样可以避免传递空字符串导致的问题
-                    const aiRequest = {
-                        files: filteredFiles.map(file => ({ path: file }))
-                    };
-                    
-                    this.logger.info(`开始调用AI审查，文件数量: ${aiRequest.files.length}`);
-                    // 调用AI审查
-                    aiIssues = await this.aiReviewer.review(aiRequest);
-                    this.logger.info(`AI审查完成: 发现 ${aiIssues.length} 个问题`);
-                } catch (error) {
-                    // AI审查失败，记录错误但不阻塞审查流程
-                    this.logger.error('AI审查失败', error);
-                    // 如果配置为block_commit，AI审查失败应该阻止提交
-                    if (config.ai_review.action === 'block_commit') {
-                        result.errors.push({
-                            file: '',
-                            line: 1,
-                            column: 1,
-                            message: `AI审查失败: ${error instanceof Error ? error.message : String(error)}`,
-                            rule: 'ai_review_error',
-                            severity: 'error'
-                        });
-                    }
-                }
-            } else {
-                this.logger.info('AI审查已配置但未启用（enabled=false）');
-            }
         } else {
             this.logger.info('AI审查未配置（config.ai_review 不存在）');
         }
+
+        // 检查是否启用内置规则引擎
+        // 如果 builtin_rules_enabled 为 false 或未设置，则跳过内置规则检查
+        // 这样可以避免与项目自有的规则引擎冲突
+        const builtinRulesEnabled = config.rules.builtin_rules_enabled !== false && config.rules.enabled;
         
-        // 步骤3：合并规则引擎和AI审查的结果，并按严重程度分类
-        const allIssues = [...ruleIssues, ...aiIssues];
+        const skipOnBlocking = config.ai_review?.skip_on_blocking_errors !== false;
+        if (config.ai_review?.enabled) {
+            if (skipOnBlocking) {
+                // 只有在启用内置规则引擎时才执行规则检查
+                if (builtinRulesEnabled) {
+                    ruleIssues = await this.ruleEngine.checkFiles(filteredFiles);
+                    const hasBlockingErrors = this.hasBlockingErrors(ruleIssues, ruleActionMap);
+                    if (hasBlockingErrors) {
+                        this.logger.warn('检测到阻止提交错误，已跳过AI审查');
+                    } else {
+                        aiIssues = await runAiReview();
+                    }
+                } else {
+                    // 内置规则引擎未启用，直接执行AI审查
+                    this.logger.info('内置规则引擎已禁用，跳过规则检查，直接执行AI审查');
+                    aiIssues = await runAiReview();
+                }
+            } else {
+                const aiPromise = runAiReview();
+                // 只有在启用内置规则引擎时才执行规则检查
+                if (builtinRulesEnabled) {
+                    ruleIssues = await this.ruleEngine.checkFiles(filteredFiles);
+                } else {
+                    this.logger.info('内置规则引擎已禁用，跳过规则检查');
+                }
+                aiIssues = await aiPromise;
+            }
+        } else {
+            // 只有在启用内置规则引擎时才执行规则检查
+            if (builtinRulesEnabled) {
+                ruleIssues = await this.ruleEngine.checkFiles(filteredFiles);
+            } else {
+                this.logger.info('内置规则引擎已禁用，跳过规则检查');
+            }
+        }
+
+        // 步骤3：合并规则引擎和AI审查的结果，并去重后按严重程度分类
+        const allIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
         for (const issue of allIssues) {
             switch (issue.severity) {
                 case 'error':
@@ -207,19 +275,7 @@ export class ReviewEngine {
         // - 如果 strict_mode 开启：任何错误都会导致不通过
         // - 否则：只有 action 为 'block_commit' 的错误才会导致不通过
         const configRules = config.rules;
-        // 规则与配置 action 的映射表，便于扩展新规则
-        const ruleActionMap = new Map<string, 'block_commit' | 'warning' | 'log' | undefined>([
-            ['ai_review', config.ai_review?.action],
-            ['ai_review_error', config.ai_review?.action],
-            ['no_space_in_filename', configRules.naming_convention?.action],
-            ['no_todo', configRules.code_quality?.action],
-        ]);
-        const hasBlockingErrors = result.errors.some(error => {
-            // 检查对应的规则配置是否为 block_commit
-            // 只有配置为 block_commit 的错误才会真正阻止提交
-            const action = ruleActionMap.get(error.rule);
-            return action === 'block_commit';
-        });
+        const hasBlockingErrors = this.hasBlockingErrors(result.errors, ruleActionMap);
 
         // 设置审查结果
         // strict_mode: 严格模式，所有错误都阻止提交
@@ -234,6 +290,23 @@ export class ReviewEngine {
         
         return result;
     }
+
+    /**
+     * 判断是否存在阻止提交的错误
+     *
+     * @param issues - 问题列表
+     * @param ruleActionMap - 规则与 action 的映射
+     * @returns 是否存在阻止提交的错误
+     */
+    private hasBlockingErrors = (
+        issues: ReviewIssue[],
+        ruleActionMap: Map<string, 'block_commit' | 'warning' | 'log' | undefined>
+    ): boolean => {
+        return issues.some(issue => {
+            const action = ruleActionMap.get(issue.rule);
+            return action === 'block_commit';
+        });
+    };
 
     /**
      * 审查 Git staged 文件

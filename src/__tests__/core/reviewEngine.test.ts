@@ -206,6 +206,7 @@ describe('ReviewEngine', () => {
                     enabled: false,
                     api_format: 'openai',
                     api_endpoint: 'https://api.openai.com/v1/chat/completions',
+                    timeout: 30000,
                     action: 'block_commit',
                 },
             });

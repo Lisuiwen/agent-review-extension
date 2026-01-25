@@ -14,10 +14,10 @@
  */
 
 import * as vscode from 'vscode';
-import { ReviewEngine } from './core/reviewEngine';
+import { ReviewEngine, ReviewIssue, ReviewIssueFix } from './core/reviewEngine';
 import { ConfigManager } from './config/configManager';
 import { GitHookManager } from './hooks/gitHookManager';
-import { ReviewPanel } from './ui/reviewPanel';
+import { ReviewPanel, ReviewTreeItem } from './ui/reviewPanel';
 import { StatusBar } from './ui/statusBar';
 import { Logger } from './utils/logger';
 
@@ -85,6 +85,162 @@ export const activate = async (context: vscode.ExtensionContext) => {
         // ========== 注册命令 ==========
         // VSCode 命令是用户与插件交互的主要方式
         // 用户可以通过命令面板（Ctrl+Shift+P）或按钮触发这些命令
+
+        /**
+         * 工具函数：从 TreeItem 或命令参数中提取 ReviewIssue
+         * 
+         * @param item - TreeView 传入的节点
+         * @returns ReviewIssue 或 null
+         */
+        const getIssueFromItem = (item?: ReviewTreeItem): ReviewIssue | null => {
+            if (!item || !item.issue) {
+                return null;
+            }
+            return item.issue;
+        };
+
+        /**
+         * 工具函数：根据文档和修复信息生成安全的 Range
+         * 
+         * @param document - 目标文档
+         * @param fix - 修复信息
+         * @returns Range 或 null（修复信息无效时）
+         */
+        const buildSafeRange = (document: vscode.TextDocument, fix: ReviewIssueFix): vscode.Range | null => {
+            const safeStartLine = Math.min(Math.max(fix.startLine, 1), document.lineCount);
+            const safeEndLine = Math.min(Math.max(fix.endLine, 1), document.lineCount);
+
+            const startLineText = document.lineAt(safeStartLine - 1).text;
+            const endLineText = document.lineAt(safeEndLine - 1).text;
+
+            const safeStartColumn = Math.min(Math.max(fix.startColumn, 1), startLineText.length + 1);
+            const safeEndColumn = Math.min(Math.max(fix.endColumn, 1), endLineText.length + 1);
+
+            const startPosition = new vscode.Position(safeStartLine - 1, safeStartColumn - 1);
+            const endPosition = new vscode.Position(safeEndLine - 1, safeEndColumn - 1);
+
+            if (endPosition.isBefore(startPosition)) {
+                return null;
+            }
+
+            return new vscode.Range(startPosition, endPosition);
+        };
+
+        /**
+         * 单个问题修复
+         * 
+         * @param issue - 要修复的问题
+         * @returns 是否修复成功
+         */
+        const applyFixForIssue = async (issue: ReviewIssue): Promise<boolean> => {
+            if (!issue.fixable || !issue.fix) {
+                vscode.window.showInformationMessage('该问题暂不支持自动修复');
+                return false;
+            }
+
+            try {
+                const document = await vscode.workspace.openTextDocument(vscode.Uri.file(issue.file));
+                const range = buildSafeRange(document, issue.fix);
+                if (!range) {
+                    vscode.window.showWarningMessage('修复范围无效，已跳过');
+                    return false;
+                }
+
+                const edit = new vscode.WorkspaceEdit();
+                edit.replace(document.uri, range, issue.fix.newText);
+                const applied = await vscode.workspace.applyEdit(edit);
+                if (!applied) {
+                    vscode.window.showErrorMessage('修复失败，请稍后重试');
+                    return false;
+                }
+
+                return true;
+            } catch (error) {
+                logger.error('修复失败', error);
+                vscode.window.showErrorMessage('修复失败，请检查文件状态或权限');
+                return false;
+            }
+        };
+
+        /**
+         * 批量修复所有可修复问题
+         * 
+         * @returns 修复统计信息
+         */
+        const applyFixForAll = async (): Promise<{ success: number; skipped: number; failed: number }> => {
+            if (!reviewPanel) {
+                return { success: 0, skipped: 0, failed: 0 };
+            }
+
+            const result = reviewPanel.getCurrentResult();
+            if (!result) {
+                vscode.window.showInformationMessage('暂无审查结果可修复');
+                return { success: 0, skipped: 0, failed: 0 };
+            }
+
+            const allIssues = [...result.errors, ...result.warnings, ...result.info];
+            const fixableIssues = allIssues.filter(issue => issue.fixable && issue.fix);
+
+            if (fixableIssues.length === 0) {
+                vscode.window.showInformationMessage('当前没有可自动修复的问题');
+                return { success: 0, skipped: allIssues.length, failed: 0 };
+            }
+
+            const issueGroups = new Map<string, ReviewIssue[]>();
+            fixableIssues.forEach(issue => {
+                if (!issueGroups.has(issue.file)) {
+                    issueGroups.set(issue.file, []);
+                }
+                issueGroups.get(issue.file)!.push(issue);
+            });
+
+            const edit = new vscode.WorkspaceEdit();
+            let success = 0;
+            let skipped = 0;
+            let failed = 0;
+
+            for (const [filePath, issues] of issueGroups.entries()) {
+                try {
+                    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+                    const sortedIssues = [...issues].sort((a, b) => {
+                        if (a.fix && b.fix) {
+                            if (a.fix.startLine !== b.fix.startLine) {
+                                return b.fix.startLine - a.fix.startLine;
+                            }
+                            return b.fix.startColumn - a.fix.startColumn;
+                        }
+                        return 0;
+                    });
+
+                    sortedIssues.forEach(issue => {
+                        if (!issue.fix) {
+                            skipped += 1;
+                            return;
+                        }
+                        const range = buildSafeRange(document, issue.fix);
+                        if (!range) {
+                            skipped += 1;
+                            return;
+                        }
+                        edit.replace(document.uri, range, issue.fix.newText);
+                        success += 1;
+                    });
+                } catch (error) {
+                    logger.error(`批量修复失败: ${filePath}`, error);
+                    failed += issues.length;
+                }
+            }
+
+            if (success > 0) {
+                const applied = await vscode.workspace.applyEdit(edit);
+                if (!applied) {
+                    vscode.window.showErrorMessage('批量修复失败，请稍后重试');
+                    return { success: 0, skipped, failed: failed + success };
+                }
+            }
+
+            return { success, skipped, failed };
+        };
 
         // 命令1：agentreview.run - 手动触发代码审查
         // 这是主要的审查命令，会扫描所有 staged 文件并执行规则检查
@@ -187,6 +343,51 @@ export const activate = async (context: vscode.ExtensionContext) => {
             await vscode.commands.executeCommand('agentreview.run');
         });
 
+        // 命令6：agentreview.fixIssue - 修复单个问题
+        const fixIssueCommand = vscode.commands.registerCommand('agentreview.fixIssue', async (item?: ReviewTreeItem) => {
+            const issue = getIssueFromItem(item);
+            if (!issue) {
+                vscode.window.showInformationMessage('请选择需要修复的问题');
+                return;
+            }
+
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: '正在修复问题...',
+                    cancellable: false
+                },
+                async () => {
+                    const success = await applyFixForIssue(issue);
+                    if (success) {
+                        reviewPanel?.reveal();
+                        reviewPanel?.setStatus(reviewPanel.getStatus());
+                        vscode.window.showInformationMessage('修复完成');
+                    }
+                }
+            );
+        });
+
+        // 命令7：agentreview.fixAll - 修复全部可修复问题
+        const fixAllCommand = vscode.commands.registerCommand('agentreview.fixAll', async () => {
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: '正在批量修复...',
+                    cancellable: false
+                },
+                async () => {
+                    const { success, skipped, failed } = await applyFixForAll();
+                    if (success === 0 && failed === 0) {
+                        return;
+                    }
+                    reviewPanel?.reveal();
+                    reviewPanel?.setStatus(reviewPanel.getStatus());
+                    vscode.window.showInformationMessage(`批量修复完成：成功${success}，跳过${skipped}，失败${failed}`);
+                }
+            );
+        });
+
         // 将所有命令和组件注册到 context.subscriptions
         // 这样当插件停用时，VSCode 会自动清理这些资源
         // 这是 VSCode 扩展开发的最佳实践，可以防止内存泄漏
@@ -196,6 +397,8 @@ export const activate = async (context: vscode.ExtensionContext) => {
             showReportCommand,
             installHooksCommand,
             refreshCommand,
+            fixIssueCommand,
+            fixAllCommand,
             reviewPanel,
             statusBar,
             configManager  // 注册配置管理器，确保文件监听器在插件停用时被清理

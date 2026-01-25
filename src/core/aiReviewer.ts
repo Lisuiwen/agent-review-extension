@@ -105,6 +105,7 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_MAX_TOKENS = 8000; // 增加默认token限制，确保有足够空间返回详细分析
 const DEFAULT_MODEL = 'gpt-4';
+const DEFAULT_BATCH_SIZE = 5; // AI 审查默认批次大小
 const DEFAULT_SYSTEM_PROMPT = `你是一个经验丰富的代码审查专家。你的任务是深入分析代码，找出所有潜在问题，并提供详细的改进建议。
 
 审查时请关注以下方面：
@@ -284,9 +285,41 @@ export class AIReviewer {
                 return [];
             }
 
-            // 调用API并转换结果
-            const response = await this.callAPI({ files: validFiles });
-            return this.transformToReviewIssues(response);
+            // 分批调用 API，避免单次请求过大
+            const batches = this.splitIntoBatches(validFiles, DEFAULT_BATCH_SIZE);
+            const processedFiles = new Set<string>();
+            const allIssues: ReviewIssue[] = [];
+
+            for (let i = 0; i < batches.length; i++) {
+                const batchIndex = i + 1;
+                const batch = batches[i];
+                const batchFiles = batch.filter(file => {
+                    if (processedFiles.has(file.path)) {
+                        this.logger.warn(`批处理重复文件已跳过: ${file.path}`);
+                        return false;
+                    }
+                    processedFiles.add(file.path);
+                    return true;
+                });
+
+                if (batchFiles.length === 0) {
+                    this.logger.warn(`批次 ${batchIndex}/${batches.length} 没有可审查文件，已跳过`);
+                    continue;
+                }
+
+                this.logger.info(`AI审查批次 ${batchIndex}/${batches.length}: ${batchFiles.length} 个文件`);
+
+                try {
+                    const response = await this.callAPI({ files: batchFiles });
+                    const batchIssues = this.transformToReviewIssues(response);
+                    allIssues.push(...batchIssues);
+                } catch (error) {
+                    const handledIssues = this.handleReviewError(error);
+                    allIssues.push(...handledIssues);
+                }
+            }
+
+            return allIssues;
         } catch (error) {
             return this.handleReviewError(error);
         }
@@ -406,6 +439,21 @@ export class AIReviewer {
 
         return filesWithContent.filter((f): f is { path: string; content: string } => f !== null);
     }
+
+    /**
+     * 将文件列表拆分为多个批次
+     *
+     * @param files - 文件列表
+     * @param batchSize - 批次大小
+     * @returns 批次数组
+     */
+    private splitIntoBatches = <T>(files: T[], batchSize: number): T[][] => {
+        const batches: T[][] = [];
+        for (let i = 0; i < files.length; i += batchSize) {
+            batches.push(files.slice(i, i + batchSize));
+        }
+        return batches;
+    };
 
     /**
      * 处理审查错误

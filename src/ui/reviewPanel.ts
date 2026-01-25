@@ -76,11 +76,15 @@ export class ReviewTreeItem extends vscode.TreeItem {
                     }
                 ]
             };
+            // contextValue 用于控制 TreeView 菜单显示
+            // 可修复问题会显示“修复此问题”入口
+            this.contextValue = issue.fixable && issue.fix ? 'reviewIssueFixable' : 'reviewIssue';
         } else if (filePath) {
             // 文件项：显示文件路径
             this.tooltip = filePath;
             this.iconPath = vscode.ThemeIcon.File;
             this.resourceUri = vscode.Uri.file(filePath);
+            this.contextValue = 'reviewFile';
         }
     }
 }
@@ -229,12 +233,34 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
 export class ReviewPanel {
     private treeView: vscode.TreeView<ReviewTreeItem>;
     private provider: ReviewPanelProvider;
+    private highlightDecoration: vscode.TextEditorDecorationType;
+    private lastHighlightedEditor: vscode.TextEditor | null = null;
+    private selectionDisposable: vscode.Disposable;
 
     constructor(context: vscode.ExtensionContext) {
         this.provider = new ReviewPanelProvider(context);
         this.treeView = vscode.window.createTreeView('agentReview.results', {
             treeDataProvider: this.provider,
             showCollapseAll: true
+        });
+
+        // 高亮装饰：用于标记当前选中的问题行
+        // 使用主题颜色，保证不同主题下可读性
+        this.highlightDecoration = vscode.window.createTextEditorDecorationType({
+            isWholeLine: true,
+            backgroundColor: new vscode.ThemeColor('editor.lineHighlightBackground'),
+            border: '1px solid',
+            borderColor: new vscode.ThemeColor('editor.lineHighlightBorder')
+        });
+
+        // 监听 TreeView 选择变化，实现“选中即高亮”
+        this.selectionDisposable = this.treeView.onDidChangeSelection((event) => {
+            const selectedItem = event.selection[0];
+            if (!selectedItem || !selectedItem.issue) {
+                this.clearHighlight();
+                return;
+            }
+            void this.highlightIssue(selectedItem.issue);
         });
     }
 
@@ -252,13 +278,66 @@ export class ReviewPanel {
         return this.provider.getStatus();
     }
 
+    getCurrentResult(): ReviewResult | null {
+        return this.provider.getCurrentResult();
+    }
+
     reveal(): void {
         // TreeView 已经在侧边栏显示，无需额外操作
         // 刷新视图以显示最新内容
         this.provider.refresh();
     }
 
+    /**
+     * 清理当前高亮
+     * 
+     * 当选中非问题节点或发生异常时，移除旧的高亮
+     */
+    private clearHighlight = (): void => {
+        if (this.lastHighlightedEditor) {
+            this.lastHighlightedEditor.setDecorations(this.highlightDecoration, []);
+            this.lastHighlightedEditor = null;
+        }
+    };
+
+    /**
+     * 高亮并定位问题行
+     * 
+     * @param issue - 需要定位的问题
+     */
+    private highlightIssue = async (issue: ReviewIssue): Promise<void> => {
+        try {
+            const document = await vscode.workspace.openTextDocument(vscode.Uri.file(issue.file));
+            const editor = await vscode.window.showTextDocument(document, {
+                preserveFocus: false,
+                preview: true
+            });
+
+            // 安全校正行列号，避免越界导致异常
+            const safeLine = Math.min(Math.max(issue.line, 1), document.lineCount);
+            const lineText = document.lineAt(safeLine - 1).text;
+            const safeColumn = Math.min(Math.max(issue.column, 1), lineText.length + 1);
+
+            const position = new vscode.Position(safeLine - 1, safeColumn - 1);
+            const selection = new vscode.Selection(position, position);
+            editor.selection = selection;
+            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+
+            // 先清理旧高亮，再设置新高亮
+            this.clearHighlight();
+            const lineRange = new vscode.Range(safeLine - 1, 0, safeLine - 1, lineText.length);
+            editor.setDecorations(this.highlightDecoration, [lineRange]);
+            this.lastHighlightedEditor = editor;
+        } catch (error) {
+            this.clearHighlight();
+            vscode.window.showWarningMessage('无法打开文件进行定位，请检查文件路径是否有效');
+        }
+    };
+
     dispose(): void {
+        this.clearHighlight();
+        this.highlightDecoration.dispose();
+        this.selectionDisposable.dispose();
         this.treeView.dispose();
     }
 }

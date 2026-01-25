@@ -19,6 +19,7 @@
  * rules:
  *   enabled: true
  *   strict_mode: false
+ *   builtin_rules_enabled: false  # 是否启用内置规则引擎（默认false，避免与项目自有规则冲突）
  *   naming_convention:
  *     enabled: true
  *     action: "block_commit"
@@ -27,6 +28,7 @@
  *     enabled: true
  *     action: "warning"
  *     no_todo: true
+ *     no_todo_pattern: "(TODO|FIXME|XXX)"  # 可选：自定义正则表达式模式
  * git_hooks:
  *   auto_install: true
  *   pre_commit_enabled: true
@@ -48,6 +50,7 @@ export interface AgentReviewConfig {
     rules: {
         enabled: boolean;
         strict_mode: boolean;
+        builtin_rules_enabled?: boolean;  // 是否启用内置规则引擎（默认false，避免与项目自有规则冲突）
         code_quality?: RuleConfig;
         security?: RuleConfig;
         naming_convention?: RuleConfig;
@@ -65,6 +68,7 @@ export interface AgentReviewConfig {
         system_prompt?: string;             // 系统提示词
         retry_count?: number;               // 重试次数
         retry_delay?: number;               // 重试延迟（毫秒）
+        skip_on_blocking_errors?: boolean;  // 遇到阻止提交错误时跳过AI审查
         action: 'block_commit' | 'warning' | 'log';  // 违反规则时的行为
     };
     git_hooks?: {
@@ -665,6 +669,7 @@ export class ConfigManager implements vscode.Disposable {
             rules: {
                 enabled: true,
                 strict_mode: false,
+                builtin_rules_enabled: false,  // 默认禁用内置规则引擎，避免与项目自有规则冲突
                 naming_convention: {
                     enabled: true,
                     action: 'block_commit',

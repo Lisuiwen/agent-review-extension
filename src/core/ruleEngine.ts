@@ -8,16 +8,23 @@
  * 2. 对每个文件应用启用的规则
  * 3. 返回发现的问题列表
  * 
- * 当前实现的规则：
+ * 当前实现的规则（可通过配置启用/禁用）：
  * - no_space_in_filename: 检查文件名是否包含空格
+ *   - 配置路径：rules.naming_convention.no_space_in_filename
  * - no_todo: 检查代码中是否包含 TODO/FIXME/XXX 注释
+ *   - 配置路径：rules.code_quality.no_todo
+ *   - 可配置参数：no_todo_pattern（正则表达式模式，默认：'(TODO|FIXME|XXX)'）
  * 
  * 规则检查流程：
  * 1. 读取文件内容
- * 2. 根据配置决定应用哪些规则
+ * 2. 根据配置决定应用哪些规则（通过 rules.builtin_rules_enabled 控制是否启用内置规则引擎）
  * 3. 对每个规则执行检查
  * 4. 根据规则的 action 设置问题的严重程度
  * 5. 返回所有发现的问题
+ * 
+ * 注意：
+ * - 内置规则引擎默认禁用（builtin_rules_enabled: false），避免与项目自有规则冲突
+ * - 如需启用，在配置文件中设置 rules.builtin_rules_enabled: true
  */
 
 import { ConfigManager } from '../config/configManager';
@@ -85,10 +92,12 @@ export class RuleEngine {
 
         // 规则1：检查文件名是否包含空格
         // 这个规则属于 naming_convention（命名规范）规则组
+        // 规则是否启用从配置读取：config.rules.naming_convention?.no_space_in_filename
         if (config.rules.naming_convention?.enabled && config.rules.naming_convention.no_space_in_filename) {
             // path.basename 获取文件名（不含路径）
             const fileName = path.basename(filePath);
             // 检查文件名中是否包含空格
+            // 注意：这里可以扩展为从配置读取禁止的字符列表
             if (fileName.includes(' ')) {
                 // 根据规则的 action 设置严重程度
                 const severity = this.getSeverity(config.rules.naming_convention.action);
@@ -105,16 +114,20 @@ export class RuleEngine {
 
         // 规则2：检查代码中是否包含 TODO/FIXME/XXX 注释
         // 这个规则属于 code_quality（代码质量）规则组
+        // 规则是否启用从配置读取：config.rules.code_quality?.no_todo
+        // 规则的正则表达式可以从配置读取，如果没有配置则使用默认值
         if (config.rules.code_quality?.enabled && config.rules.code_quality.no_todo) {
-            // 使用正则表达式匹配 TODO、FIXME、XXX（不区分大小写）
-            const todoRegex = /(TODO|FIXME|XXX)/i;
+            // 从配置读取正则表达式模式，如果没有配置则使用默认值
+            // 默认匹配 TODO、FIXME、XXX（不区分大小写）
+            const todoPattern = (config.rules.code_quality.no_todo_pattern as string) || '(TODO|FIXME|XXX)';
+            const todoRegex = new RegExp(todoPattern, 'i');
             // 将文件内容按行分割
             const lines = content.split('\n');
             
             // 遍历每一行
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
-                // 检查这一行是否包含 TODO/FIXME/XXX
+                // 检查这一行是否包含匹配的模式
                 const match = line.match(todoRegex);
                 if (match) {
                     // 找到匹配，创建一个问题
@@ -128,6 +141,16 @@ export class RuleEngine {
                         message: `发现 ${match[0]} 注释: ${line.trim()}`,
                         rule: 'no_todo',  // 规则标识符
                         severity,
+                        // 简单修复：移除匹配的 TODO/FIXME/XXX 关键字
+                        // 注意：这里只移除关键字，不改变其余文本
+                        fixable: true,
+                        fix: {
+                            startLine: i + 1,
+                            startColumn: column,
+                            endLine: i + 1,
+                            endColumn: column + match[0].length,
+                            newText: ''
+                        }
                     });
                 }
             }
