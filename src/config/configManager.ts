@@ -211,9 +211,9 @@ export class ConfigManager implements vscode.Disposable {
                 const defaultConfig = this.getDefaultConfig();
                 // 简单检查：如果新配置与默认配置完全相同，可能是加载失败
                 // 这里使用 JSON 字符串比较，虽然不够精确，但对于 MVP 足够
-                const newConfigStr = JSON.stringify(newConfig);
-                const defaultConfigStr = JSON.stringify(defaultConfig);
-                const oldConfigStr = JSON.stringify(oldConfig);
+                const newConfigStr = this.stableStringify(newConfig);
+                const defaultConfigStr = this.stableStringify(defaultConfig);
+                const oldConfigStr = this.stableStringify(oldConfig);
                 
                 if (newConfigStr === defaultConfigStr && oldConfigStr !== defaultConfigStr) {
                     // 可能是加载失败，恢复旧配置
@@ -525,6 +525,36 @@ export class ConfigManager implements vscode.Disposable {
             return match;
         });
     }
+
+    /**
+     * 对对象进行稳定序列化，避免因键顺序变化导致误判
+     * 
+     * @param value - 需要序列化的对象
+     * @returns 稳定排序后的 JSON 字符串
+     */
+    private stableStringify = (value: unknown): string => {
+        const seen = new WeakSet<object>();
+        const normalize = (input: unknown): unknown => {
+            if (Array.isArray(input)) {
+                return input.map(item => normalize(item));
+            }
+            if (input && typeof input === 'object') {
+                const obj = input as Record<string, unknown>;
+                if (seen.has(obj)) {
+                    return '[Circular]';
+                }
+                seen.add(obj);
+                return Object.keys(obj)
+                    .sort()
+                    .reduce<Record<string, unknown>>((acc, key) => {
+                        acc[key] = normalize(obj[key]);
+                        return acc;
+                    }, {});
+            }
+            return input;
+        };
+        return JSON.stringify(normalize(value));
+    };
 
     /**
      * 递归解析配置对象中的所有字符串值中的环境变量

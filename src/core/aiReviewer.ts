@@ -348,9 +348,15 @@ export class AIReviewer {
      */
     private validateApiKey(): void {
         const { apiKey } = this.config!;
-        if (!apiKey || apiKey === '${OPENAI_API_KEY}' || apiKey.startsWith('${')) {
+        const normalizedKey = apiKey?.trim() || '';
+        const isUnresolved = normalizedKey === '${OPENAI_API_KEY}' || normalizedKey.startsWith('${') || normalizedKey.includes('}');
+        if (!normalizedKey || isUnresolved) {
             this.logger.warn('AI API密钥未配置或环境变量未解析');
             this.logger.warn('请确保设置了 OPENAI_API_KEY 环境变量，或在 .env 文件中配置');
+            return;
+        }
+        if (normalizedKey.length < 8) {
+            this.logger.warn('AI API密钥长度过短，可能无效');
         }
     }
 
@@ -359,7 +365,11 @@ export class AIReviewer {
      */
     private hasValidApiKey(): boolean {
         const { apiKey } = this.config!;
-        return !!apiKey && !apiKey.startsWith('${');
+        const normalizedKey = apiKey?.trim() || '';
+        return !!normalizedKey &&
+            !normalizedKey.startsWith('${') &&
+            !normalizedKey.includes('}') &&
+            normalizedKey.length >= 8;
     }
 
     /**
@@ -927,13 +937,19 @@ ${filesContent}
         }
 
         try {
-            let jsonStr = text.substring(firstBrace, lastBrace + 1);
+            const jsonStr = text.substring(firstBrace, lastBrace + 1);
             this.logger.debug(`提取的JSON字符串长度: ${jsonStr.length}`);
             
+            // 优先尝试原始 JSON，避免不必要的修改
+            try {
+                return JSON.parse(jsonStr);
+            } catch (parseError) {
+                this.logger.debug(`原始JSON解析失败，尝试修复转义字符: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+            }
+
             // 尝试修复常见的JSON转义问题（如Windows路径中的反斜杠）
-            jsonStr = this.fixJsonEscapeChars(jsonStr);
-            
-            return JSON.parse(jsonStr);
+            const repairedJsonStr = this.fixJsonEscapeChars(jsonStr);
+            return JSON.parse(repairedJsonStr);
         } catch (parseError) {
             this.logger.debug(`提取的JSON对象解析失败: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
             return null;

@@ -226,6 +226,9 @@ export const deactivate = () => {
     // 注意：由于 configManager 已注册到 context.subscriptions，
     // VSCode 会自动调用 dispose，但这里显式调用确保清理
     configManager?.dispose();
+
+    // 清理共享日志通道，避免输出通道残留
+    Logger.disposeSharedOutputChannel();
     
     // 清理全局变量
     reviewEngine = undefined;

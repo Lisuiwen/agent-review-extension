@@ -7,6 +7,13 @@ let sharedOutputChannel: vscode.OutputChannel | undefined;
 export class Logger {
     private outputChannel: vscode.OutputChannel;
     private prefix: string;
+    // 共享输出通道的统一清理入口（在插件停用时调用）
+    static disposeSharedOutputChannel = (): void => {
+        if (sharedOutputChannel) {
+            sharedOutputChannel.dispose();
+            sharedOutputChannel = undefined;
+        }
+    };
 
     constructor(prefix: string = 'AgentReview') {
         this.prefix = prefix;

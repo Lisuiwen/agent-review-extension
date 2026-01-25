@@ -20,6 +20,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { minimatch } from 'minimatch';
 import { exec } from 'child_process';  // Node.js 的进程执行模块
 import { promisify } from 'util';      // 将回调函数转换为 Promise
 import { Logger } from './logger';
@@ -158,28 +159,24 @@ export class FileScanner {
         // 将文件路径标准化（统一使用正斜杠）
         const normalizedPath = filePath.replace(/\\/g, '/');
         const fileName = path.basename(normalizedPath);
+        const matchPattern = (pattern: string): boolean => {
+            const normalizedPattern = pattern.replace(/\\/g, '/').trim();
+            if (!normalizedPattern) {
+                return false;
+            }
+            const hasPathSeparator = normalizedPattern.includes('/');
+            return minimatch(normalizedPath, normalizedPattern, {
+                dot: true,
+                matchBase: !hasPathSeparator,
+            }) || minimatch(fileName, normalizedPattern, { dot: true });
+        };
 
         // 检查文件模式
         if (exclusions.files) {
             for (const pattern of exclusions.files) {
-                // 将glob模式转换为正则表达式
-                // 例如: *.log -> .*\.log, test-*.ts -> test-.*\.ts
-                const regexPattern = pattern
-                    .replace(/\*\*/g, '.*')  // ** 匹配任意路径
-                    .replace(/\*/g, '[^/]*')  // * 匹配除/外的任意字符
-                    .replace(/\./g, '\\.');   // . 转义为 \.
-                
-                try {
-                    const regex = new RegExp(`^${regexPattern}$`);
-                    // 检查文件名或完整路径是否匹配
-                    if (regex.test(fileName) || regex.test(normalizedPath)) {
-                        return true;
-                    }
-                } catch {
-                    // 如果正则表达式无效，使用简单的字符串包含检查
-                    if (normalizedPath.includes(pattern.replace(/\*/g, ''))) {
-                        return true;
-                    }
+                // 使用 minimatch 支持完整 glob 语法（如 {a,b}、[0-9]）
+                if (matchPattern(pattern)) {
+                    return true;
                 }
             }
         }
@@ -187,10 +184,21 @@ export class FileScanner {
         // 检查目录
         if (exclusions.directories && exclusions.directories.length > 0) {
             for (const dir of exclusions.directories) {
-                // 检查文件路径是否包含该目录
-                // 例如: node_modules 会匹配所有包含 node_modules 的路径
-                if (normalizedPath.includes(dir.replace(/\\/g, '/'))) {
-                    return true;
+                const normalizedDir = dir.replace(/\\/g, '/').replace(/\/+$/g, '').trim();
+                if (!normalizedDir) {
+                    continue;
+                }
+                const hasGlob = /[*?[\]{]/.test(normalizedDir);
+                if (hasGlob) {
+                    if (minimatch(normalizedPath, normalizedDir, { dot: true }) ||
+                        minimatch(normalizedPath, `**/${normalizedDir}/**`, { dot: true })) {
+                        return true;
+                    }
+                } else {
+                    // 例如: node_modules 会匹配所有包含 node_modules 的路径
+                    if (normalizedPath.includes(`/${normalizedDir}/`) || normalizedPath.endsWith(`/${normalizedDir}`)) {
+                        return true;
+                    }
                 }
             }
         }

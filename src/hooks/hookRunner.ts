@@ -7,10 +7,48 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as yaml from 'js-yaml';
+import { minimatch } from 'minimatch';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+// 大文件阈值：避免 hook 读取超大文件导致卡顿
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+// 二进制检测读取的字节数
+const BINARY_CHECK_BYTES = 8000;
+const normalizePath = (filePath: string) => filePath.replace(/\\/g, '/');
+const matchPattern = (filePath: string, pattern: string) => {
+    const normalizedPath = normalizePath(filePath);
+    const normalizedPattern = pattern.replace(/\\/g, '/').trim();
+    if (!normalizedPattern) {
+        return false;
+    }
+    const hasPathSeparator = normalizedPattern.includes('/');
+    return minimatch(normalizedPath, normalizedPattern, {
+        dot: true,
+        matchBase: !hasPathSeparator,
+    }) || minimatch(path.basename(normalizedPath), normalizedPattern, { dot: true });
+};
+const isBinaryFile = async (filePath: string) => {
+    try {
+        const fileHandle = await fs.promises.open(filePath, 'r');
+        try {
+            const buffer = Buffer.alloc(BINARY_CHECK_BYTES);
+            const { bytesRead } = await fileHandle.read(buffer, 0, buffer.length, 0);
+            for (let i = 0; i < bytesRead; i++) {
+                if (buffer[i] === 0) {
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            await fileHandle.close();
+        }
+    } catch (error) {
+        console.error(`[WARN] 二进制检测失败，继续按文本处理: ${filePath}`, error);
+        return false;
+    }
+};
 
 // 简化的配置接口
 interface AgentReviewConfig {
@@ -236,31 +274,31 @@ async function main() {
         const filteredFiles = stagedFiles.filter(file => {
             if (config.exclusions) {
                 // 简单的排除检查（hookRunner中简化实现）
-                const normalizedPath = file.replace(/\\/g, '/');
+                const normalizedPath = normalizePath(file);
                 if (config.exclusions.directories) {
                     for (const dir of config.exclusions.directories) {
-                        if (normalizedPath.includes(dir.replace(/\\/g, '/'))) {
-                            return false;
+                        const normalizedDir = dir.replace(/\\/g, '/').replace(/\/+$/g, '').trim();
+                        if (!normalizedDir) {
+                            continue;
+                        }
+                        const hasGlob = /[*?[\]{]/.test(normalizedDir);
+                        if (hasGlob) {
+                            if (minimatch(normalizedPath, normalizedDir, { dot: true }) ||
+                                minimatch(normalizedPath, `**/${normalizedDir}/**`, { dot: true })) {
+                                return false;
+                            }
+                        } else {
+                            if (normalizedPath.includes(`/${normalizedDir}/`) || normalizedPath.endsWith(`/${normalizedDir}`)) {
+                                return false;
+                            }
                         }
                     }
                 }
                 if (config.exclusions.files) {
                     for (const pattern of config.exclusions.files) {
-                        const fileName = path.basename(normalizedPath);
-                        // 简单的模式匹配
-                        const regexPattern = pattern
-                            .replace(/\*\*/g, '.*')
-                            .replace(/\*/g, '[^/]*')
-                            .replace(/\./g, '\\.');
-                        try {
-                            const regex = new RegExp(`^${regexPattern}$`);
-                            if (regex.test(fileName) || regex.test(normalizedPath)) {
-                                return false;
-                            }
-                        } catch {
-                            if (normalizedPath.includes(pattern.replace(/\*/g, ''))) {
-                                return false;
-                            }
+                        // 使用 minimatch 支持完整 glob 语法
+                        if (matchPattern(normalizedPath, pattern)) {
+                            return false;
                         }
                     }
                 }
@@ -273,6 +311,16 @@ async function main() {
         for (const file of filteredFiles) {
             try {
                 if (!fs.existsSync(file)) {
+                    continue;
+                }
+                const stat = await fs.promises.stat(file);
+                if (stat.size > MAX_FILE_SIZE_BYTES) {
+                    console.error(`[WARN] 文件过大，已跳过: ${file} (${stat.size} bytes)`);
+                    continue;
+                }
+                const binary = await isBinaryFile(file);
+                if (binary) {
+                    console.error(`[WARN] 二进制文件已跳过: ${file}`);
                     continue;
                 }
                 const content = await fs.promises.readFile(file, 'utf-8');

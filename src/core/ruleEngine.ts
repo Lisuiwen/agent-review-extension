@@ -49,6 +49,10 @@ export class RuleEngine {
     private configManager: ConfigManager;
     private logger: Logger;
     private rules: Rule[] = [];
+    // 大文件阈值：超过该大小的文件将被跳过，避免内存占用过高
+    private static readonly MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+    // 二进制检测读取的字节数（仅用于快速判断）
+    private static readonly BINARY_CHECK_BYTES = 8000;
 
     constructor(configManager: ConfigManager) {
         this.configManager = configManager;
@@ -152,12 +156,42 @@ export class RuleEngine {
                     continue;  // 跳过不存在的文件
                 }
 
-                // 步骤2：读取文件内容
+                // 步骤2：检查文件大小，避免读取超大文件导致内存问题
+                const stat = await fs.promises.stat(file);
+                if (stat.size > RuleEngine.MAX_FILE_SIZE_BYTES) {
+                    this.logger.warn(`文件过大，已跳过: ${file} (${stat.size} bytes)`);
+                    issues.push({
+                        file,
+                        line: 1,
+                        column: 1,
+                        message: `文件过大，已跳过审查（>${RuleEngine.MAX_FILE_SIZE_BYTES} bytes）`,
+                        rule: 'file_skipped',
+                        severity: 'warning',
+                    });
+                    continue;
+                }
+
+                // 步骤3：检查是否为二进制文件，避免乱码或解析异常
+                const isBinary = await this.isBinaryFile(file);
+                if (isBinary) {
+                    this.logger.warn(`检测到二进制文件，已跳过: ${file}`);
+                    issues.push({
+                        file,
+                        line: 1,
+                        column: 1,
+                        message: '检测到二进制文件，已跳过审查',
+                        rule: 'file_skipped',
+                        severity: 'warning',
+                    });
+                    continue;
+                }
+
+                // 步骤4：读取文件内容
                 // fs.promises.readFile 是 Node.js 的异步文件读取 API
                 // 'utf-8' 指定以 UTF-8 编码读取文件
                 const content = await fs.promises.readFile(file, 'utf-8');
                 
-                // 步骤3：检查文件并收集问题
+                // 步骤5：检查文件并收集问题
                 const fileIssues = await this.checkFile(file, content);
                 issues.push(...fileIssues);  // 将问题添加到总列表
             } catch (error) {
@@ -168,6 +202,38 @@ export class RuleEngine {
 
         return issues;
     }
+
+    /**
+     * 快速检测文件是否为二进制文件
+     * 
+     * 实现思路：
+     * 1. 读取文件的前 N 个字节
+     * 2. 如果包含 0x00（空字符），通常是二进制文件
+     * 
+     * @param filePath - 文件路径
+     * @returns 是否为二进制文件
+     */
+    private isBinaryFile = async (filePath: string): Promise<boolean> => {
+        try {
+            const fileHandle = await fs.promises.open(filePath, 'r');
+            try {
+                const buffer = Buffer.alloc(RuleEngine.BINARY_CHECK_BYTES);
+                const { bytesRead } = await fileHandle.read(buffer, 0, buffer.length, 0);
+                for (let i = 0; i < bytesRead; i++) {
+                    if (buffer[i] === 0) {
+                        return true;
+                    }
+                }
+                return false;
+            } finally {
+                await fileHandle.close();
+            }
+        } catch (error) {
+            // 如果读取失败，保守处理：不认为是二进制，让上层流程继续处理
+            this.logger.debug(`二进制检测失败，继续按文本处理: ${filePath}`, error);
+            return false;
+        }
+    };
 
     /**
      * 将规则的 action 转换为问题的严重程度

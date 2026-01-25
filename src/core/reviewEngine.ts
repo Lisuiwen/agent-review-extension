@@ -207,23 +207,18 @@ export class ReviewEngine {
         // - 如果 strict_mode 开启：任何错误都会导致不通过
         // - 否则：只有 action 为 'block_commit' 的错误才会导致不通过
         const configRules = config.rules;
+        // 规则与配置 action 的映射表，便于扩展新规则
+        const ruleActionMap = new Map<string, 'block_commit' | 'warning' | 'log' | undefined>([
+            ['ai_review', config.ai_review?.action],
+            ['ai_review_error', config.ai_review?.action],
+            ['no_space_in_filename', configRules.naming_convention?.action],
+            ['no_todo', configRules.code_quality?.action],
+        ]);
         const hasBlockingErrors = result.errors.some(error => {
             // 检查对应的规则配置是否为 block_commit
             // 只有配置为 block_commit 的错误才会真正阻止提交
-            
-            // AI审查的错误
-            if (error.rule === 'ai_review' || error.rule === 'ai_review_error') {
-                return config.ai_review?.action === 'block_commit';
-            }
-            
-            // 规则引擎的错误
-            if (error.rule === 'no_space_in_filename') {
-                return configRules.naming_convention?.action === 'block_commit';
-            }
-            if (error.rule === 'no_todo') {
-                return configRules.code_quality?.action === 'block_commit';
-            }
-            return false;
+            const action = ruleActionMap.get(error.rule);
+            return action === 'block_commit';
         });
 
         // 设置审查结果

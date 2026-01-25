@@ -211,6 +211,12 @@ export class GitHookManager {
         // 检测操作系统
         // process.platform 是 Node.js 的全局变量，'win32' 表示 Windows
         const isWindows = process.platform === 'win32';
+
+        // 统一准备脚本中用到的路径
+        // 注意：Windows 批处理更偏好反斜杠路径，避免不必要的路径转换
+        const workspaceRootPath = isWindows ? path.normalize(this.workspaceRoot) : this.workspaceRoot;
+        const hookRunnerPathNormalized = isWindows ? path.normalize(hookRunnerPath) : hookRunnerPath;
+        const nodeExecPath = isWindows ? path.normalize(process.execPath) : process.execPath;
         
         if (isWindows) {
             // Windows 批处理脚本
@@ -218,9 +224,10 @@ export class GitHookManager {
             return `@echo off
 REM AgentReview pre-commit hook
 REM 设置工作区根目录环境变量，hookRunner 会读取这个变量
-set WORKSPACE_ROOT=${this.workspaceRoot.replace(/\\/g, '/')}
+set "WORKSPACE_ROOT=${workspaceRootPath}"
 REM 执行 hookRunner.js 脚本
-node "${hookRunnerPath.replace(/\\/g, '/')}"
+REM 使用 VSCode 扩展运行时的 Node.js，避免 PATH 不可用
+"${nodeExecPath}" "${hookRunnerPathNormalized}"
 REM 检查退出码，如果非 0 则阻止提交
 if errorlevel 1 (
     exit /b 1
@@ -233,10 +240,10 @@ exit /b 0
             return `#!/bin/sh
 # AgentReview pre-commit hook
 # 设置工作区根目录环境变量
-export WORKSPACE_ROOT="${this.workspaceRoot}"
+export WORKSPACE_ROOT="${workspaceRootPath}"
 # 使用 Node.js 执行 hookRunner.js
 # process.execPath 是 Node.js 可执行文件的路径
-"${process.execPath}" "${hookRunnerPath}"
+"${nodeExecPath}" "${hookRunnerPathNormalized}"
 # 返回退出码（$? 是上一个命令的退出码）
 exit $?
 `;
