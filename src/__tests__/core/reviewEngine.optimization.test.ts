@@ -15,8 +15,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createMockConfigManager } from '../helpers/mockConfigManager';
 import { ReviewEngine, ReviewIssue } from '../../core/reviewEngine';
 
-const ruleEngineCheckFilesMock = vi.fn<() => Promise<ReviewIssue[]>>();
-const aiReviewerReviewMock = vi.fn<() => Promise<ReviewIssue[]>>();
+const ruleEngineCheckFilesMock = vi.fn<() => Promise<ReviewIssue[]>>(async () => []);
+const aiReviewerReviewMock = vi.fn<() => Promise<ReviewIssue[]>>(async () => []);
 
 vi.mock('../../core/ruleEngine', () => ({
     RuleEngine: class {
@@ -73,8 +73,8 @@ describe('ReviewEngine 优化逻辑', () => {
             severity: 'error',
         };
 
-        ruleEngineCheckFilesMock.mockResolvedValue([blockingIssue]);
-        aiReviewerReviewMock.mockResolvedValue([]);
+        ruleEngineCheckFilesMock.mockImplementation(async () => [blockingIssue]);
+        aiReviewerReviewMock.mockImplementation(async () => []);
 
         const reviewEngine = new ReviewEngine(configManager);
         await reviewEngine.initialize();
@@ -114,8 +114,8 @@ describe('ReviewEngine 优化逻辑', () => {
             severity: 'warning',
         };
 
-        ruleEngineCheckFilesMock.mockResolvedValue([warningIssue]);
-        aiReviewerReviewMock.mockResolvedValue([]);
+        ruleEngineCheckFilesMock.mockImplementation(async () => [warningIssue]);
+        aiReviewerReviewMock.mockImplementation(async () => []);
 
         const reviewEngine = new ReviewEngine(configManager);
         await reviewEngine.initialize();
@@ -158,8 +158,8 @@ describe('ReviewEngine 优化逻辑', () => {
             severity: 'error',
         };
 
-        ruleEngineCheckFilesMock.mockResolvedValue([ruleIssue]);
-        aiReviewerReviewMock.mockResolvedValue([aiIssue]);
+        ruleEngineCheckFilesMock.mockImplementation(async () => [ruleIssue]);
+        aiReviewerReviewMock.mockImplementation(async () => [aiIssue]);
 
         const reviewEngine = new ReviewEngine(configManager);
         await reviewEngine.initialize();
@@ -191,7 +191,7 @@ describe('ReviewEngine 优化逻辑', () => {
                 resolveRule = resolve;
             })
         );
-        aiReviewerReviewMock.mockResolvedValue([]);
+        aiReviewerReviewMock.mockImplementation(async () => []);
 
         const reviewEngine = new ReviewEngine(configManager);
         await reviewEngine.initialize();

@@ -141,16 +141,6 @@ export class RuleEngine {
                         message: `发现 ${match[0]} 注释: ${line.trim()}`,
                         rule: 'no_todo',  // 规则标识符
                         severity,
-                        // 简单修复：移除匹配的 TODO/FIXME/XXX 关键字
-                        // 注意：这里只移除关键字，不改变其余文本
-                        fixable: true,
-                        fix: {
-                            startLine: i + 1,
-                            startColumn: column,
-                            endLine: i + 1,
-                            endColumn: column + match[0].length,
-                            newText: ''
-                        }
                     });
                 }
             }

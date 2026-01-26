@@ -77,8 +77,7 @@ export class ReviewTreeItem extends vscode.TreeItem {
                 ]
             };
             // contextValue 用于控制 TreeView 菜单显示
-            // 可修复问题会显示“修复此问题”入口
-            this.contextValue = issue.fixable && issue.fix ? 'reviewIssueFixable' : 'reviewIssue';
+            this.contextValue = 'reviewIssue';
         } else if (filePath) {
             // 文件项：显示文件路径
             this.tooltip = filePath;
@@ -151,7 +150,10 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         // 如果没有审查结果，显示提示信息
         if (!this.reviewResult) {
             if (this.status === 'reviewing') {
-                return [new ReviewTreeItem('正在审查...', vscode.TreeItemCollapsibleState.None)];
+                const loadingItem = new ReviewTreeItem('正在审查...', vscode.TreeItemCollapsibleState.None);
+                loadingItem.iconPath = new vscode.ThemeIcon('sync~spin');
+                loadingItem.description = '请稍候';
+                return [loadingItem];
             }
             return [new ReviewTreeItem('点击刷新按钮开始审查', vscode.TreeItemCollapsibleState.None)];
         }
@@ -159,6 +161,14 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         // 根节点的子节点：显示状态和按文件分组的问题
         if (!element) {
             const items: ReviewTreeItem[] = [];
+            
+            // 审查进行中时，优先显示明显的加载提示
+            if (this.status === 'reviewing') {
+                const loadingItem = new ReviewTreeItem('正在审查...', vscode.TreeItemCollapsibleState.None);
+                loadingItem.iconPath = new vscode.ThemeIcon('sync~spin');
+                loadingItem.description = '请稍候';
+                items.push(loadingItem);
+            }
             
             // 如果没有问题且审查通过，检查是否是因为没有staged文件
             const totalIssues = this.reviewResult.errors.length + this.reviewResult.warnings.length + this.reviewResult.info.length;
@@ -234,6 +244,8 @@ export class ReviewPanel {
     private treeView: vscode.TreeView<ReviewTreeItem>;
     private provider: ReviewPanelProvider;
     private highlightDecoration: vscode.TextEditorDecorationType;
+    private errorHighlightDecoration: vscode.TextEditorDecorationType;
+    private warningHighlightDecoration: vscode.TextEditorDecorationType;
     private lastHighlightedEditor: vscode.TextEditor | null = null;
     private selectionDisposable: vscode.Disposable;
 
@@ -251,6 +263,22 @@ export class ReviewPanel {
             backgroundColor: new vscode.ThemeColor('editor.lineHighlightBackground'),
             border: '1px solid',
             borderColor: new vscode.ThemeColor('editor.lineHighlightBorder')
+        });
+        
+        // 错误高亮：红色强调，用于 error 严重级别
+        this.errorHighlightDecoration = vscode.window.createTextEditorDecorationType({
+            isWholeLine: true,
+            backgroundColor: new vscode.ThemeColor('editorError.background'),
+            border: '1px solid',
+            borderColor: new vscode.ThemeColor('errorForeground')
+        });
+        
+        // 警告高亮：黄色强调，用于 warning 严重级别
+        this.warningHighlightDecoration = vscode.window.createTextEditorDecorationType({
+            isWholeLine: true,
+            backgroundColor: new vscode.ThemeColor('editorWarning.background'),
+            border: '1px solid',
+            borderColor: new vscode.ThemeColor('editorWarning.foreground')
         });
 
         // 监听 TreeView 选择变化，实现“选中即高亮”
@@ -296,6 +324,8 @@ export class ReviewPanel {
     private clearHighlight = (): void => {
         if (this.lastHighlightedEditor) {
             this.lastHighlightedEditor.setDecorations(this.highlightDecoration, []);
+            this.lastHighlightedEditor.setDecorations(this.errorHighlightDecoration, []);
+            this.lastHighlightedEditor.setDecorations(this.warningHighlightDecoration, []);
             this.lastHighlightedEditor = null;
         }
     };
@@ -326,7 +356,15 @@ export class ReviewPanel {
             // 先清理旧高亮，再设置新高亮
             this.clearHighlight();
             const lineRange = new vscode.Range(safeLine - 1, 0, safeLine - 1, lineText.length);
-            editor.setDecorations(this.highlightDecoration, [lineRange]);
+            
+            // 按严重程度选择高亮样式
+            if (issue.severity === 'error') {
+                editor.setDecorations(this.errorHighlightDecoration, [lineRange]);
+            } else if (issue.severity === 'warning') {
+                editor.setDecorations(this.warningHighlightDecoration, [lineRange]);
+            } else {
+                editor.setDecorations(this.highlightDecoration, [lineRange]);
+            }
             this.lastHighlightedEditor = editor;
         } catch (error) {
             this.clearHighlight();
@@ -337,6 +375,8 @@ export class ReviewPanel {
     dispose(): void {
         this.clearHighlight();
         this.highlightDecoration.dispose();
+        this.errorHighlightDecoration.dispose();
+        this.warningHighlightDecoration.dispose();
         this.selectionDisposable.dispose();
         this.treeView.dispose();
     }

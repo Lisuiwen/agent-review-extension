@@ -53,6 +53,7 @@ const AIReviewResponseSchema = z.object({
             file: z.string().min(1, '文件路径不能为空'),
             line: z.number().int().positive('行号必须是正整数').default(1),
             column: z.number().int().nonnegative('列号必须是非负整数').default(1),
+            snippet: z.string().optional(),
             message: z.string().min(1, '问题描述不能为空'),
             severity: z.enum(['error', 'warning', 'info'], {
                 message: '严重程度必须是 error、warning 或 info 之一'
@@ -166,6 +167,8 @@ export class AIReviewer {
     private fileScanner: FileScanner;
     private config: AIReviewConfig | null = null;
     private axiosInstance: AxiosInstance;
+    private responseCache = new Map<string, { response: AIReviewResponse; isPartial: boolean }>();
+    private baseMessageCache = new Map<string, Array<{ role: string; content: string }>>();
 
     constructor(configManager: ConfigManager) {
         this.configManager = configManager;
@@ -276,6 +279,9 @@ export class AIReviewer {
             return [];
         }
 
+        // 每次审查开始前清理缓存，避免跨审查复用脏数据
+        this.resetReviewCache();
+
         try {
             // 读取文件内容
             const validFiles = await this.loadFilesWithContent(validatedRequest.files);
@@ -311,7 +317,7 @@ export class AIReviewer {
 
                 try {
                     const response = await this.callAPI({ files: batchFiles });
-                    const batchIssues = this.transformToReviewIssues(response);
+                    const batchIssues = this.transformToReviewIssues(response, batchFiles);
                     allIssues.push(...batchIssues);
                 } catch (error) {
                     const handledIssues = this.handleReviewError(error);
@@ -464,13 +470,44 @@ export class AIReviewer {
     private handleReviewError(error: unknown): ReviewIssue[] {
         this.logger.error('AI审查失败', error);
         
-        if (this.config?.action === 'block_commit') {
-            const message = error instanceof Error ? error.message : String(error);
-            throw new Error(`AI审查失败: ${message}`);
+        const action = this.config?.action || 'warning';
+        const severity = action === 'block_commit'
+            ? 'error'
+            : action === 'log'
+                ? 'info'
+                : 'warning';
+        const message = error instanceof Error ? error.message : String(error);
+        const isTimeout = axios.isAxiosError(error) && (
+            error.code === 'ECONNABORTED' || /timeout/i.test(error.message)
+        );
+        const userMessage = isTimeout
+            ? `AI审查超时（${this.config?.timeout || DEFAULT_TIMEOUT}ms），请稍后重试`
+            : `AI审查失败: ${message}`;
+        const rule = isTimeout ? 'ai_review_timeout' : 'ai_review_error';
+        
+        if (action === 'block_commit') {
+            throw new Error(userMessage);
         }
         
-        return [];
+        return [{
+            file: '',
+            line: 1,
+            column: 1,
+            message: userMessage,
+            rule,
+            severity
+        }];
     }
+
+    /**
+     * 重置审查缓存
+     * 
+     * 只在单次审查生命周期内复用缓存，避免跨审查污染结果
+     */
+    private resetReviewCache = (): void => {
+        this.responseCache.clear();
+        this.baseMessageCache.clear();
+    };
 
     /**
      * 调用AI API
@@ -483,30 +520,68 @@ export class AIReviewer {
             throw new Error('AI审查配置未初始化');
         }
 
+        const requestHash = this.calculateRequestHash(request);
+
         // 根据API格式选择请求构建方法
         const requestBody = this.config.api_format === 'custom'
             ? this.buildCustomRequest(request)
             : this.buildOpenAIRequest(request);
 
+        if (this.config.api_format !== 'custom') {
+            const baseMessages = (requestBody as { messages: Array<{ role: string; content: string }> }).messages;
+            this.baseMessageCache.set(requestHash, baseMessages);
+        }
+
         // 实现重试机制（指数退避）
         const maxRetries = this.config.retry_count ?? DEFAULT_MAX_RETRIES;
         const baseDelay = this.config.retry_delay ?? DEFAULT_RETRY_DELAY;
         let lastError: Error | null = null;
+        let continuationRequestBody: typeof requestBody | null = null;
 
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
             try {
                 this.logger.debug(`AI API调用 (尝试 ${attempt + 1}/${maxRetries + 1})`);
                 
+                const currentRequestBody = continuationRequestBody || requestBody;
                 const response = await this.axiosInstance.post(
                     this.config.apiEndpoint,
-                    requestBody,
+                    currentRequestBody,
                     { timeout: this.config.timeout }
                 );
 
                 // 根据API格式解析响应
-                return this.config.api_format === 'custom'
-                    ? this.parseCustomResponse(response.data)
-                    : this.parseOpenAIResponse(response.data);
+                if (this.config.api_format === 'custom') {
+                    const parsedResponse = this.parseCustomResponse(response.data);
+                    const mergedResponse = this.mergeCachedIssues(requestHash, parsedResponse, false);
+                    return mergedResponse;
+                }
+
+                const parsedResult = this.parseOpenAIResponse(response.data);
+                const mergedResponse = this.mergeCachedIssues(requestHash, parsedResult.response, parsedResult.isPartial);
+
+                if (!parsedResult.isPartial) {
+                    return mergedResponse;
+                }
+
+                this.logger.warn(`AI响应疑似被截断，已提取 ${mergedResponse.issues.length} 个问题，尝试续写补全`);
+
+                if (attempt === maxRetries) {
+                    this.logger.warn('续写重试次数已用尽，返回已解析的部分结果');
+                    return mergedResponse;
+                }
+
+                const baseMessages = this.baseMessageCache.get(requestHash);
+                if (!baseMessages) {
+                    this.logger.warn('续写失败：未找到基础提示词，返回已解析的部分结果');
+                    return mergedResponse;
+                }
+
+                continuationRequestBody = this.buildContinuationOpenAIRequest({
+                    baseMessages,
+                    partialContent: parsedResult.cleanedContent,
+                    cachedIssues: mergedResponse.issues
+                });
+                continue;
             } catch (error) {
                 lastError = error as Error;
                 
@@ -582,7 +657,8 @@ ${filesContent}
 2. 检查bug、性能问题、安全问题、代码质量问题
 3. 即使代码能正常运行，也要提供改进建议和最佳实践
 4. 对于每个问题，提供详细的问题描述和具体的修复建议
-5. 确保问题描述清晰、具体，包含：
+5. 返回 snippet 字段（问题所在的原始代码片段，1-3行，必须来自原文件，保持原样）
+6. 确保问题描述清晰、具体，包含：
    - 问题是什么
    - 为什么这是问题
    - 如何修复（提供具体的代码建议）
@@ -600,6 +676,7 @@ ${filesContent}
       "file": "文件路径（完整路径）",
       "line": 行号（从1开始）,
       "column": 列号（从1开始）,
+      "snippet": "问题所在的原始代码片段（1-3行，保持原样）",
       "message": "详细的问题描述和修复建议（要具体、可操作，但保持简洁）",
       "severity": "error|warning|info"
     }
@@ -630,6 +707,118 @@ ${filesContent}
             max_tokens: this.config.max_tokens || DEFAULT_MAX_TOKENS
         };
     }
+
+    /**
+     * 构建续写请求
+     * 
+     * 通过保留原始提示词和已截断的响应，要求模型继续输出剩余issues
+     */
+    private buildContinuationOpenAIRequest = (params: {
+        baseMessages: Array<{ role: string; content: string }>;
+        partialContent: string;
+        cachedIssues: AIReviewResponse['issues'];
+    }): {
+        model: string;
+        messages: Array<{ role: string; content: string }>;
+        temperature: number;
+        max_tokens: number;
+    } => {
+        if (!this.config) {
+            throw new Error('AI审查配置未初始化');
+        }
+
+        const lastIssue = params.cachedIssues[params.cachedIssues.length - 1];
+        const lastIssueHint = lastIssue
+            ? `最后一个问题: file=${lastIssue.file}, line=${lastIssue.line}, message=${lastIssue.message}`
+            : '尚无完整问题被解析';
+
+        const continuationPrompt = `上一次响应被截断，请继续输出剩余的issues。
+
+已解析问题数量: ${params.cachedIssues.length}
+${lastIssueHint}
+
+**续写要求：**
+1. 只返回新增问题，避免重复之前已输出的问题
+2. 仍然严格返回完整JSON格式（只包含issues数组）
+3. 如果没有更多问题，请返回 {"issues": []}
+`;
+
+        return {
+            model: this.config.model || DEFAULT_MODEL,
+            messages: [
+                ...params.baseMessages,
+                {
+                    role: 'assistant',
+                    content: params.partialContent
+                },
+                {
+                    role: 'user',
+                    content: continuationPrompt
+                }
+            ],
+            temperature: this.config.temperature ?? DEFAULT_TEMPERATURE,
+            max_tokens: this.config.max_tokens || DEFAULT_MAX_TOKENS
+        };
+    };
+
+    /**
+     * 生成请求哈希，用于缓存与续写关联
+     * 
+     * 通过文件路径与内容生成稳定哈希，确保同批次请求可复用缓存
+     */
+    private calculateRequestHash = (request: { files: Array<{ path: string; content: string }> }): string => {
+        const raw = request.files
+            .map(file => `${file.path}:${file.content}`)
+            .join('|');
+        return this.simpleHash(raw);
+    };
+
+    /**
+     * 简单字符串哈希
+     * 
+     * 避免引入额外依赖，满足缓存键的稳定性需求
+     */
+    private simpleHash = (input: string): string => {
+        let hash = 0;
+        for (let i = 0; i < input.length; i++) {
+            hash = (hash << 5) - hash + input.charCodeAt(i);
+            hash |= 0;
+        }
+        return `${hash}`;
+    };
+
+    /**
+     * 合并并去重缓存问题
+     * 
+     * 用于续写场景，将已解析的问题与续写结果合并
+     */
+    private mergeCachedIssues = (requestHash: string, response: AIReviewResponse, isPartial: boolean): AIReviewResponse => {
+        const existing = this.responseCache.get(requestHash);
+        const mergedIssues = existing
+            ? this.dedupeIssues([...existing.response.issues, ...response.issues])
+            : this.dedupeIssues(response.issues);
+        const mergedResponse = { issues: mergedIssues };
+        this.responseCache.set(requestHash, {
+            response: mergedResponse,
+            isPartial
+        });
+        return mergedResponse;
+    };
+
+    /**
+     * 去重 issues，避免续写带来的重复结果
+     */
+    private dedupeIssues = (issues: AIReviewResponse['issues']): AIReviewResponse['issues'] => {
+        const seen = new Set<string>();
+        return issues.filter(issue => {
+            const key = `${issue.file}|${issue.line}|${issue.column}|${issue.message}`;
+            if (seen.has(key)) {
+                return false;
+            }
+            seen.add(key);
+            return true;
+        });
+    };
 
     /**
      * 根据文件扩展名获取编程语言名称
@@ -688,16 +877,20 @@ ${filesContent}
      * 使用 Zod Schema 验证和解析 AI API 返回的数据，确保数据格式正确
      * 
      * @param responseData - API响应数据
-     * @returns 标准化的审查响应（已通过 Zod 验证）
+     * @returns 标准化的审查响应与解析状态
      */
-    private parseOpenAIResponse(responseData: unknown): AIReviewResponse {
+    private parseOpenAIResponse(responseData: unknown): {
+        response: AIReviewResponse;
+        isPartial: boolean;
+        cleanedContent: string;
+    } {
         try {
             // 验证 OpenAI API 响应格式
             const openAIResponse = OpenAIResponseSchema.parse(responseData);
             const content = openAIResponse.choices[0].message.content;
 
             this.logger.debug(`AI返回内容长度: ${content.length} 字符`);
-            this.logger.debug(`AI返回内容前500字符: ${content.substring(0, 500)}`);
+            this.logger.debug(`AI返回内容前5000字符: ${content.substring(0, 5000)}`);
 
             // 清理内容并提取 JSON
             const cleanedContent = this.cleanJsonContent(content);
@@ -709,13 +902,17 @@ ${filesContent}
                 this.logger.warn('建议：1) 增加max_tokens配置值；2) 减少审查的文件数量；3) 缩短问题描述');
             }
             
-            const parsed = this.parseJsonContent(cleanedContent);
+            const parseResult = this.parseJsonContent(cleanedContent);
 
             // 验证解析后的数据
-            const validatedResponse = AIReviewResponseSchema.parse(parsed);
+            const validatedResponse = AIReviewResponseSchema.parse(parseResult.parsed);
             
             this.logger.info(`成功解析并验证AI响应，发现 ${validatedResponse.issues.length} 个问题`);
-            return validatedResponse;
+            return {
+                response: validatedResponse,
+                isPartial: parseResult.isPartial,
+                cleanedContent
+            };
             
         } catch (error) {
             if (error instanceof z.ZodError) {
@@ -797,12 +994,15 @@ ${filesContent}
      * 解析 JSON 内容
      * 
      * @param content - JSON 字符串内容
-     * @returns 解析后的对象
+     * @returns 解析后的对象与是否部分解析
      * @throws 如果解析失败
      */
-    private parseJsonContent(content: string): unknown {
+    private parseJsonContent(content: string): { parsed: unknown; isPartial: boolean } {
         try {
-            return JSON.parse(content);
+            return {
+                parsed: JSON.parse(content),
+                isPartial: false
+            };
         } catch (jsonError) {
             const errorMessage = jsonError instanceof Error ? jsonError.message : String(jsonError);
             this.logger.debug(`直接JSON解析失败: ${errorMessage}`);
@@ -810,7 +1010,10 @@ ${filesContent}
             // 检查是否是截断错误
             if (this.isTruncatedJsonError(errorMessage, content)) {
                 this.logger.warn('检测到JSON可能被截断（达到max_tokens限制），尝试提取已解析的部分');
-                return this.extractPartialJson(content);
+                return {
+                    parsed: this.extractPartialJson(content),
+                    isPartial: true
+                };
             }
             
             // 尝试提取完整的JSON对象
@@ -819,7 +1022,10 @@ ${filesContent}
                 throw new Error(`无法从响应中提取有效的JSON对象。错误: ${errorMessage}`);
             }
             
-            return extractedJson;
+            return {
+                parsed: extractedJson,
+                isPartial: false
+            };
         }
     }
 
@@ -1100,27 +1306,100 @@ ${filesContent}
      * 将API响应转换为ReviewIssue格式
      * 
      * @param response - API响应
+     * @param filesWithContent - 带内容的文件列表，用于 snippet 反查
      * @returns ReviewIssue列表
      */
-    private transformToReviewIssues(response: AIReviewResponse): ReviewIssue[] {
+    private transformToReviewIssues(
+        response: AIReviewResponse,
+        filesWithContent: Array<{ path: string; content: string }>
+    ): ReviewIssue[] {
         const config = this.config;
         if (!config) {
             return [];
         }
 
+        const contentMap = new Map<string, string>(
+            filesWithContent.map(file => [file.path, file.content])
+        );
+
         // 保存action值，避免在map回调中重复访问可能为null的对象
         const action = config.action;
 
-        return response.issues.map(({ file, line = 1, column = 1, message, severity }) => ({
-            file,
-            line,
-            column,
-            message,
-            rule: 'ai_review',
-            severity: this.mapSeverity(severity, action),
-            fixable: false
-        }));
+        return response.issues.map(({ file, line = 1, column = 1, snippet, message, severity }) => {
+            const content = contentMap.get(file);
+            const resolvedPosition = content
+                ? this.resolveIssuePositionFromSnippet(content, snippet, line, column)
+                : { line, column };
+            
+            return {
+                file,
+                line: resolvedPosition.line,
+                column: resolvedPosition.column,
+                message,
+                rule: 'ai_review',
+                severity: this.mapSeverity(severity, action)
+            };
+        });
     }
+
+    /**
+     * 通过 snippet 反查问题的真实行列号
+     * 
+     * 这是为了解决 AI 行号偏移问题：
+     * - 优先使用 snippet 在文件内容中定位
+     * - 定位失败时回退到 AI 返回的行列号
+     * 
+     * @param content - 文件原始内容
+     * @param snippet - AI 返回的代码片段
+     * @param fallbackLine - AI 返回的行号
+     * @param fallbackColumn - AI 返回的列号
+     * @returns 校正后的行列号（1-based）
+     */
+    private resolveIssuePositionFromSnippet = (
+        content: string,
+        snippet: string | undefined,
+        fallbackLine: number,
+        fallbackColumn: number
+    ): { line: number; column: number } => {
+        if (!snippet) {
+            return { line: fallbackLine, column: fallbackColumn };
+        }
+
+        const normalizedContent = this.normalizeLineEndings(content);
+        const normalizedSnippet = this.normalizeLineEndings(snippet);
+        const snippetCandidates = [normalizedSnippet, normalizedSnippet.trim()].filter(value => value.length > 0);
+
+        let matchIndex = -1;
+        for (const candidate of snippetCandidates) {
+            matchIndex = normalizedContent.indexOf(candidate);
+            if (matchIndex >= 0) {
+                break;
+            }
+        }
+
+        if (matchIndex < 0) {
+            return { line: fallbackLine, column: fallbackColumn };
+        }
+
+        const contentBefore = normalizedContent.slice(0, matchIndex);
+        const line = contentBefore.split('\n').length;
+        const lastNewlineIndex = contentBefore.lastIndexOf('\n');
+        const column = lastNewlineIndex === -1
+            ? matchIndex + 1
+            : matchIndex - lastNewlineIndex;
+
+        return { line, column };
+    };
+
+    /**
+     * 统一换行符，避免 Windows 与 Unix 的行号偏差
+     * 
+     * @param text - 原始文本
+     * @returns 统一为 \\n 的文本
+     */
+    private normalizeLineEndings = (text: string): string => {
+        return text.replace(/\r\n/g, '\n');
+    };
 
     /**
      * 映射严重程度

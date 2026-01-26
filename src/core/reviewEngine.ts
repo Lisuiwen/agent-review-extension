@@ -46,19 +46,6 @@ export interface ReviewResult {
  * 审查问题接口
  * 描述一个具体的代码问题，包含位置、消息、规则等信息
  */
-/**
- * 自动修复信息
- * 
- * 使用 1-based 行列号，便于与 ReviewIssue 的定位信息保持一致
- */
-export interface ReviewIssueFix {
-    startLine: number;
-    startColumn: number;
-    endLine: number;
-    endColumn: number;
-    newText: string;
-}
-
 export interface ReviewIssue {
     file: string;              // 文件路径
     line: number;              // 问题所在行号（从1开始）
@@ -66,8 +53,6 @@ export interface ReviewIssue {
     message: string;           // 问题描述消息
     rule: string;              // 触发的规则名称（如 'no_space_in_filename'）
     severity: 'error' | 'warning' | 'info';  // 严重程度
-    fixable?: boolean;         // 是否可自动修复
-    fix?: ReviewIssueFix;      // 自动修复信息（可选）
 }
 
 /**
@@ -190,16 +175,22 @@ export class ReviewEngine {
                 return aiIssues;
             } catch (error) {
                 this.logger.error('AI审查失败', error);
-                if (config.ai_review?.action === 'block_commit') {
-                    aiErrorIssues.push({
-                        file: '',
-                        line: 1,
-                        column: 1,
-                        message: `AI审查失败: ${error instanceof Error ? error.message : String(error)}`,
-                        rule: 'ai_review_error',
-                        severity: 'error'
-                    });
-                }
+                const message = error instanceof Error ? error.message : String(error);
+                const action = config.ai_review?.action || 'warning';
+                const severity = action === 'block_commit'
+                    ? 'error'
+                    : action === 'log'
+                        ? 'info'
+                        : 'warning';
+                const isTimeout = /timeout|超时/i.test(message);
+                aiErrorIssues.push({
+                    file: '',
+                    line: 1,
+                    column: 1,
+                    message: isTimeout ? `AI审查超时: ${message}` : `AI审查失败: ${message}`,
+                    rule: isTimeout ? 'ai_review_timeout' : 'ai_review_error',
+                    severity
+                });
                 return [];
             }
         };

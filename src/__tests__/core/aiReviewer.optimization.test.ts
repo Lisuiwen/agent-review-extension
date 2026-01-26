@@ -57,4 +57,76 @@ describe('AIReviewer 批处理', () => {
         expect(callApiSpy.mock.calls[2][0].files.length).toBe(1);
         expect(result.length).toBe(0);
     });
+
+    it('截断响应应触发续写并合并去重结果', async () => {
+        const configManager = createMockConfigManager({
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                api_key: 'test-api-key',
+                timeout: 1000,
+                retry_count: 1,
+                action: 'warning',
+            },
+        });
+
+        const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
+
+        const truncatedContent = `{
+  "issues": [
+    {
+      "file": "src/a.ts",
+      "line": 1,
+      "column": 1,
+      "message": "m1",
+      "severity": "warning"
+    }`;
+
+        const continuationContent = `{
+  "issues": [
+    {
+      "file": "src/a.ts",
+      "line": 1,
+      "column": 1,
+      "message": "m1",
+      "severity": "warning"
+    },
+    {
+      "file": "src/b.ts",
+      "line": 2,
+      "column": 1,
+      "message": "m2",
+      "severity": "info"
+    }
+  ]
+}`;
+
+        const postMock = vi.fn()
+            .mockResolvedValueOnce({
+                data: {
+                    choices: [{ message: { content: truncatedContent } }]
+                }
+            })
+            .mockResolvedValueOnce({
+                data: {
+                    choices: [{ message: { content: continuationContent } }]
+                }
+            });
+
+        (aiReviewer as unknown as { axiosInstance: { post: typeof postMock } }).axiosInstance.post = postMock;
+
+        const response = await (aiReviewer as unknown as {
+            callAPI: (input: { files: Array<{ path: string; content: string }> }) => Promise<{ issues: Array<any> }>
+        }).callAPI({
+            files: [{ path: 'src/a.ts', content: 'const a = 1;' }]
+        });
+
+        expect(postMock).toHaveBeenCalledTimes(2);
+        expect(response.issues.length).toBe(2);
+        expect(response.issues[0].file).toBe('src/a.ts');
+        expect(response.issues[1].file).toBe('src/b.ts');
+    });
+
 });
