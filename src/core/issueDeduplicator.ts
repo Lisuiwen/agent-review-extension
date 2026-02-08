@@ -1,4 +1,4 @@
-import { ReviewIssue } from './reviewEngine';
+import type { ReviewIssue } from '../types/review';
 
 /**
  * 问题去重工具

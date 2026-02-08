@@ -3,7 +3,7 @@ import axios, { AxiosInstance, AxiosError } from 'axios';
 import { z } from 'zod';
 import { ConfigManager, AgentReviewConfig } from '../config/configManager';
 import { Logger } from '../utils/logger';
-import { ReviewIssue } from './reviewEngine';
+import type { ReviewIssue } from '../types/review';
 import { FileScanner } from '../utils/fileScanner';
 import type { FileDiff } from '../utils/diffTypes';
 import type { AffectedScopeResult } from '../utils/astScope';

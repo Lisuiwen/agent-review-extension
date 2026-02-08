@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { AIReviewer } from '../../core/aiReviewer';
+import { AIReviewer } from '../../ai/aiReviewer';
 import { createMockConfigManager } from '../helpers/mockConfigManager';
 
 describe('AIReviewer 批处理', () => {

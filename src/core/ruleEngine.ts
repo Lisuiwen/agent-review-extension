@@ -29,8 +29,9 @@
 
 import { ConfigManager } from '../config/configManager';
 import { Logger } from '../utils/logger';
-import { ReviewIssue } from './reviewEngine';
+import type { ReviewIssue } from '../types/review';
 import type { FileDiff } from '../utils/diffTypes';
+import { checkNoSpaceInFilename, checkNoTodo } from '../shared/ruleChecks';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -93,55 +94,30 @@ export class RuleEngine {
 
         // 规则1：文件名（与行无关，始终检查）
         if (config.rules.naming_convention?.enabled && config.rules.naming_convention.no_space_in_filename) {
-            const fileName = path.basename(filePath);
-            if (fileName.includes(' ')) {
-                const severity = this.getSeverity(config.rules.naming_convention.action);
-                issues.push({
-                    file: filePath,
-                    line: 1,
-                    column: 1,
-                    message: `文件名包含空格: ${fileName}`,
-                    rule: 'no_space_in_filename',
-                    severity,
-                });
-            }
+            issues.push(
+                ...checkNoSpaceInFilename(filePath, content, {
+                    action: config.rules.naming_convention.action,
+                })
+            );
         }
 
         // 规则2：no_todo；有 fileDiff 时仅扫描变更行
         if (config.rules.code_quality?.enabled && config.rules.code_quality.no_todo) {
-            const todoPattern = (config.rules.code_quality.no_todo_pattern as string) || '(TODO|FIXME|XXX)';
-            const todoRegex = new RegExp(todoPattern, 'i');
-            const lines = content.split('\n');
-
-            const changedLineNumbers = new Set<number>();
+            let changedLineNumbers: Set<number> | undefined;
             if (fileDiff?.hunks?.length) {
+                changedLineNumbers = new Set<number>();
                 for (const h of fileDiff.hunks) {
                     for (let k = 0; k < h.newCount; k++) {
                         changedLineNumbers.add(h.newStart + k);
                     }
                 }
             }
-
-            for (let i = 0; i < lines.length; i++) {
-                const lineNum = i + 1;
-                if (fileDiff && changedLineNumbers.size > 0 && !changedLineNumbers.has(lineNum)) {
-                    continue;
-                }
-                const lineContent = lines[i];
-                const match = lineContent.match(todoRegex);
-                if (match) {
-                    const severity = this.getSeverity(config.rules.code_quality.action);
-                    const column = lineContent.indexOf(match[0]) + 1;
-                    issues.push({
-                        file: filePath,
-                        line: lineNum,
-                        column,
-                        message: `发现 ${match[0]} 注释: ${lineContent.trim()}`,
-                        rule: 'no_todo',
-                        severity,
-                    });
-                }
-            }
+            issues.push(
+                ...checkNoTodo(filePath, content, {
+                    action: config.rules.code_quality.action,
+                    pattern: config.rules.code_quality.no_todo_pattern as string | undefined,
+                }, changedLineNumbers)
+            );
         }
 
         return issues;
@@ -237,30 +213,6 @@ export class RuleEngine {
             return false;
         }
     };
-
-    /**
-     * 将规则的 action 转换为问题的严重程度
-     * 
-     * action 是配置中的行为设置：
-     * - block_commit: 阻止提交，对应 error 级别
-     * - warning: 仅警告，对应 warning 级别
-     * - log: 仅记录，对应 info 级别
-     * 
-     * @param action - 规则的 action 配置
-     * @returns 对应的严重程度
-     */
-    private getSeverity(action: 'block_commit' | 'warning' | 'log'): 'error' | 'warning' | 'info' {
-        switch (action) {
-            case 'block_commit':
-                return 'error';
-            case 'warning':
-                return 'warning';
-            case 'log':
-                return 'info';
-            default:
-                return 'warning';
-        }
-    }
 
     getRules(): Rule[] {
         return this.rules;

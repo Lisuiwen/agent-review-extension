@@ -40,65 +40,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { Logger } from '../utils/logger';
+import type { AgentReviewConfig, RuleConfig } from '../types/config';
+import { loadYamlFromPath, loadPluginYaml } from './configLoader';
+import { setupConfigWatcher } from './configWatcher';
+import { resolveEnvVariables, resolveEnvInConfig } from './envResolver';
+import { mergeConfig as mergeConfigFn } from './configMerger';
 
-/**
- * 配置文件的数据结构定义
- * 这个接口定义了配置文件的完整结构
- */
-export interface AgentReviewConfig {
-    version: string;
-    rules: {
-        enabled: boolean;
-        strict_mode: boolean;
-        builtin_rules_enabled?: boolean;  // 是否启用内置规则引擎（默认false，避免与项目自有规则冲突）
-        diff_only?: boolean;              // staged 审查时仅扫描变更行（默认 true）
-        code_quality?: RuleConfig;
-        security?: RuleConfig;
-        naming_convention?: RuleConfig;
-        business_logic?: RuleConfig;
-    };
-    ai_review?: {
-        enabled: boolean;
-        api_format?: 'openai' | 'custom';  // API格式：OpenAI兼容或自定义
-        api_endpoint: string;              // API端点URL
-        api_key?: string;                  // API密钥（支持环境变量）
-        model?: string;                     // 模型名称（需在设置或 .env 中配置，无默认值）
-        timeout: number;                    // 超时时间（毫秒）
-        temperature?: number;                // 温度参数（0-2）
-        max_tokens?: number;                // 最大token数
-        system_prompt?: string;             // 系统提示词
-        retry_count?: number;               // 重试次数
-        retry_delay?: number;               // 重试延迟（毫秒）
-        skip_on_blocking_errors?: boolean;  // 遇到阻止提交错误时跳过AI审查
-        diff_only?: boolean;                // staged 审查时仅发送变更片段给 AI（默认 true）
-        action: 'block_commit' | 'warning' | 'log';  // 违反规则时的行为
-    };
-    ast?: {
-        enabled?: boolean;          // 是否启用 AST 片段模式（默认 false）
-        max_node_lines?: number;   // 单个 AST 节点的最大行数
-        max_file_lines?: number;   // 文件总行数超过阈值则回退
-        preview_only?: boolean;     // 为 true 时不调用大模型，仅打印将发送的 AST/变更切片内容
-    };
-    git_hooks?: {
-        auto_install: boolean;
-        pre_commit_enabled: boolean;
-        allow_commit_once?: boolean; // 是否允许“一次性放行”提交
-    };
-    exclusions?: {
-        files?: string[];
-        directories?: string[];
-    };
-}
-
-/**
- * 规则配置接口
- * 每个规则组（如 code_quality、naming_convention）都遵循这个结构
- */
-export interface RuleConfig {
-    enabled: boolean;  // 是否启用这个规则组
-    action: 'block_commit' | 'warning' | 'log';  // 违反规则时的行为：阻止提交/警告/仅记录
-    [key: string]: any;  // 允许添加其他规则特定的配置项
-}
+// 为保持向后兼容，从 configManager 继续 export 类型（实际定义在 types/config）
+export type { AgentReviewConfig, RuleConfig } from '../types/config';
 
 /**
  * 配置管理器类
@@ -117,9 +66,7 @@ export class ConfigManager implements vscode.Disposable {
     private envPath: string;                   // .env文件的完整路径
     private extensionPath: string | undefined;  // 扩展安装目录（用于单工作区时回退加载 .env）
     private envVars: Map<string, string> = new Map();  // 从.env文件加载的环境变量
-    private configWatcher: vscode.FileSystemWatcher | undefined;  // 配置文件监听器
-    private envWatcher: vscode.FileSystemWatcher | undefined;    // .env文件监听器
-    private reloadTimer: NodeJS.Timeout | undefined;  // 防抖定时器
+    private watcherDisposable: ReturnType<typeof setupConfigWatcher> | undefined;  // 配置与 .env 监听（含防抖）
 
     /**
      * 构造函数
@@ -166,41 +113,18 @@ export class ConfigManager implements vscode.Disposable {
             this.logger.warn('未找到工作区，无法设置配置文件监听器');
             return;
         }
-
-        // 创建文件系统监听器，监听 .agentreview.yaml 文件
-        // RelativePattern 用于指定相对于工作区根目录的文件模式
-        this.configWatcher = vscode.workspace.createFileSystemWatcher(
-            new vscode.RelativePattern(workspaceFolder, '.agentreview.yaml')
-        );
-
-        // 创建.env文件监听器
-        this.envWatcher = vscode.workspace.createFileSystemWatcher(
-            new vscode.RelativePattern(workspaceFolder, '.env')
-        );
-
-        // 定义重新加载函数（防抖处理）
-        const scheduleReload = async (reason: string) => {
-            if (this.reloadTimer) {
-                clearTimeout(this.reloadTimer);
-            }
-            this.reloadTimer = setTimeout(async () => {
-                this.logger.info(`检测到${reason}变更，重新加载配置`);
-                // 先重新加载.env文件，然后重新加载配置
-                await this.loadEnvFile();
-                await this.reloadConfig();
-            }, 300);
+        const onReload = async () => {
+            this.logger.info('检测到配置或 .env 变更，重新加载配置');
+            await this.loadEnvFile();
+            await this.reloadConfig();
         };
-
-        // 监听配置文件变更事件
-        this.configWatcher.onDidChange(() => scheduleReload('配置文件'));
-        this.configWatcher.onDidCreate(() => scheduleReload('配置文件创建'));
-        this.configWatcher.onDidDelete(() => scheduleReload('配置文件删除'));
-
-        // 监听.env文件变更事件
-        this.envWatcher.onDidChange(() => scheduleReload('.env文件'));
-        this.envWatcher.onDidCreate(() => scheduleReload('.env文件创建'));
-        this.envWatcher.onDidDelete(() => scheduleReload('.env文件删除'));
-
+        this.watcherDisposable = setupConfigWatcher(
+            workspaceFolder,
+            this.configPath,
+            this.envPath,
+            onReload,
+            300
+        );
         this.logger.info('配置文件监听器已设置（包括.env文件监听）');
     }
 
@@ -326,8 +250,7 @@ export class ConfigManager implements vscode.Disposable {
             return undefined;
         }
 
-        // 解析环境变量
-        return this.resolveEnvInConfig(aiConfig) as Partial<AgentReviewConfig['ai_review']>;
+        return resolveEnvInConfig(aiConfig, this.envVars, this.logger) as Partial<AgentReviewConfig['ai_review']>;
     }
 
     /**
@@ -349,31 +272,18 @@ export class ConfigManager implements vscode.Disposable {
         const defaultConfig = this.getDefaultConfig();
         
         try {
-            let yamlConfig: Partial<AgentReviewConfig> = {};
-            
-            // 步骤1：检查配置文件是否存在，如果存在则读取
-            if (fs.existsSync(this.configPath)) {
-                const fileContent = await fs.promises.readFile(this.configPath, 'utf-8');
-                yamlConfig = yaml.load(fileContent) as Partial<AgentReviewConfig>;
+            let yamlConfig = await loadYamlFromPath(this.configPath);
+            if (Object.keys(yamlConfig).length > 0) {
                 this.logger.info('YAML配置文件加载成功');
             } else {
                 this.logger.info('YAML配置文件不存在，跳过');
             }
 
-            // 步骤2：若工作区未配置 ai_review，尝试从扩展目录读取（插件侧默认，对所有工作区生效）
             if (!yamlConfig.ai_review && this.extensionPath) {
-                const pluginConfigPath = path.join(this.extensionPath, '.agentreview.yaml');
-                if (fs.existsSync(pluginConfigPath)) {
-                    try {
-                        const pluginContent = await fs.promises.readFile(pluginConfigPath, 'utf-8');
-                        const pluginYaml = yaml.load(pluginContent) as Partial<AgentReviewConfig>;
-                        if (pluginYaml?.ai_review) {
-                            yamlConfig.ai_review = pluginYaml.ai_review;
-                            this.logger.info('已从扩展目录加载 AI 配置（插件侧默认）');
-                        }
-                    } catch (e) {
-                        this.logger.debug('读取扩展目录 .agentreview.yaml 失败，跳过', e);
-                    }
+                const pluginYaml = await loadPluginYaml(this.extensionPath);
+                if (pluginYaml?.ai_review) {
+                    yamlConfig = { ...yamlConfig, ai_review: pluginYaml.ai_review };
+                    this.logger.info('已从扩展目录加载 AI 配置（插件侧默认）');
                 }
             }
 
@@ -438,9 +348,11 @@ export class ConfigManager implements vscode.Disposable {
                 yamlConfig.ai_review = mergedAIConfig;
             }
 
-            // 步骤4：合并默认配置和用户配置
-            // 合并顺序：Settings（已在yamlConfig中）> YAML > 默认
-            this.config = this.mergeConfig(defaultConfig, yamlConfig);
+            // 步骤4：合并默认配置和用户配置（合并顺序：Settings > YAML > 默认）
+            const resolvedUserConfig = resolveEnvInConfig(yamlConfig, this.envVars, this.logger) as Partial<AgentReviewConfig>;
+            this.config = mergeConfigFn(defaultConfig, resolvedUserConfig, (s) =>
+                resolveEnvVariables(s, this.envVars, this.logger)
+            );
             this.logger.info('配置文件加载成功');
             
             return this.config;
@@ -529,39 +441,6 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
-     * 解析环境变量
-     * 
-     * 支持 ${VAR_NAME} 格式的环境变量替换
-     * 优先级：系统环境变量（process.env）> .env文件中的变量
-     * 例如：${API_KEY} 会先查找 process.env.API_KEY，如果不存在，再查找 .env 文件中的值
-     * 
-     * @param value - 可能包含环境变量的字符串
-     * @returns 解析后的字符串
-     */
-    private resolveEnvVariables(value: string): string {
-        // 匹配 ${VAR_NAME} 格式
-        const envVarPattern = /\$\{([^}]+)\}/g;
-        
-        return value.replace(envVarPattern, (match, varName) => {
-            // 优先从系统环境变量获取（process.env优先级更高）
-            let envValue = process.env[varName];
-            const hasProcessEnv = envValue !== undefined;
-            // 如果系统环境变量中不存在，从.env文件中获取
-            if (envValue === undefined) {
-                envValue = this.envVars.get(varName);
-            }
-            const hasEnvVars = this.envVars.has(varName);
-            if (envValue !== undefined) {
-                return envValue;
-            }
-            
-            // 如果环境变量不存在，保持原样（不替换）
-            this.logger.warn(`环境变量 ${varName} 未定义，保持原值: ${match}`);
-            return match;
-        });
-    }
-
-    /**
      * 对对象进行稳定序列化，避免因键顺序变化导致误判
      * 
      * @param value - 需要序列化的对象
@@ -590,118 +469,6 @@ export class ConfigManager implements vscode.Disposable {
         };
         return JSON.stringify(normalize(value));
     };
-
-    /**
-     * 递归解析配置对象中的所有字符串值中的环境变量
-     * 
-     * @param obj - 配置对象（可能是嵌套对象）
-     * @returns 解析后的配置对象
-     */
-    private resolveEnvInConfig(obj: any): any {
-        if (typeof obj === 'string') {
-            // 如果是字符串，解析环境变量
-            return this.resolveEnvVariables(obj);
-        } else if (Array.isArray(obj)) {
-            // 如果是数组，递归处理每个元素
-            return obj.map(item => this.resolveEnvInConfig(item));
-        } else if (obj !== null && typeof obj === 'object') {
-            // 如果是对象，递归处理每个属性
-            const resolved: any = {};
-            for (const key in obj) {
-                resolved[key] = this.resolveEnvInConfig(obj[key]);
-            }
-            return resolved;
-        }
-        // 其他类型（number, boolean等）直接返回
-        return obj;
-    }
-
-    /**
-     * 合并默认配置和用户配置
-     * 
-     * 合并策略：
-     * - 顶层属性：用户配置覆盖默认配置
-     * - 嵌套对象（如 rules.code_quality）：深度合并，用户配置优先
-     * - 数组（如 exclusions.files）：用户配置完全替换默认配置
-     * - 自动解析环境变量（${VAR_NAME}格式）
-     * 
-     * @param defaultConfig - 默认配置对象
-     * @param userConfig - 用户配置对象（可能不完整）
-     * @returns 合并后的完整配置对象
-     */
-    private mergeConfig(defaultConfig: AgentReviewConfig, userConfig: Partial<AgentReviewConfig>): AgentReviewConfig {
-        // 先解析用户配置中的环境变量
-        const resolvedUserConfig = this.resolveEnvInConfig(userConfig) as Partial<AgentReviewConfig>;
-        
-        const merged: AgentReviewConfig = {
-            ...defaultConfig,
-            ...resolvedUserConfig,
-            rules: {
-                ...defaultConfig.rules,
-                ...resolvedUserConfig.rules,
-                code_quality: resolvedUserConfig.rules?.code_quality 
-                    ? { ...defaultConfig.rules.code_quality, ...resolvedUserConfig.rules.code_quality }
-                    : defaultConfig.rules.code_quality,
-                naming_convention: resolvedUserConfig.rules?.naming_convention
-                    ? { ...defaultConfig.rules.naming_convention, ...resolvedUserConfig.rules.naming_convention }
-                    : defaultConfig.rules.naming_convention,
-                security: resolvedUserConfig.rules?.security
-                    ? { ...defaultConfig.rules.security, ...resolvedUserConfig.rules.security }
-                    : defaultConfig.rules.security,
-                business_logic: resolvedUserConfig.rules?.business_logic
-                    ? { ...defaultConfig.rules.business_logic, ...resolvedUserConfig.rules.business_logic }
-                    : defaultConfig.rules.business_logic,
-            },
-            git_hooks: (() => {
-                const defaultHooks: { auto_install: boolean; pre_commit_enabled: boolean; allow_commit_once?: boolean } = 
-                    defaultConfig.git_hooks || { auto_install: true, pre_commit_enabled: true, allow_commit_once: true };
-                if (resolvedUserConfig.git_hooks) {
-                    return {
-                        auto_install: resolvedUserConfig.git_hooks.auto_install ?? defaultHooks.auto_install,
-                        pre_commit_enabled: resolvedUserConfig.git_hooks.pre_commit_enabled ?? defaultHooks.pre_commit_enabled,
-                        allow_commit_once: resolvedUserConfig.git_hooks.allow_commit_once ?? defaultHooks.allow_commit_once,
-                    } as { auto_install: boolean; pre_commit_enabled: boolean; allow_commit_once?: boolean };
-                }
-                return defaultHooks;
-            })(),
-            exclusions: {
-                files: resolvedUserConfig.exclusions?.files || defaultConfig.exclusions?.files || [],
-                directories: resolvedUserConfig.exclusions?.directories || defaultConfig.exclusions?.directories || [],
-            },
-            // ast 与 git_hooks 一样做逐项合并，保证 yaml 里只写 enabled/preview_only 时也能生效且不丢默认值
-            ast: (() => {
-                const defaultAst = defaultConfig.ast ?? {
-                    enabled: false,
-                    max_node_lines: 200,
-                    max_file_lines: 2000,
-                    preview_only: false,
-                };
-                if (!resolvedUserConfig.ast) return defaultAst;
-                return {
-                    enabled: resolvedUserConfig.ast.enabled ?? defaultAst.enabled,
-                    max_node_lines: resolvedUserConfig.ast.max_node_lines ?? defaultAst.max_node_lines,
-                    max_file_lines: resolvedUserConfig.ast.max_file_lines ?? defaultAst.max_file_lines,
-                    preview_only: resolvedUserConfig.ast.preview_only ?? defaultAst.preview_only,
-                };
-            })(),
-        };
-
-        // 若仅通过 .env 配置 AI：端点和密钥、模型为空时，尝试从环境变量回退
-        if (merged.ai_review) {
-            if (!merged.ai_review.api_endpoint) {
-                merged.ai_review.api_endpoint = this.resolveEnvVariables('${AGENTREVIEW_AI_API_ENDPOINT}');
-            }
-            if (!merged.ai_review.api_key) {
-                merged.ai_review.api_key = this.resolveEnvVariables('${AGENTREVIEW_AI_API_KEY}');
-            }
-            const envModel = this.resolveEnvVariables('${AGENTREVIEW_AI_MODEL}');
-            if (envModel && !envModel.includes('${') && (!merged.ai_review.model)) {
-                merged.ai_review.model = envModel;
-            }
-        }
-
-        return merged;
-    }
 
     /**
      * 获取当前配置
@@ -772,26 +539,9 @@ export class ConfigManager implements vscode.Disposable {
      * 当插件停用时调用，释放文件监听器等资源
      */
     dispose(): void {
-        // 清除防抖定时器
-        if (this.reloadTimer) {
-            clearTimeout(this.reloadTimer);
-            this.reloadTimer = undefined;
-        }
-
-        // 释放文件监听器
-        if (this.configWatcher) {
-            this.configWatcher.dispose();
-            this.configWatcher = undefined;
-        }
-        
-        if (this.envWatcher) {
-            this.envWatcher.dispose();
-            this.envWatcher = undefined;
-        }
-
-        // 清空环境变量缓存
+        this.watcherDisposable?.dispose();
+        this.watcherDisposable = undefined;
         this.envVars.clear();
-
         this.logger.info('配置管理器资源已清理');
     }
 }

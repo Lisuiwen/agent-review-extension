@@ -25,7 +25,7 @@ vi.mock('../../core/ruleEngine', () => ({
     },
 }));
 
-vi.mock('../../core/aiReviewer', () => ({
+vi.mock('../../ai/aiReviewer', () => ({
     AIReviewer: class {
         initialize = vi.fn();
         review = aiReviewerReviewMock;

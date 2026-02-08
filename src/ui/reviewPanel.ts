@@ -21,7 +21,7 @@
  */
 
 import * as vscode from 'vscode';
-import { ReviewResult, ReviewIssue } from '../core/reviewEngine';
+import type { ReviewResult, ReviewIssue } from '../types/review';
 import * as path from 'path';
 
 /**
