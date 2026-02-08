@@ -366,7 +366,11 @@ export class AIReviewer {
         }
 
         try {
-            const previewOnly = this.configManager.getConfig().ast?.preview_only === true;
+            const astConfig = this.configManager.getConfig().ast;
+            const previewOnly = astConfig?.preview_only === true;
+            if (previewOnly) {
+                this.logger.info('[ast.preview_only=true] 仅预览切片，不请求大模型');
+            }
             const validFiles = await this.loadFilesWithContent(filesToLoad, previewOnly);
             if (validFiles.length === 0) {
                 this.logger.warn('没有可审查的文件');

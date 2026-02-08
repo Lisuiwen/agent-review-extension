@@ -666,6 +666,22 @@ export class ConfigManager implements vscode.Disposable {
                 files: resolvedUserConfig.exclusions?.files || defaultConfig.exclusions?.files || [],
                 directories: resolvedUserConfig.exclusions?.directories || defaultConfig.exclusions?.directories || [],
             },
+            // ast 与 git_hooks 一样做逐项合并，保证 yaml 里只写 enabled/preview_only 时也能生效且不丢默认值
+            ast: (() => {
+                const defaultAst = defaultConfig.ast ?? {
+                    enabled: false,
+                    max_node_lines: 200,
+                    max_file_lines: 2000,
+                    preview_only: false,
+                };
+                if (!resolvedUserConfig.ast) return defaultAst;
+                return {
+                    enabled: resolvedUserConfig.ast.enabled ?? defaultAst.enabled,
+                    max_node_lines: resolvedUserConfig.ast.max_node_lines ?? defaultAst.max_node_lines,
+                    max_file_lines: resolvedUserConfig.ast.max_file_lines ?? defaultAst.max_file_lines,
+                    preview_only: resolvedUserConfig.ast.preview_only ?? defaultAst.preview_only,
+                };
+            })(),
         };
 
         // 若仅通过 .env 配置 AI：端点和密钥、模型为空时，尝试从环境变量回退
@@ -730,7 +746,7 @@ export class ConfigManager implements vscode.Disposable {
                 enabled: true,
                 max_node_lines: 200,
                 max_file_lines: 2000,
-                preview_only: true,
+                preview_only: false,  // 默认 false：正常请求大模型；true 时仅打印切片不请求
             },
             git_hooks: {
                 auto_install: true,
