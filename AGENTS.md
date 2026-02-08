@@ -262,7 +262,9 @@ src/
 │   ├── reviewPanel.ts     # 审查结果面板
 │   └── statusBar.ts       # 状态栏
 └── utils/                 # 工具类
-    ├── fileScanner.ts     # 文件扫描器
+    ├── fileScanner.ts     # 文件扫描器（含 getStagedDiff）
+    ├── diffTypes.ts       # Diff 类型（DiffHunk、FileDiff）
+    ├── diffParser.ts      # Unified diff 解析
     └── logger.ts          # 日志记录器
 ```
 
@@ -287,6 +289,7 @@ src/
 - 支持热重载配置文件
 - 提供合理的默认值
 - 配置验证和错误提示
+- **Diff 模式**：staged 审查时可通过 `rules.diff_only`、`ai_review.diff_only` 控制是否仅对变更行/变更片段做规则与 AI 审查（默认均为 `true`，可设为 `false` 回退为整文件审查）。
 
 ## 特殊规则（来自 .cursorrules）
 

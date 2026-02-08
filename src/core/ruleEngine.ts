@@ -30,6 +30,7 @@
 import { ConfigManager } from '../config/configManager';
 import { Logger } from '../utils/logger';
 import { ReviewIssue } from './reviewEngine';
+import type { FileDiff } from '../utils/diffTypes';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -73,73 +74,70 @@ export class RuleEngine {
 
     /**
      * 检查单个文件
-     * 
-     * 这个方法会对文件应用所有启用的规则，并返回发现的问题
-     * 
+     *
+     * 当提供 fileDiff 时，no_todo 仅对变更行执行；文件名规则始终执行。
+     *
      * @param filePath - 文件的完整路径
      * @param content - 文件的内容（字符串）
+     * @param fileDiff - 可选，该文件的 diff；有则仅对变更行跑 no_todo
      * @returns 发现的问题列表
      */
-    async checkFile(filePath: string, content: string): Promise<ReviewIssue[]> {
+    async checkFile(filePath: string, content: string, fileDiff?: FileDiff | null): Promise<ReviewIssue[]> {
         this.logger.debug(`检查文件: ${filePath}`);
         const issues: ReviewIssue[] = [];
         const config = this.configManager.getConfig();
 
-        // 如果全局规则未启用，直接返回空列表
         if (!config.rules.enabled) {
             return issues;
         }
 
-        // 规则1：检查文件名是否包含空格
-        // 这个规则属于 naming_convention（命名规范）规则组
-        // 规则是否启用从配置读取：config.rules.naming_convention?.no_space_in_filename
+        // 规则1：文件名（与行无关，始终检查）
         if (config.rules.naming_convention?.enabled && config.rules.naming_convention.no_space_in_filename) {
-            // path.basename 获取文件名（不含路径）
             const fileName = path.basename(filePath);
-            // 检查文件名中是否包含空格
-            // 注意：这里可以扩展为从配置读取禁止的字符列表
             if (fileName.includes(' ')) {
-                // 根据规则的 action 设置严重程度
                 const severity = this.getSeverity(config.rules.naming_convention.action);
                 issues.push({
                     file: filePath,
-                    line: 1,      // 文件名问题，行号设为1
-                    column: 1,    // 列号设为1
+                    line: 1,
+                    column: 1,
                     message: `文件名包含空格: ${fileName}`,
-                    rule: 'no_space_in_filename',  // 规则标识符
+                    rule: 'no_space_in_filename',
                     severity,
                 });
             }
         }
 
-        // 规则2：检查代码中是否包含 TODO/FIXME/XXX 注释
-        // 这个规则属于 code_quality（代码质量）规则组
-        // 规则是否启用从配置读取：config.rules.code_quality?.no_todo
-        // 规则的正则表达式可以从配置读取，如果没有配置则使用默认值
+        // 规则2：no_todo；有 fileDiff 时仅扫描变更行
         if (config.rules.code_quality?.enabled && config.rules.code_quality.no_todo) {
-            // 从配置读取正则表达式模式，如果没有配置则使用默认值
-            // 默认匹配 TODO、FIXME、XXX（不区分大小写）
             const todoPattern = (config.rules.code_quality.no_todo_pattern as string) || '(TODO|FIXME|XXX)';
             const todoRegex = new RegExp(todoPattern, 'i');
-            // 将文件内容按行分割
             const lines = content.split('\n');
-            
-            // 遍历每一行
+
+            const changedLineNumbers = new Set<number>();
+            if (fileDiff?.hunks?.length) {
+                for (const h of fileDiff.hunks) {
+                    for (let k = 0; k < h.newCount; k++) {
+                        changedLineNumbers.add(h.newStart + k);
+                    }
+                }
+            }
+
             for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                // 检查这一行是否包含匹配的模式
-                const match = line.match(todoRegex);
+                const lineNum = i + 1;
+                if (fileDiff && changedLineNumbers.size > 0 && !changedLineNumbers.has(lineNum)) {
+                    continue;
+                }
+                const lineContent = lines[i];
+                const match = lineContent.match(todoRegex);
                 if (match) {
-                    // 找到匹配，创建一个问题
                     const severity = this.getSeverity(config.rules.code_quality.action);
-                    // 计算匹配文本在行中的位置（列号，从1开始）
-                    const column = line.indexOf(match[0]) + 1;
+                    const column = lineContent.indexOf(match[0]) + 1;
                     issues.push({
                         file: filePath,
-                        line: i + 1,  // 行号（从1开始）
-                        column,        // 列号
-                        message: `发现 ${match[0]} 注释: ${line.trim()}`,
-                        rule: 'no_todo',  // 规则标识符
+                        line: lineNum,
+                        column,
+                        message: `发现 ${match[0]} 注释: ${lineContent.trim()}`,
+                        rule: 'no_todo',
                         severity,
                     });
                 }
@@ -151,25 +149,23 @@ export class RuleEngine {
 
     /**
      * 批量检查多个文件
-     * 
-     * 这个方法会遍历文件列表，对每个文件调用 checkFile
-     * 
+     *
+     * 当传入 diffByFile 时，仅对变更行执行 no_todo（由 checkFile 内部根据 fileDiff 处理）。
+     *
      * @param files - 要检查的文件路径数组
+     * @param diffByFile - 可选，每文件的 diff；有则仅扫描变更行
      * @returns 所有文件的问题列表（合并后的）
      */
-    async checkFiles(files: string[]): Promise<ReviewIssue[]> {
+    async checkFiles(files: string[], diffByFile?: Map<string, FileDiff> | null): Promise<ReviewIssue[]> {
         const issues: ReviewIssue[] = [];
-        
-        // 遍历每个文件
+
         for (const file of files) {
             try {
-                // 步骤1：检查文件是否存在
                 if (!fs.existsSync(file)) {
                     this.logger.warn(`文件不存在: ${file}`);
-                    continue;  // 跳过不存在的文件
+                    continue;
                 }
 
-                // 步骤2：检查文件大小，避免读取超大文件导致内存问题
                 const stat = await fs.promises.stat(file);
                 if (stat.size > RuleEngine.MAX_FILE_SIZE_BYTES) {
                     this.logger.warn(`文件过大，已跳过: ${file} (${stat.size} bytes)`);
@@ -184,7 +180,6 @@ export class RuleEngine {
                     continue;
                 }
 
-                // 步骤3：检查是否为二进制文件，避免乱码或解析异常
                 const isBinary = await this.isBinaryFile(file);
                 if (isBinary) {
                     this.logger.warn(`检测到二进制文件，已跳过: ${file}`);
@@ -199,16 +194,11 @@ export class RuleEngine {
                     continue;
                 }
 
-                // 步骤4：读取文件内容
-                // fs.promises.readFile 是 Node.js 的异步文件读取 API
-                // 'utf-8' 指定以 UTF-8 编码读取文件
                 const content = await fs.promises.readFile(file, 'utf-8');
-                
-                // 步骤5：检查文件并收集问题
-                const fileIssues = await this.checkFile(file, content);
-                issues.push(...fileIssues);  // 将问题添加到总列表
+                const fileDiff = diffByFile?.get(file) ?? null;
+                const fileIssues = await this.checkFile(file, content, fileDiff);
+                issues.push(...fileIssues);
             } catch (error) {
-                // 如果读取文件失败（权限问题、编码问题等），记录错误但继续处理其他文件
                 this.logger.error(`检查文件失败: ${file}`, error);
             }
         }

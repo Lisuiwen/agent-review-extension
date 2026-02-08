@@ -24,6 +24,8 @@ import { minimatch } from 'minimatch';
 import { exec } from 'child_process';  // Node.js 的进程执行模块
 import { promisify } from 'util';      // 将回调函数转换为 Promise
 import { Logger } from './logger';
+import { parseUnifiedDiff } from './diffParser';
+import type { FileDiff } from './diffTypes';
 
 // 将 exec 转换为 Promise 形式，方便使用 async/await
 const execAsync = promisify(exec);
@@ -119,6 +121,61 @@ export class FileScanner {
             }
             this.logger.error('获取staged文件失败', error);
             return [];
+        }
+    }
+
+    /**
+     * 获取 Git staged 的 diff，解析为每文件的变更 hunks
+     * 用于增量审查：仅对变更行做规则与 AI 审查
+     *
+     * @param files - 可选，只取这些文件的 diff；不传则取全部 staged
+     * @returns Map：键为文件绝对路径，值为该文件的 FileDiff
+     */
+    async getStagedDiff(files?: string[]): Promise<Map<string, FileDiff>> {
+        if (!this.workspaceRoot) {
+            this.logger.warn('未找到工作区，无法获取 staged diff');
+            return new Map();
+        }
+        try {
+            let cmd = 'git diff --cached -U3 --no-color';
+            if (files && files.length > 0) {
+                const relPaths = files.map(f =>
+                    path.isAbsolute(f) ? path.relative(this.workspaceRoot!, f) : f
+                ).filter(Boolean);
+                if (relPaths.length > 0) {
+                    const quoted = relPaths.map(p => (p.includes(' ') ? `"${p}"` : p));
+                    cmd += ' -- ' + quoted.join(' ');
+                }
+            }
+            const { stdout, stderr } = await execAsync(cmd, {
+                cwd: this.workspaceRoot,
+                encoding: 'utf-8',
+                maxBuffer: 10 * 1024 * 1024,
+            });
+            if (stderr && !stdout) {
+                this.logger.debug(`git diff 输出: ${stderr}`);
+                return new Map();
+            }
+            const parsed = parseUnifiedDiff(stdout || '');
+            const map = new Map<string, FileDiff>();
+            for (const fd of parsed) {
+                const absPath = path.isAbsolute(fd.path)
+                    ? fd.path
+                    : path.join(this.workspaceRoot, fd.path);
+                map.set(absPath, { ...fd, path: absPath });
+            }
+            if (map.size > 0) {
+                this.logger.info(`解析到 ${map.size} 个文件的 diff`);
+            }
+            return map;
+        } catch (error: unknown) {
+            const code = (error as { code?: number })?.code;
+            if (code === 1 || (error as Error)?.message?.includes('not a git repository')) {
+                this.logger.debug('无 staged diff 或非 git 仓库');
+                return new Map();
+            }
+            this.logger.error('获取 staged diff 失败', error);
+            return new Map();
         }
     }
 

@@ -30,6 +30,7 @@ import { ConfigManager } from '../config/configManager';
 import { Logger } from '../utils/logger';
 import { FileScanner } from '../utils/fileScanner';
 import { IssueDeduplicator } from './issueDeduplicator';
+import type { FileDiff } from '../utils/diffTypes';
 
 /**
  * 审查结果接口
@@ -104,17 +105,14 @@ export class ReviewEngine {
 
     /**
      * 审查指定的文件列表
-     * 
-     * 这是核心审查方法，执行以下步骤：
-     * 1. 过滤排除的文件
-     * 2. 调用规则引擎检查每个文件
-     * 3. 按严重程度分类问题
-     * 4. 根据配置判断是否通过
-     * 
+     *
+     * 当 options.diffByFile 存在且配置启用时，规则引擎仅扫描变更行、AI 仅审查变更片段。
+     *
      * @param files - 要审查的文件路径数组
+     * @param options - 可选；diffByFile 为 staged 文件的 diff 映射，由 reviewStagedFiles 注入
      * @returns 审查结果对象
      */
-    async review(files: string[]): Promise<ReviewResult> {
+    async review(files: string[], options?: { diffByFile?: Map<string, FileDiff> }): Promise<ReviewResult> {
         // 强制显示日志通道，确保日志可见
         this.logger.show();
         this.logger.info(`开始审查 ${files.length} 个文件`);
@@ -158,6 +156,9 @@ export class ReviewEngine {
             ['no_todo', config.rules.code_quality?.action],
         ]);
 
+        const useRuleDiff = config.rules.diff_only !== false && options?.diffByFile;
+        const useAiDiff = config.ai_review?.diff_only !== false && options?.diffByFile;
+
         const aiErrorIssues: ReviewIssue[] = [];
         const runAiReview = async (): Promise<ReviewIssue[]> => {
             if (!config.ai_review?.enabled) {
@@ -167,7 +168,8 @@ export class ReviewEngine {
 
             try {
                 const aiRequest = {
-                    files: filteredFiles.map(file => ({ path: file }))
+                    files: filteredFiles.map(file => ({ path: file })),
+                    diffByFile: useAiDiff ? options!.diffByFile : undefined,
                 };
                 this.logger.info(`开始调用AI审查，文件数量: ${aiRequest.files.length}`);
                 const aiIssues = await this.aiReviewer.review(aiRequest);
@@ -212,9 +214,8 @@ export class ReviewEngine {
         const skipOnBlocking = config.ai_review?.skip_on_blocking_errors !== false;
         if (config.ai_review?.enabled) {
             if (skipOnBlocking) {
-                // 只有在启用内置规则引擎时才执行规则检查
                 if (builtinRulesEnabled) {
-                    ruleIssues = await this.ruleEngine.checkFiles(filteredFiles);
+                    ruleIssues = await this.ruleEngine.checkFiles(filteredFiles, useRuleDiff ? options?.diffByFile : undefined);
                     const hasBlockingErrors = this.hasBlockingErrors(ruleIssues, ruleActionMap);
                     if (hasBlockingErrors) {
                         this.logger.warn('检测到阻止提交错误，已跳过AI审查');
@@ -228,18 +229,16 @@ export class ReviewEngine {
                 }
             } else {
                 const aiPromise = runAiReview();
-                // 只有在启用内置规则引擎时才执行规则检查
                 if (builtinRulesEnabled) {
-                    ruleIssues = await this.ruleEngine.checkFiles(filteredFiles);
+                    ruleIssues = await this.ruleEngine.checkFiles(filteredFiles, useRuleDiff ? options?.diffByFile : undefined);
                 } else {
                     this.logger.info('内置规则引擎已禁用，跳过规则检查');
                 }
                 aiIssues = await aiPromise;
             }
         } else {
-            // 只有在启用内置规则引擎时才执行规则检查
             if (builtinRulesEnabled) {
-                ruleIssues = await this.ruleEngine.checkFiles(filteredFiles);
+                ruleIssues = await this.ruleEngine.checkFiles(filteredFiles, useRuleDiff ? options?.diffByFile : undefined);
             } else {
                 this.logger.info('内置规则引擎已禁用，跳过规则检查');
             }
@@ -332,9 +331,18 @@ export class ReviewEngine {
         }
 
         this.logger.info(`找到 ${stagedFiles.length} 个staged文件，开始审查: ${stagedFiles.slice(0, 3).join(', ')}${stagedFiles.length > 3 ? '...' : ''}`);
-        
-        // 调用 review 方法审查这些文件
+
+        const config = this.configManager.getConfig();
+        const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
+        let diffByFile: Map<string, FileDiff> | undefined;
+        if (useDiff) {
+            diffByFile = await this.fileScanner.getStagedDiff(stagedFiles);
+            if (diffByFile.size > 0) {
+                this.logger.info(`已获取 ${diffByFile.size} 个文件的 diff，启用增量审查`);
+            }
+        }
+
         this.logger.info('调用 review() 方法开始审查');
-        return this.review(stagedFiles);
+        return this.review(stagedFiles, { diffByFile });
     }
 }

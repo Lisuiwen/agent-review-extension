@@ -26,12 +26,14 @@ describe('AIReviewer 批处理', () => {
                 api_format: 'openai',
                 api_endpoint: 'https://api.example.com',
                 api_key: 'test-api-key',
+                model: 'test-model',
                 timeout: 1000,
                 action: 'warning',
             },
         });
 
         const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
 
         const files = Array.from({ length: 11 }, (_, index) => ({
             path: `src/file${index + 1}.ts`,

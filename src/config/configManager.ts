@@ -51,6 +51,7 @@ export interface AgentReviewConfig {
         enabled: boolean;
         strict_mode: boolean;
         builtin_rules_enabled?: boolean;  // 是否启用内置规则引擎（默认false，避免与项目自有规则冲突）
+        diff_only?: boolean;              // staged 审查时仅扫描变更行（默认 true）
         code_quality?: RuleConfig;
         security?: RuleConfig;
         naming_convention?: RuleConfig;
@@ -69,6 +70,7 @@ export interface AgentReviewConfig {
         retry_count?: number;               // 重试次数
         retry_delay?: number;               // 重试延迟（毫秒）
         skip_on_blocking_errors?: boolean;  // 遇到阻止提交错误时跳过AI审查
+        diff_only?: boolean;                // staged 审查时仅发送变更片段给 AI（默认 true）
         action: 'block_commit' | 'warning' | 'log';  // 违反规则时的行为
     };
     git_hooks?: {
@@ -308,6 +310,9 @@ export class ConfigManager implements vscode.Disposable {
         if (settings.get('ai.action')) {
             aiConfig.action = settings.get('ai.action');
         }
+        if (settings.get('ai.diffOnly') !== undefined) {
+            aiConfig.diff_only = settings.get('ai.diffOnly');
+        }
 
         // 如果没有任何配置，返回undefined
         if (Object.keys(aiConfig).length === 0) {
@@ -420,7 +425,8 @@ export class ConfigManager implements vscode.Disposable {
                     ...(settingsAIConfig.retry_count !== undefined && { retry_count: settingsAIConfig.retry_count }),
                     ...(existingAIConfig?.retry_count !== undefined && settingsAIConfig.retry_count === undefined && { retry_count: existingAIConfig.retry_count }),
                     ...(settingsAIConfig.retry_delay !== undefined && { retry_delay: settingsAIConfig.retry_delay }),
-                    ...(existingAIConfig?.retry_delay !== undefined && settingsAIConfig.retry_delay === undefined && { retry_delay: existingAIConfig.retry_delay })
+                    ...(existingAIConfig?.retry_delay !== undefined && settingsAIConfig.retry_delay === undefined && { retry_delay: existingAIConfig.retry_delay }),
+                    diff_only: settingsAIConfig.diff_only ?? existingAIConfig?.diff_only ?? true,
                 };
                 yamlConfig.ai_review = mergedAIConfig;
             }
@@ -702,6 +708,7 @@ export class ConfigManager implements vscode.Disposable {
                 enabled: true,
                 strict_mode: false,
                 builtin_rules_enabled: false,  // 默认禁用内置规则引擎，避免与项目自有规则冲突
+                diff_only: true,               // 默认仅扫描变更行
                 naming_convention: {
                     enabled: true,
                     action: 'block_commit',

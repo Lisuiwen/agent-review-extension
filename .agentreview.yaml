@@ -3,7 +3,7 @@ version: "1.0"
 rules:
   enabled: true
   strict_mode: false
-  
+  diff_only: true
   code_quality:
     enabled: true
     max_complexity: 10
@@ -41,6 +41,7 @@ ai_review:
   timeout: 30000                   # 请求超时时间（毫秒）
   temperature: 0.7                # 温度参数（0-2），控制输出的随机性
   max_tokens: 2000                # 最大token数
+  diff_only: true                # 仅发送变更片段给 AI（默认 true）
   # 系统提示词 - 前端代码审查专用版本
   # 完整的前端审查提示词请参考：.cursor/prompts/frontend-review-prompt.md
   system_prompt: |
