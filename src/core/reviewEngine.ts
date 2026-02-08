@@ -54,8 +54,10 @@ export interface ReviewIssue {
     line: number;              // 问题所在行号（从1开始）
     column: number;            // 问题所在列号（从1开始）
     message: string;           // 问题描述消息
+    reason?: string;           // 问题原因说明（可选，优先用于详情浮层）
     rule: string;              // 触发的规则名称（如 'no_space_in_filename'）
     severity: 'error' | 'warning' | 'info';  // 严重程度
+    astRange?: { startLine: number; endLine: number }; // AST 片段范围（1-based，可选）
 }
 
 /**
@@ -160,7 +162,8 @@ export class ReviewEngine {
 
         const useRuleDiff = config.rules.diff_only !== false && options?.diffByFile;
         const useAiDiff = config.ai_review?.diff_only !== false && options?.diffByFile;
-        const useAstScope = config.ast?.enabled === true && useAiDiff;
+        const useAstScope = config.ast?.enabled === true && options?.diffByFile;
+        let astSnippetsByFile: Map<string, AffectedScopeResult> | undefined;
 
         const buildAstSnippetsByFile = async (): Promise<Map<string, AffectedScopeResult> | undefined> => {
             if (!useAstScope || !options?.diffByFile) {
@@ -188,6 +191,12 @@ export class ReviewEngine {
             }
             return snippetsByFile.size > 0 ? snippetsByFile : undefined;
         };
+        const ensureAstSnippetsByFile = async (): Promise<Map<string, AffectedScopeResult> | undefined> => {
+            if (!astSnippetsByFile) {
+                astSnippetsByFile = await buildAstSnippetsByFile();
+            }
+            return astSnippetsByFile;
+        };
 
         const aiErrorIssues: ReviewIssue[] = [];
         const runAiReview = async (): Promise<ReviewIssue[]> => {
@@ -197,7 +206,7 @@ export class ReviewEngine {
             }
 
             try {
-                const astSnippetsByFile = await buildAstSnippetsByFile();
+                const astSnippetsByFile = await ensureAstSnippetsByFile();
                 const aiRequest = {
                     files: filteredFiles.map(file => ({ path: file })),
                     diffByFile: useAiDiff ? options!.diffByFile : undefined,
@@ -278,6 +287,7 @@ export class ReviewEngine {
 
         // 步骤3：合并规则引擎和AI审查的结果，并去重后按严重程度分类
         const allIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
+        this.attachAstRanges(allIssues, astSnippetsByFile);
         for (const issue of allIssues) {
             switch (issue.severity) {
                 case 'error':
@@ -328,6 +338,45 @@ export class ReviewEngine {
             const action = ruleActionMap.get(issue.rule);
             return action === 'block_commit';
         });
+    };
+
+    /**
+     * 根据 AST 片段结果补充问题的范围信息
+     * 
+     * @param issues - 需要补充范围的问题列表
+     * @param astSnippetsByFile - AST 片段结果（按文件）
+     */
+    private attachAstRanges = (
+        issues: ReviewIssue[],
+        astSnippetsByFile?: Map<string, AffectedScopeResult>
+    ): void => {
+        if (!astSnippetsByFile || issues.length === 0) {
+            return;
+        }
+        for (const issue of issues) {
+            if (issue.astRange) {
+                continue;
+            }
+            const astResult = astSnippetsByFile.get(issue.file);
+            if (!astResult?.snippets?.length) {
+                continue;
+            }
+            const candidates = astResult.snippets.filter(snippet =>
+                issue.line >= snippet.startLine && issue.line <= snippet.endLine
+            );
+            if (candidates.length === 0) {
+                continue;
+            }
+            const bestSnippet = candidates.reduce((best, current) => {
+                const bestSpan = best.endLine - best.startLine;
+                const currentSpan = current.endLine - current.startLine;
+                return currentSpan <= bestSpan ? current : best;
+            });
+            issue.astRange = {
+                startLine: bestSnippet.startLine,
+                endLine: bestSnippet.endLine,
+            };
+        }
     };
 
     /**

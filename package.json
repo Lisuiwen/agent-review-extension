@@ -36,6 +36,15 @@
         "command": "agentreview.refresh",
         "title": "刷新",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "agentreview.allowCommitOnce",
+        "title": "AgentReview: 本次放行提交",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "agentreview.fixIssue",
+        "title": "AgentReview: 修复当前问题"
       }
     ],
     "views": {
@@ -51,6 +60,11 @@
       "view/title": [
         {
           "command": "agentreview.refresh",
+          "when": "view == agentReview.results",
+          "group": "navigation"
+        },
+        {
+          "command": "agentreview.allowCommitOnce",
           "when": "view == agentReview.results",
           "group": "navigation"
         }

@@ -82,6 +82,7 @@ export interface AgentReviewConfig {
     git_hooks?: {
         auto_install: boolean;
         pre_commit_enabled: boolean;
+        allow_commit_once?: boolean; // 是否允许“一次性放行”提交
     };
     exclusions?: {
         files?: string[];
@@ -652,13 +653,14 @@ export class ConfigManager implements vscode.Disposable {
                     : defaultConfig.rules.business_logic,
             },
             git_hooks: (() => {
-                const defaultHooks: { auto_install: boolean; pre_commit_enabled: boolean } = 
-                    defaultConfig.git_hooks || { auto_install: true, pre_commit_enabled: true };
+                const defaultHooks: { auto_install: boolean; pre_commit_enabled: boolean; allow_commit_once?: boolean } = 
+                    defaultConfig.git_hooks || { auto_install: true, pre_commit_enabled: true, allow_commit_once: true };
                 if (resolvedUserConfig.git_hooks) {
                     return {
                         auto_install: resolvedUserConfig.git_hooks.auto_install ?? defaultHooks.auto_install,
                         pre_commit_enabled: resolvedUserConfig.git_hooks.pre_commit_enabled ?? defaultHooks.pre_commit_enabled,
-                    } as { auto_install: boolean; pre_commit_enabled: boolean };
+                        allow_commit_once: resolvedUserConfig.git_hooks.allow_commit_once ?? defaultHooks.allow_commit_once,
+                    } as { auto_install: boolean; pre_commit_enabled: boolean; allow_commit_once?: boolean };
                 }
                 return defaultHooks;
             })(),
@@ -719,7 +721,7 @@ export class ConfigManager implements vscode.Disposable {
      * 默认规则：
      * - naming_convention: 启用，阻止提交，检查文件名空格
      * - code_quality: 启用，警告级别，检查 TODO 注释
-     * - git_hooks: 自动安装，启用 pre-commit
+     * - git_hooks: 自动安装，启用 pre-commit，允许一次性放行
      * 
      * @returns 默认配置对象
      */
@@ -751,6 +753,7 @@ export class ConfigManager implements vscode.Disposable {
             git_hooks: {
                 auto_install: true,
                 pre_commit_enabled: true,
+                allow_commit_once: true,
             },
             exclusions: {
                 files: [],

@@ -98,6 +98,7 @@ ai_review:
 git_hooks:
   auto_install: true
   pre_commit_enabled: true
+  allow_commit_once: true
 
 exclusions:
   files:

@@ -60,6 +60,9 @@ interface AgentReviewConfig {
         code_quality?: { enabled: boolean; action: string; no_todo?: boolean; no_todo_pattern?: string };
         naming_convention?: { enabled: boolean; action: string; no_space_in_filename?: boolean };
     };
+    git_hooks?: {
+        allow_commit_once?: boolean;
+    };
     exclusions?: {
         files?: string[];
         directories?: string[];
@@ -91,6 +94,9 @@ class StandaloneConfigManager {
                     action: 'warning',
                     no_todo: true,
                 },
+            },
+            git_hooks: {
+                allow_commit_once: true,
             },
         };
 
@@ -131,6 +137,9 @@ class StandaloneConfigManager {
                     action: 'warning',
                     no_todo: true,
                 },
+            },
+            git_hooks: {
+                allow_commit_once: true,
             },
         };
     }
@@ -263,6 +272,19 @@ async function main() {
         // 初始化配置管理器
         const configManager = new StandaloneConfigManager(workspaceRoot);
         const config = await configManager.loadConfig();
+        const allowCommitOnceEnabled = config.git_hooks?.allow_commit_once !== false;
+        const allowCommitTokenPath = path.join(workspaceRoot, '.git', 'agentreview', 'allow-commit');
+
+        // 若存在一次性放行标记，则跳过审查并清理标记
+        if (allowCommitOnceEnabled && fs.existsSync(allowCommitTokenPath)) {
+            try {
+                await fs.promises.unlink(allowCommitTokenPath);
+            } catch (error) {
+                console.error('[WARN] 放行标记清理失败，仍将继续放行提交:', error);
+            }
+            console.error('✓ 检测到一次性放行标记，本次提交已放行');
+            process.exit(0);
+        }
 
         // 初始化文件扫描器
         const fileScanner = new StandaloneFileScanner(workspaceRoot);

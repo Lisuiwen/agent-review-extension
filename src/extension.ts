@@ -14,6 +14,8 @@
  */
 
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { ReviewEngine, ReviewIssue } from './core/reviewEngine';
 import { ConfigManager } from './config/configManager';
 import { GitHookManager } from './hooks/gitHookManager';
@@ -103,6 +105,60 @@ export const activate = async (context: vscode.ExtensionContext) => {
                 return item as ReviewIssue;
             }
             return null;
+        };
+
+        /**
+         * 工具函数：查找 Git 根目录
+         * 
+         * 从工作区目录向上查找 .git 目录，用于生成一次性放行标记
+         */
+        const getGitRoot = (): string | null => {
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!workspaceRoot) {
+                return null;
+            }
+            let currentPath = workspaceRoot;
+            while (currentPath !== path.dirname(currentPath)) {
+                const gitPath = path.join(currentPath, '.git');
+                if (fs.existsSync(gitPath)) {
+                    return currentPath;
+                }
+                currentPath = path.dirname(currentPath);
+            }
+            return null;
+        };
+
+        /**
+         * 创建“一次性放行”标记文件
+         * 
+         * HookRunner 检测到该标记后会跳过一次审查并删除标记
+         */
+        const createAllowCommitToken = async (): Promise<void> => {
+            if (!configManager) {
+                vscode.window.showErrorMessage('配置管理器未初始化');
+                return;
+            }
+            const config = configManager.getConfig();
+            if (config.git_hooks?.allow_commit_once === false) {
+                vscode.window.showInformationMessage('当前配置已禁用“一次性放行”');
+                return;
+            }
+            const gitRoot = getGitRoot();
+            if (!gitRoot) {
+                vscode.window.showErrorMessage('未找到 Git 根目录，无法放行提交');
+                return;
+            }
+            const tokenDir = path.join(gitRoot, '.git', 'agentreview');
+            const tokenPath = path.join(tokenDir, 'allow-commit');
+            try {
+                await fs.promises.mkdir(tokenDir, { recursive: true });
+                const tokenContent = `allowed-at=${new Date().toISOString()}\n`;
+                await fs.promises.writeFile(tokenPath, tokenContent, 'utf-8');
+                vscode.window.showInformationMessage('已放行下一次提交（一次性）');
+            } catch (error) {
+                logger.error('创建放行标记失败', error);
+                vscode.window.showErrorMessage('放行提交失败，请检查权限或路径');
+            }
         };
 
         // 命令1：agentreview.run - 手动触发代码审查
@@ -206,6 +262,22 @@ export const activate = async (context: vscode.ExtensionContext) => {
             await vscode.commands.executeCommand('agentreview.run');
         });
 
+        // 命令6：agentreview.allowCommitOnce - 一次性放行提交
+        // 创建放行标记文件，供 pre-commit hook 检测
+        const allowCommitOnceCommand = vscode.commands.registerCommand('agentreview.allowCommitOnce', async () => {
+            await createAllowCommitToken();
+        });
+
+        // 命令7：agentreview.fixIssue - 修复当前问题（占位，后续可接入 AI 或 CodeLens）
+        const fixIssueCommand = vscode.commands.registerCommand('agentreview.fixIssue', async () => {
+            const issue = reviewPanel?.getActiveIssueForActions();
+            if (!issue) {
+                vscode.window.showInformationMessage('请先在审查结果中选中一个问题，或悬停到问题行上再点击修复');
+                return;
+            }
+            vscode.window.showInformationMessage('修复功能占位，后续可接入 AI 或 CodeLens');
+        });
+
         // 将所有命令和组件注册到 context.subscriptions
         // 这样当插件停用时，VSCode 会自动清理这些资源
         // 这是 VSCode 扩展开发的最佳实践，可以防止内存泄漏
@@ -215,6 +287,8 @@ export const activate = async (context: vscode.ExtensionContext) => {
             showReportCommand,
             installHooksCommand,
             refreshCommand,
+            allowCommitOnceCommand,
+            fixIssueCommand,
             reviewPanel,
             statusBar,
             configManager  // 注册配置管理器，确保文件监听器在插件停用时被清理

@@ -44,7 +44,8 @@ export class ReviewTreeItem extends vscode.TreeItem {
 
         if (issue) {
             // 问题项：显示详细信息并设置点击命令
-            this.tooltip = `${issue.message}\n规则: ${issue.rule}`;
+            const reasonText = issue.reason ? `\n原因: ${issue.reason}` : '';
+            this.tooltip = `${issue.message}\n规则: ${issue.rule}${reasonText}`;
             this.description = `行 ${issue.line}, 列 ${issue.column}`;
             
             // 根据严重程度设置图标
@@ -246,8 +247,13 @@ export class ReviewPanel {
     private highlightDecoration: vscode.TextEditorDecorationType;
     private errorHighlightDecoration: vscode.TextEditorDecorationType;
     private warningHighlightDecoration: vscode.TextEditorDecorationType;
+    private infoHighlightDecoration: vscode.TextEditorDecorationType;
+    private astHighlightDecoration: vscode.TextEditorDecorationType;
     private lastHighlightedEditor: vscode.TextEditor | null = null;
     private selectionDisposable: vscode.Disposable;
+    private hoverProvider: vscode.Disposable;
+    /** 当前在 Hover 中展示的问题，供「修复」等命令读取 */
+    private activeIssueForActions: ReviewIssue | null = null;
 
     constructor(context: vscode.ExtensionContext) {
         this.provider = new ReviewPanelProvider(context);
@@ -280,6 +286,29 @@ export class ReviewPanel {
             border: '1px solid',
             borderColor: new vscode.ThemeColor('editorWarning.foreground')
         });
+
+        // 信息高亮：蓝色强调，用于 info 严重级别
+        this.infoHighlightDecoration = vscode.window.createTextEditorDecorationType({
+            isWholeLine: true,
+            backgroundColor: new vscode.ThemeColor('editorInfo.background'),
+            border: '1px solid',
+            borderColor: new vscode.ThemeColor('editorInfo.foreground')
+        });
+
+        // AST 范围高亮：较浅的范围标识，用于二级范围提示
+        this.astHighlightDecoration = vscode.window.createTextEditorDecorationType({
+            isWholeLine: true,
+            backgroundColor: new vscode.ThemeColor('editor.rangeHighlightBackground'),
+            border: '1px solid',
+            borderColor: new vscode.ThemeColor('editor.rangeHighlightBorder')
+        });
+
+        // 详情说明：Hover 浮层（类似 TS 报错），不占行号，支持可点击操作
+        this.hoverProvider = vscode.languages.registerHoverProvider(
+            { scheme: 'file' },
+            { provideHover: (document, position) => this.provideIssueHover(document, position) }
+        );
+        context.subscriptions.push(this.hoverProvider);
 
         // 监听 TreeView 选择变化，实现“选中即高亮”
         this.selectionDisposable = this.treeView.onDidChangeSelection((event) => {
@@ -326,8 +355,11 @@ export class ReviewPanel {
             this.lastHighlightedEditor.setDecorations(this.highlightDecoration, []);
             this.lastHighlightedEditor.setDecorations(this.errorHighlightDecoration, []);
             this.lastHighlightedEditor.setDecorations(this.warningHighlightDecoration, []);
+            this.lastHighlightedEditor.setDecorations(this.infoHighlightDecoration, []);
+            this.lastHighlightedEditor.setDecorations(this.astHighlightDecoration, []);
             this.lastHighlightedEditor = null;
         }
+        this.activeIssueForActions = null;
     };
 
     /**
@@ -362,9 +394,29 @@ export class ReviewPanel {
                 editor.setDecorations(this.errorHighlightDecoration, [lineRange]);
             } else if (issue.severity === 'warning') {
                 editor.setDecorations(this.warningHighlightDecoration, [lineRange]);
+            } else if (issue.severity === 'info') {
+                editor.setDecorations(this.infoHighlightDecoration, [lineRange]);
             } else {
                 editor.setDecorations(this.highlightDecoration, [lineRange]);
             }
+
+            // AST 范围高亮：用于二级范围提示
+            if (issue.astRange) {
+                const astStartLine = Math.max(1, issue.astRange.startLine);
+                const astEndLine = Math.min(document.lineCount, issue.astRange.endLine);
+                if (astEndLine >= astStartLine) {
+                    const astEndText = document.lineAt(astEndLine - 1).text;
+                    const astRange = new vscode.Range(
+                        astStartLine - 1,
+                        0,
+                        astEndLine - 1,
+                        astEndText.length
+                    );
+                    editor.setDecorations(this.astHighlightDecoration, [astRange]);
+                }
+            }
+
+            this.activeIssueForActions = issue;
             this.lastHighlightedEditor = editor;
         } catch (error) {
             this.clearHighlight();
@@ -372,11 +424,64 @@ export class ReviewPanel {
         }
     };
 
+    /**
+     * 提供问题详情的 Hover 浮层（仅通过悬停触发，与 TS/ESLint 报错样式一致、内容自适应）
+     * 仅当光标所在行属于当前审查结果中的问题时返回内容；点击 Tree 节点不触发浮层
+     */
+    private provideIssueHover = (
+        document: vscode.TextDocument,
+        position: vscode.Position
+    ): vscode.Hover | undefined => {
+        const result = this.provider.getCurrentResult();
+        if (!result) return undefined;
+        const line1 = position.line + 1;
+        const norm = (p: string) => p.replace(/\\/g, '/');
+        const docPath = norm(document.uri.fsPath);
+        const issues = [...result.errors, ...result.warnings, ...result.info].filter(
+            (i) => norm(i.file) === docPath && i.line === line1
+        );
+        const issue = issues[0];
+        if (!issue) return undefined;
+        this.activeIssueForActions = issue;
+        return new vscode.Hover(this.buildIssueHoverMarkdown(issue));
+    };
+
+    /**
+     * 构建 Hover 浮层内容：紧凑、自适应，风格与 TS/ESLint 报错一致（无厚重边框）
+     */
+    private buildIssueHoverMarkdown = (issue: ReviewIssue): vscode.MarkdownString => {
+        const md = new vscode.MarkdownString();
+        md.isTrusted = true;
+        const severityLabel = issue.severity === 'error' ? '错误' : issue.severity === 'warning' ? '警告' : '信息';
+        md.appendMarkdown(`${severityLabel}: `);
+        md.appendText(issue.message);
+        md.appendMarkdown('\n\n');
+        md.appendMarkdown(`规则: ${issue.rule}`);
+        if (issue.reason && issue.reason !== issue.message) {
+            md.appendMarkdown('\n');
+            md.appendText(issue.reason);
+        }
+        if (issue.astRange) {
+            md.appendMarkdown(`\nAST: 第 ${issue.astRange.startLine}-${issue.astRange.endLine} 行`);
+        }
+        md.appendMarkdown('\n\n');
+        md.appendMarkdown('[本次放行](command:agentreview.allowCommitOnce) · [修复](command:agentreview.fixIssue)');
+        return md;
+    };
+
+    /** 供「修复」等命令读取当前 Hover 对应的问题 */
+    getActiveIssueForActions(): ReviewIssue | null {
+        return this.activeIssueForActions;
+    }
+
     dispose(): void {
         this.clearHighlight();
         this.highlightDecoration.dispose();
         this.errorHighlightDecoration.dispose();
         this.warningHighlightDecoration.dispose();
+        this.infoHighlightDecoration.dispose();
+        this.astHighlightDecoration.dispose();
+        this.hoverProvider.dispose();
         this.selectionDisposable.dispose();
         this.treeView.dispose();
     }
