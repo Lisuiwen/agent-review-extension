@@ -49,9 +49,9 @@ export const activate = async (context: vscode.ExtensionContext) => {
     try {
         // 步骤1：初始化配置管理器
         // ConfigManager 负责读取项目根目录下的 .agentreview.yaml 配置文件
-        // 如果配置文件不存在，会使用默认配置
+        // 传入 context 以便单工作区时从扩展目录回退加载 .env
         configManager = new ConfigManager();
-        await configManager.initialize();
+        await configManager.initialize(context);
 
         // 步骤2：初始化审查引擎
         // ReviewEngine 是核心组件，负责协调规则引擎和文件扫描器

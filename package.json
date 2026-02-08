@@ -101,17 +101,17 @@
         "agentreview.ai.apiEndpoint": {
           "type": "string",
           "default": "",
-          "description": "AI API端点URL（支持环境变量，如 ${API_KEY}）"
+          "description": "AI API 端点 URL。在「用户」设置中配置后对所有工作区生效，无需在每个项目里放 .env。支持环境变量占位符，如 ${AGENTREVIEW_AI_API_ENDPOINT}"
         },
         "agentreview.ai.apiKey": {
           "type": "string",
           "default": "",
-          "description": "AI API密钥（支持环境变量，如 ${API_KEY}）"
+          "description": "AI API 密钥。在「用户」设置中配置后对所有工作区生效。支持环境变量占位符，如 ${AGENTREVIEW_AI_API_KEY}"
         },
         "agentreview.ai.model": {
           "type": "string",
-          "default": "gpt-4",
-          "description": "模型名称（如 gpt-4, gpt-3.5-turbo, claude-3）"
+          "default": "",
+          "description": "模型名称（如 kimi-k2-turbo-preview）。在「用户」设置中配置后对所有工作区生效，未配置时可由 .env 的 AGENTREVIEW_AI_MODEL 提供"
         },
         "agentreview.ai.timeout": {
           "type": "number",

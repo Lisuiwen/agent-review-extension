@@ -104,7 +104,7 @@ export const createAIReviewConfig = (enabled: boolean = true): AgentReviewConfig
         api_format: 'openai',
         api_endpoint: 'https://api.openai.com/v1/chat/completions',
         api_key: 'test-api-key',
-        model: 'gpt-4',
+        model: 'test-model',
         timeout: 30000,
         action: 'warning',
     },

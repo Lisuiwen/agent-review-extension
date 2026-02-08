@@ -105,7 +105,6 @@ const DEFAULT_RETRY_DELAY = 1000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_MAX_TOKENS = 8000; // 增加默认token限制，确保有足够空间返回详细分析
-const DEFAULT_MODEL = 'gpt-4';
 const DEFAULT_BATCH_SIZE = 5; // AI 审查默认批次大小
 const DEFAULT_SYSTEM_PROMPT = `你是一个经验丰富的代码审查专家。你的任务是深入分析代码，找出所有潜在问题，并提供详细的改进建议。
 
@@ -203,6 +202,11 @@ export class AIReviewer {
             (response) => response,
             (error: AxiosError) => {
                 this.logger.error(`AI API调用失败: ${error.message}`);
+                if (error.response?.status === 404) {
+                    const body = error.response?.data as { error?: { message?: string; type?: string } } | undefined;
+                    const msg = body?.error?.message ?? '';
+                    this.logger.warn(`404 可能原因：① 模型不存在或无权限（厂商文档：404 = 不存在该 model 或 Permission denied）② 端点地址错误。当前使用 model 见上方日志。响应: ${msg || JSON.stringify(body ?? '')}`);
+                }
                 return Promise.reject(error);
             }
         );
@@ -222,13 +226,20 @@ export class AIReviewer {
             return;
         }
 
-        // 转换配置格式
+        // 转换配置格式；OpenAI 兼容格式下若只填了 base URL（如 https://api.moonshot.cn/v1），自动补全 /chat/completions，与官方文档一致
+        const rawEndpoint = (config.ai_review.api_endpoint || '').trim().replace(/\/+$/, '');
+        const apiEndpoint =
+            config.ai_review.api_format === 'custom'
+                ? rawEndpoint
+                : rawEndpoint && !rawEndpoint.endsWith('/chat/completions')
+                    ? `${rawEndpoint}/chat/completions`
+                    : rawEndpoint;
         this.config = {
             enabled: config.ai_review.enabled,
             api_format: config.ai_review.api_format || 'openai',
-            apiEndpoint: config.ai_review.api_endpoint,
+            apiEndpoint,
             apiKey: config.ai_review.api_key,
-            model: config.ai_review.model || DEFAULT_MODEL,
+            model: config.ai_review.model ?? '',
             timeout: config.ai_review.timeout || DEFAULT_TIMEOUT,
             temperature: config.ai_review.temperature ?? DEFAULT_TEMPERATURE,
             max_tokens: config.ai_review.max_tokens || DEFAULT_MAX_TOKENS,
@@ -241,10 +252,18 @@ export class AIReviewer {
         // 更新axios实例的超时时间
         this.axiosInstance.defaults.timeout = this.config.timeout;
 
-        this.logger.info(`AI审查服务已初始化: enabled=${this.config.enabled}, format=${this.config.api_format}, endpoint=${this.config.apiEndpoint || '未配置'}, model=${this.config.model}`);
-        
+        const ep = this.config.apiEndpoint || '';
+        const endpointResolved = !!ep && !ep.includes('${');
+        this.logger.info(`AI审查服务已初始化: enabled=${this.config.enabled}, format=${this.config.api_format}, model=${this.config.model || '未配置'}`);
+        if (ep) {
+            if (endpointResolved) {
+                this.logger.info(`[端点已解析] 当前 API 地址: ${ep}`);
+            } else {
+                this.logger.warn(`[端点未解析] 仍含占位符，请检查 .env 或设置中的环境变量: ${ep.substring(0, 60)}${ep.length > 60 ? '...' : ''}`);
+            }
+        }
         // 检查关键配置
-        if (!this.config.apiEndpoint) {
+        if (!ep) {
             this.logger.warn('⚠️ AI API端点未配置，AI审查将无法执行');
         }
         // 检查 apiKey 是否配置且已正确解析（不是环境变量占位符）
@@ -348,12 +367,11 @@ export class AIReviewer {
 
     /**
      * 确保配置已初始化
+     * 每次审查前重新加载配置，以便读取最新的 .env 和 VSCode 设置
      */
     private async ensureInitialized(): Promise<void> {
-        if (!this.config) {
-            this.logger.warn('AI审查配置未初始化，尝试重新初始化');
-            await this.initialize();
-        }
+        await this.configManager.loadConfig();
+        await this.initialize();
     }
 
     /**
@@ -372,13 +390,24 @@ export class AIReviewer {
             return false;
         }
 
-        if (!this.config.apiEndpoint) {
-            this.logger.warn('AI API端点未配置');
+        const ep = (this.config.apiEndpoint || '').trim();
+        if (!ep || ep.includes('${')) {
+            this.logger.warn(ep.includes('${') ? 'AI API端点环境变量未解析，请检查 .env 或系统环境变量' : 'AI API端点未配置');
             return false;
         }
-        
+        try {
+            new URL(ep);
+        } catch {
+            this.logger.warn('AI API端点URL格式无效');
+            return false;
+        }
+        const model = (this.config.model || '').trim();
+        if (!model || model.includes('${')) {
+            this.logger.warn(model.includes('${') ? 'AI 模型环境变量未解析' : 'AI 模型未配置，请在设置或 .env 中配置 model');
+            return false;
+        }
         this.validateApiKey();
-        this.logger.info(`AI审查配置检查通过: endpoint=${this.config.apiEndpoint}, hasApiKey=${this.hasValidApiKey()}`);
+        this.logger.info(`AI审查配置检查通过: endpoint=${ep}, model=${model}, hasApiKey=${this.hasValidApiKey()}`);
         return true;
     }
 
@@ -519,7 +548,17 @@ export class AIReviewer {
         if (!this.config) {
             throw new Error('AI审查配置未初始化');
         }
+        const url = (this.config.apiEndpoint || '').trim();
+        if (!url || url.includes('${')) {
+            throw new Error('AI API端点未配置或环境变量未解析，请在 .env 中设置 AGENTREVIEW_AI_API_ENDPOINT 或在设置中填写完整 URL');
+        }
+        try {
+            new URL(url);
+        } catch {
+            throw new Error(`AI API端点URL无效: ${url.substring(0, 60)}${url.length > 60 ? '...' : ''}`);
+        }
 
+        this.logger.info(`[请求前] 本次调用 URL: ${url}；若返回 404，请对照服务商文档确认是否为 Chat Completions 地址`);
         const requestHash = this.calculateRequestHash(request);
 
         // 根据API格式选择请求构建方法
@@ -544,7 +583,7 @@ export class AIReviewer {
                 
                 const currentRequestBody = continuationRequestBody || requestBody;
                 const response = await this.axiosInstance.post(
-                    this.config.apiEndpoint,
+                    url,
                     currentRequestBody,
                     { timeout: this.config.timeout }
                 );
@@ -692,7 +731,7 @@ ${filesContent}
 
         // Moonshot API 请求格式（OpenAI 兼容）
         return {
-            model: this.config.model || DEFAULT_MODEL,
+            model: this.config.model || '',
             messages: [
                 {
                     role: 'system',
@@ -744,7 +783,7 @@ ${lastIssueHint}
 `;
 
         return {
-            model: this.config.model || DEFAULT_MODEL,
+            model: this.config.model || '',
             messages: [
                 ...params.baseMessages,
                 {

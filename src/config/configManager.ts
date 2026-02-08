@@ -61,7 +61,7 @@ export interface AgentReviewConfig {
         api_format?: 'openai' | 'custom';  // API格式：OpenAI兼容或自定义
         api_endpoint: string;              // API端点URL
         api_key?: string;                  // API密钥（支持环境变量）
-        model?: string;                     // 模型名称（如 'gpt-4', 'claude-3'）
+        model?: string;                     // 模型名称（需在设置或 .env 中配置，无默认值）
         timeout: number;                    // 超时时间（毫秒）
         temperature?: number;                // 温度参数（0-2）
         max_tokens?: number;                // 最大token数
@@ -106,6 +106,7 @@ export class ConfigManager implements vscode.Disposable {
     private config: AgentReviewConfig | null = null;  // 缓存的配置对象
     private configPath: string;                // 配置文件的完整路径
     private envPath: string;                   // .env文件的完整路径
+    private extensionPath: string | undefined;  // 扩展安装目录（用于单工作区时回退加载 .env）
     private envVars: Map<string, string> = new Map();  // 从.env文件加载的环境变量
     private configWatcher: vscode.FileSystemWatcher | undefined;  // 配置文件监听器
     private envWatcher: vscode.FileSystemWatcher | undefined;    // .env文件监听器
@@ -133,8 +134,10 @@ export class ConfigManager implements vscode.Disposable {
     /**
      * 初始化配置管理器
      * 在插件激活时调用，加载配置文件并设置文件监听器
+     * @param context - 扩展上下文，传入时用于单工作区下从扩展目录回退加载 .env
      */
-    async initialize(): Promise<void> {
+    async initialize(context?: vscode.ExtensionContext): Promise<void> {
+        this.extensionPath = context?.extensionPath;
         // 先加载.env文件（环境变量需要在配置加载前准备好）
         await this.loadEnvFile();
         // 然后加载配置文件
@@ -328,7 +331,8 @@ export class ConfigManager implements vscode.Disposable {
      */
     async loadConfig(): Promise<AgentReviewConfig> {
         this.logger.info(`加载配置文件: ${this.configPath}`);
-        
+        // 每次加载配置前先重新加载 .env，以便使用最新的环境变量（含仅用 .env 配置端点的情况）
+        await this.loadEnvFile();
         // 获取默认配置作为基础
         const defaultConfig = this.getDefaultConfig();
         
@@ -337,14 +341,28 @@ export class ConfigManager implements vscode.Disposable {
             
             // 步骤1：检查配置文件是否存在，如果存在则读取
             if (fs.existsSync(this.configPath)) {
-                // 步骤2：读取 YAML 文件内容
-                // fs.promises.readFile 是 Node.js 的异步文件读取 API
                 const fileContent = await fs.promises.readFile(this.configPath, 'utf-8');
-                // yaml.load 是 js-yaml 库提供的函数，用于解析 YAML 字符串
                 yamlConfig = yaml.load(fileContent) as Partial<AgentReviewConfig>;
                 this.logger.info('YAML配置文件加载成功');
             } else {
                 this.logger.info('YAML配置文件不存在，跳过');
+            }
+
+            // 步骤2：若工作区未配置 ai_review，尝试从扩展目录读取（插件侧默认，对所有工作区生效）
+            if (!yamlConfig.ai_review && this.extensionPath) {
+                const pluginConfigPath = path.join(this.extensionPath, '.agentreview.yaml');
+                if (fs.existsSync(pluginConfigPath)) {
+                    try {
+                        const pluginContent = await fs.promises.readFile(pluginConfigPath, 'utf-8');
+                        const pluginYaml = yaml.load(pluginContent) as Partial<AgentReviewConfig>;
+                        if (pluginYaml?.ai_review) {
+                            yamlConfig.ai_review = pluginYaml.ai_review;
+                            this.logger.info('已从扩展目录加载 AI 配置（插件侧默认）');
+                        }
+                    } catch (e) {
+                        this.logger.debug('读取扩展目录 .agentreview.yaml 失败，跳过', e);
+                    }
+                }
             }
 
             // 步骤3：从VSCode Settings读取AI配置（优先级最高）
@@ -370,7 +388,9 @@ export class ConfigManager implements vscode.Disposable {
                 const enabledValue = settingsAIConfig.enabled !== undefined 
                     ? settingsAIConfig.enabled 
                     : (existingAIConfig?.enabled ?? defaultAIConfig.enabled);
-                const apiEndpointValue = settingsAIConfig.api_endpoint || existingAIConfig?.api_endpoint || defaultAIConfig.api_endpoint;
+                // 若未配置端点，尝试使用环境变量占位符，便于从 .env 解析
+                const apiEndpointValue = (settingsAIConfig.api_endpoint ?? existingAIConfig?.api_endpoint ?? defaultAIConfig.api_endpoint)
+                    || '${AGENTREVIEW_AI_API_ENDPOINT}';
                 const timeoutValue = settingsAIConfig.timeout !== undefined 
                     ? settingsAIConfig.timeout 
                     : (existingAIConfig?.timeout ?? defaultAIConfig.timeout);
@@ -423,76 +443,74 @@ export class ConfigManager implements vscode.Disposable {
     /**
      * 加载.env文件
      * 
-     * 从项目根目录的.env文件中读取环境变量
-     * 支持标准的.env文件格式：
-     * - KEY=value
-     * - KEY="value with spaces"
-     * - KEY='value with spaces'
-     * - # 注释行
-     * - 空行会被忽略
-     * 
-     * 注意：.env文件中的变量不会覆盖系统环境变量（process.env），只会作为补充
+     * 从所有工作区根目录的 .env 中读取环境变量并合并（先加载的优先，不覆盖已有键）。
+     * 多根工作区时可在任意一个根目录放置 .env，避免“当前项目”下没有 .env 导致占位符未解析。
+     * 支持标准 .env 格式：KEY=value、KEY="value"、# 注释、空行忽略。
+     * 不覆盖系统环境变量（process.env）。
      */
     private async loadEnvFile(): Promise<void> {
-        this.logger.info(`加载.env文件: ${this.envPath}`);
-        
+        this.envVars.clear();
+        const folders = vscode.workspace.workspaceFolders ?? [];
+        const envPaths = folders.length > 0
+            ? folders.map(f => path.join(f.uri.fsPath, '.env'))
+            : [this.envPath || '.env'];
+        this.logger.info(`加载.env文件: ${envPaths.join(', ')}`);
         try {
-            // 检查.env文件是否存在
-            if (!fs.existsSync(this.envPath)) {
-                this.logger.debug('.env文件不存在，跳过');
-                return;
-            }
-
-            // 读取.env文件内容
-            const fileContent = await fs.promises.readFile(this.envPath, 'utf-8');
-            
-            // 解析.env文件
-            const lines = fileContent.split(/\r?\n/);
-            let lineNumber = 0;
-            
-            for (const line of lines) {
-                lineNumber++;
-                // 去除首尾空格
-                const trimmedLine = line.trim();
-                
-                // 跳过空行和注释行
-                if (!trimmedLine || trimmedLine.startsWith('#')) {
+            for (const envPath of envPaths) {
+                if (!fs.existsSync(envPath)) {
+                    this.logger.debug(`.env文件不存在，跳过: ${envPath}`);
                     continue;
                 }
-                
-                // 解析 KEY=value 格式
-                // 支持 KEY=value, KEY="value", KEY='value'
-                const match = trimmedLine.match(/^([^=#\s]+)\s*=\s*(.*)$/);
-                if (match) {
-                    const key = match[1].trim();
-                    let value = match[2].trim();
-                    
-                    // 处理引号包裹的值
-                    if ((value.startsWith('"') && value.endsWith('"')) ||
-                        (value.startsWith("'") && value.endsWith("'"))) {
-                        // 去除首尾引号
-                        value = value.slice(1, -1);
-                        // 处理转义字符
-                        value = value.replace(/\\"/g, '"').replace(/\\'/g, "'");
-                    }
-                    
-                    // 存储到envVars Map中
-                    // 注意：如果系统环境变量中已存在，不覆盖（系统环境变量优先级更高）
-                    if (!process.env[key]) {
-                        this.envVars.set(key, value);
-                        this.logger.debug(`从.env文件加载环境变量: ${key}`);
+                const fileContent = await fs.promises.readFile(envPath, 'utf-8');
+                const lines = fileContent.split(/\r?\n/);
+                let lineNumber = 0;
+                for (const line of lines) {
+                    lineNumber++;
+                    const trimmedLine = line.trim();
+                    if (!trimmedLine || trimmedLine.startsWith('#')) continue;
+                    const match = trimmedLine.match(/^([^=#\s]+)\s*=\s*(.*)$/);
+                    if (match) {
+                        const key = match[1].trim();
+                        let value = match[2].trim();
+                        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                            value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'");
+                        }
+                        if (!process.env[key] && !this.envVars.has(key)) {
+                            this.envVars.set(key, value);
+                            this.logger.debug(`从.env文件加载环境变量: ${key} (${envPath})`);
+                        }
                     } else {
-                        this.logger.debug(`环境变量 ${key} 已存在于系统环境变量中，跳过.env文件中的值`);
+                        this.logger.warn(`.env文件第${lineNumber}行格式不正确，已跳过: ${trimmedLine}`);
                     }
-                } else {
-                    // 格式不正确的行，记录警告但不中断
-                    this.logger.warn(`.env文件第${lineNumber}行格式不正确，已跳过: ${trimmedLine}`);
                 }
             }
-            
+            // 单工作区且工作区内无 .env 时，回退到扩展目录的 .env（便于开发/调试时在扩展根目录放 .env）
+            if (this.envVars.size === 0 && this.extensionPath) {
+                const fallbackEnv = path.join(this.extensionPath, '.env');
+                if (fs.existsSync(fallbackEnv)) {
+                    this.logger.info(`工作区未找到.env，从扩展目录加载: ${fallbackEnv}`);
+                    const fileContent = await fs.promises.readFile(fallbackEnv, 'utf-8');
+                    const lines = fileContent.split(/\r?\n/);
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine || trimmedLine.startsWith('#')) continue;
+                        const match = trimmedLine.match(/^([^=#\s]+)\s*=\s*(.*)$/);
+                        if (match) {
+                            const key = match[1].trim();
+                            let value = match[2].trim();
+                            if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                                value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'");
+                            }
+                            if (!process.env[key] && !this.envVars.has(key)) {
+                                this.envVars.set(key, value);
+                                this.logger.debug(`从扩展目录.env加载: ${key}`);
+                            }
+                        }
+                    }
+                }
+            }
             this.logger.info(`从.env文件加载了 ${this.envVars.size} 个环境变量`);
         } catch (error) {
-            // 如果读取失败，记录错误但不中断初始化
             this.logger.error('加载.env文件失败', error);
         }
     }
@@ -514,12 +532,12 @@ export class ConfigManager implements vscode.Disposable {
         return value.replace(envVarPattern, (match, varName) => {
             // 优先从系统环境变量获取（process.env优先级更高）
             let envValue = process.env[varName];
-            
+            const hasProcessEnv = envValue !== undefined;
             // 如果系统环境变量中不存在，从.env文件中获取
             if (envValue === undefined) {
                 envValue = this.envVars.get(varName);
             }
-            
+            const hasEnvVars = this.envVars.has(varName);
             if (envValue !== undefined) {
                 return envValue;
             }
@@ -637,6 +655,20 @@ export class ConfigManager implements vscode.Disposable {
                 directories: resolvedUserConfig.exclusions?.directories || defaultConfig.exclusions?.directories || [],
             },
         };
+
+        // 若仅通过 .env 配置 AI：端点和密钥、模型为空时，尝试从环境变量回退
+        if (merged.ai_review) {
+            if (!merged.ai_review.api_endpoint) {
+                merged.ai_review.api_endpoint = this.resolveEnvVariables('${AGENTREVIEW_AI_API_ENDPOINT}');
+            }
+            if (!merged.ai_review.api_key) {
+                merged.ai_review.api_key = this.resolveEnvVariables('${AGENTREVIEW_AI_API_KEY}');
+            }
+            const envModel = this.resolveEnvVariables('${AGENTREVIEW_AI_MODEL}');
+            if (envModel && !envModel.includes('${') && (!merged.ai_review.model)) {
+                merged.ai_review.model = envModel;
+            }
+        }
 
         return merged;
     }
