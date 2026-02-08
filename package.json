@@ -177,6 +177,7 @@
     "vitest": "^4.0.18"
   },
   "dependencies": {
+    "@babel/parser": "^7.28.0",
     "axios": "^1.6.0",
     "js-yaml": "^4.1.0",
     "minimatch": "^10.1.1",

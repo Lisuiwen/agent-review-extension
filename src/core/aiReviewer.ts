@@ -6,6 +6,7 @@ import { Logger } from '../utils/logger';
 import { ReviewIssue } from './reviewEngine';
 import { FileScanner } from '../utils/fileScanner';
 import type { FileDiff } from '../utils/diffTypes';
+import type { AffectedScopeResult } from '../utils/astScope';
 
 /**
  * AI审查配置接口
@@ -284,14 +285,21 @@ export class AIReviewer {
     /**
      * 执行AI审查
      *
-     * 当 request.diffByFile 存在且配置 diff_only 启用时，仅发送变更片段，且返回的 line 为新文件行号。
+     * 当 request.diffByFile 存在且配置 diff_only 启用时，仅发送变更片段；
+     * 当 request.astSnippetsByFile 存在时，优先发送 AST 片段。返回的 line 均为新文件行号。
      *
      * @param request - 审查请求；可含 diffByFile 用于增量审查
      * @returns 审查问题列表
      */
-    async review(request: AIReviewRequest & { diffByFile?: Map<string, FileDiff> }): Promise<ReviewIssue[]> {
+    async review(
+        request: AIReviewRequest & {
+            diffByFile?: Map<string, FileDiff>;
+            astSnippetsByFile?: Map<string, AffectedScopeResult>;
+        }
+    ): Promise<ReviewIssue[]> {
         const validatedRequest = this.validateRequest(request);
         const diffByFile = request.diffByFile;
+        const astSnippetsByFile = request.astSnippetsByFile;
         this.logger.info(`AI审查 ${validatedRequest.files.length} 个文件`);
 
         await this.ensureInitialized();
@@ -302,36 +310,76 @@ export class AIReviewer {
         this.resetReviewCache();
 
         const useDiffMode = this.config?.diff_only !== false && diffByFile && diffByFile.size > 0;
-        const filesToLoad = useDiffMode
+        const useAstSnippets = !!astSnippetsByFile && astSnippetsByFile.size > 0;
+        const useDiffContent = useDiffMode || useAstSnippets;
+        const filesToLoad = useDiffContent
             ? validatedRequest.files.map(f => {
                 const normalizedPath = path.normalize(f.path);
-                const fileDiff = diffByFile!.get(normalizedPath) ?? diffByFile!.get(f.path);
-                const content = fileDiff?.hunks?.length
-                    ? this.buildDiffSnippetForFile(f.path, fileDiff)
-                    : undefined;
-                if (!content) {
-                    this.logger.warn(`[diff_only] 文件 ${f.path} 未取得变更片段(hasFileDiff=${!!fileDiff}, hunksLength=${fileDiff?.hunks?.length ?? 0})，将改为发送整文件`);
+                let content: string | undefined;
+                if (useAstSnippets) {
+                    const astSnippets = astSnippetsByFile!.get(normalizedPath) ?? astSnippetsByFile!.get(f.path);
+                    if (astSnippets?.snippets?.length) {
+                        content = this.buildAstSnippetForFile(f.path, astSnippets);
+                    }
+                }
+                if (!content && useDiffMode) {
+                    const fileDiff = diffByFile!.get(normalizedPath) ?? diffByFile!.get(f.path);
+                    content = fileDiff?.hunks?.length
+                        ? this.buildDiffSnippetForFile(f.path, fileDiff)
+                        : undefined;
+                    if (!content) {
+                        this.logger.warn(`[diff_only] 文件 ${f.path} 未取得变更片段(hasFileDiff=${!!fileDiff}, hunksLength=${fileDiff?.hunks?.length ?? 0})，将改为发送整文件`);
+                    }
+                }
+                if (!content && useAstSnippets) {
+                    this.logger.warn(`[ast_only] 文件 ${f.path} 未取得 AST 片段，将改为发送整文件`);
                 }
                 return { path: f.path, content };
             })
             : validatedRequest.files;
 
-        // diff 模式下：仅保留「变更行」上的 AI 问题，过滤掉模型对未发送行的推断
+        // diff/AST 模式下：仅保留「变更相关行」上的 AI 问题，过滤掉模型对未发送行的推断
         const allowedLinesByFile = new Map<string, Set<number>>();
+        const addAllowedLine = (filePath: string, line: number): void => {
+            const normalizedPath = path.normalize(filePath);
+            const existing = allowedLinesByFile.get(normalizedPath) ?? new Set<number>();
+            existing.add(line);
+            allowedLinesByFile.set(normalizedPath, existing);
+        };
+        if (useAstSnippets && astSnippetsByFile) {
+            for (const [filePath, result] of astSnippetsByFile) {
+                for (const snippet of result.snippets) {
+                    for (let line = snippet.startLine; line <= snippet.endLine; line++) {
+                        addAllowedLine(filePath, line);
+                    }
+                }
+            }
+        }
         if (useDiffMode && diffByFile) {
             for (const [filePath, fileDiff] of diffByFile) {
-                const lines = new Set<number>();
                 for (const hunk of fileDiff.hunks) {
-                    for (let r = 0; r < hunk.newCount; r++) lines.add(hunk.newStart + r);
+                    for (let r = 0; r < hunk.newCount; r++) {
+                        addAllowedLine(filePath, hunk.newStart + r);
+                    }
                 }
-                if (lines.size > 0) allowedLinesByFile.set(path.normalize(filePath), lines);
             }
         }
 
         try {
-            const validFiles = await this.loadFilesWithContent(filesToLoad);
+            const previewOnly = this.configManager.getConfig().ast?.preview_only === true;
+            const validFiles = await this.loadFilesWithContent(filesToLoad, previewOnly);
             if (validFiles.length === 0) {
                 this.logger.warn('没有可审查的文件');
+                return [];
+            }
+
+            if (previewOnly) {
+                this.logger.info('[preview_only] 不调用大模型，仅打印最终合并后的切片内容');
+                for (const file of validFiles) {
+                    this.logger.info(`---------- ${file.path} ----------`);
+                    this.logger.info(file.content);
+                    this.logger.info('----------');
+                }
                 return [];
             }
 
@@ -361,14 +409,14 @@ export class AIReviewer {
                 try {
                     const response = await this.callAPI(
                         { files: batchFiles },
-                        { isDiffContent: useDiffMode }
+                        { isDiffContent: useDiffContent }
                     );
                     let batchIssues = this.transformToReviewIssues(
                         response,
                         batchFiles,
-                        { useDiffLineNumbers: useDiffMode }
+                        { useDiffLineNumbers: useDiffContent }
                     );
-                    if (useDiffMode && allowedLinesByFile.size > 0) {
+                    if (useDiffContent && allowedLinesByFile.size > 0) {
                         const before = batchIssues.length;
                         batchIssues = batchIssues.filter(issue => {
                             const allowed = allowedLinesByFile.get(path.normalize(issue.file));
@@ -500,24 +548,50 @@ export class AIReviewer {
     }
 
     /**
+     * 根据 AST 片段构建带行号标注的内容，供 AI 审查使用
+     */
+    private buildAstSnippetForFile(filePath: string, result: AffectedScopeResult): string {
+        const lines: string[] = [`文件: ${filePath}`, '以下为变更相关的 AST 片段，行号为新文件中的行号。', ''];
+        for (const snippet of result.snippets) {
+            lines.push(`# 行 ${snippet.startLine}`);
+            lines.push(snippet.source);
+            lines.push('');
+        }
+        return lines.join('\n');
+    }
+
+    /**
      * 加载文件内容
      *
      * @param files - 文件列表（可能只有路径或已带 content 的 diff 片段）
      * @returns 包含内容的文件列表
      */
-    private async loadFilesWithContent(files: Array<{ path: string; content?: string }>): Promise<Array<{ path: string; content: string }>> {
+    private async loadFilesWithContent(
+        files: Array<{ path: string; content?: string }>,
+        previewOnly = false
+    ): Promise<Array<{ path: string; content: string }>> {
         const filesWithContent = await Promise.all(
             files.map(async (file) => {
-                // 如果文件已有内容且不为空，直接使用（diff 模式下为变更片段）
+                // 如果文件已有内容且不为空，直接使用（diff/AST 模式下为变更片段）
                 // 注意：如果 content 是空字符串，也需要读取文件
                 if (file.content !== undefined && file.content.trim().length > 0) {
-                    const isDiffSnippet = file.content.includes('以下为变更片段，行号为新文件中的行号。');
-                    this.logger.info(`[发给AI] ${file.path}: ${isDiffSnippet ? '变更片段' : '已提供内容'}, ${file.content.length} 字符`);
+                    if (!previewOnly) {
+                        const isDiffSnippet = file.content.includes('以下为变更片段，行号为新文件中的行号。');
+                        const isAstSnippet = file.content.includes('以下为变更相关的 AST 片段，行号为新文件中的行号。');
+                        const snippetType = isAstSnippet
+                            ? 'AST片段'
+                            : isDiffSnippet
+                                ? '变更片段'
+                                : '已提供内容';
+                        this.logger.info(`[发给AI] ${file.path}: ${snippetType}, ${file.content.length} 字符`);
+                    }
                     this.logger.debug(`使用已提供的文件内容: ${file.path} (长度: ${file.content.length})`);
                     return { path: file.path, content: file.content };
                 }
                 // 否则读取整文件（diff 模式下不应走到这里，若走到说明该文件未匹配到 diff）
-                this.logger.info(`[发给AI] ${file.path}: 读取整文件（未使用变更片段）`);
+                if (!previewOnly) {
+                    this.logger.info(`[发给AI] ${file.path}: 读取整文件（未使用变更片段）`);
+                }
                 this.logger.debug(`读取文件内容: ${file.path}`);
                 try {
                     const content = await this.fileScanner.readFile(file.path);
@@ -632,7 +706,7 @@ export class AIReviewer {
 
         const userMsgForLog = (requestBody as { messages?: Array<{ role: string; content: string }> }).messages?.find(m => m.role === 'user');
         const inputLen = userMsgForLog?.content?.length ?? 0;
-        this.logger.info(`[传给大模型] 模式: ${options?.isDiffContent ? '仅变更片段(diff_only)' : '整文件'}，user 消息长度: ${inputLen} 字符`);
+        this.logger.info(`[传给大模型] 模式: ${options?.isDiffContent ? '仅变更相关片段(diff/ast)' : '整文件'}，user 消息长度: ${inputLen} 字符`,userMsgForLog?.content);
 
         if (this.config.api_format !== 'custom') {
             const baseMessages = (requestBody as { messages: Array<{ role: string; content: string }> }).messages;
@@ -717,7 +791,7 @@ export class AIReviewer {
      * 构建OpenAI兼容格式的请求（Moonshot API 兼容）
      *
      * @param request - 审查请求（文件必须包含 content）
-     * @param isDiffContent - 若为 true，内容为变更片段，提示词中说明 line 为新文件行号
+     * @param isDiffContent - 若为 true，内容为变更相关片段，提示词中说明 line 为新文件行号
      * @returns OpenAI/Moonshot 兼容格式的请求体
      */
     private buildOpenAIRequest(
@@ -751,7 +825,7 @@ export class AIReviewer {
         this.logger.debug(`构建的提示词总长度: ${totalContentLength} 字符`);
 
         const intro = isDiffContent
-            ? '请仅针对以下**变更片段**进行代码审查（非整文件）。片段中已用「# 行 N」标注新文件行号。'
+            ? '请仅针对以下**变更相关片段（diff/AST）**进行代码审查（非整文件）。片段中已用「# 行 N」标注新文件行号。'
             : '请仔细审查以下代码文件，进行全面的代码审查分析。';
         const lineHint = isDiffContent
             ? '返回的 **line** 必须使用上述「# 行 N」中标注的新文件行号（从 1 开始）。'
@@ -1000,7 +1074,6 @@ ${lastIssueHint}
             const content = openAIResponse.choices[0].message.content;
 
             this.logger.debug(`AI返回内容长度: ${content.length} 字符`);
-            this.logger.debug(`AI返回内容前5000字符: ${content.substring(0, 5000)}`);
 
             // 清理内容并提取 JSON
             const cleanedContent = this.cleanJsonContent(content);

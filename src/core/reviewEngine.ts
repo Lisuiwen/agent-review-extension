@@ -24,6 +24,7 @@
  * - 如果项目已有自己的规则引擎，建议保持 builtin_rules_enabled: false
  */
 
+import * as path from 'path';
 import { RuleEngine } from './ruleEngine';
 import { AIReviewer } from './aiReviewer';
 import { ConfigManager } from '../config/configManager';
@@ -31,6 +32,7 @@ import { Logger } from '../utils/logger';
 import { FileScanner } from '../utils/fileScanner';
 import { IssueDeduplicator } from './issueDeduplicator';
 import type { FileDiff } from '../utils/diffTypes';
+import { getAffectedScope, type AffectedScopeResult } from '../utils/astScope';
 
 /**
  * 审查结果接口
@@ -158,6 +160,34 @@ export class ReviewEngine {
 
         const useRuleDiff = config.rules.diff_only !== false && options?.diffByFile;
         const useAiDiff = config.ai_review?.diff_only !== false && options?.diffByFile;
+        const useAstScope = config.ast?.enabled === true && useAiDiff;
+
+        const buildAstSnippetsByFile = async (): Promise<Map<string, AffectedScopeResult> | undefined> => {
+            if (!useAstScope || !options?.diffByFile) {
+                return undefined;
+            }
+            const snippetsByFile = new Map<string, AffectedScopeResult>();
+            for (const filePath of filteredFiles) {
+                const normalizedPath = path.normalize(filePath);
+                const fileDiff = options.diffByFile.get(normalizedPath) ?? options.diffByFile.get(filePath);
+                if (!fileDiff?.hunks?.length) {
+                    continue;
+                }
+                try {
+                    const content = await this.fileScanner.readFile(filePath);
+                    const result = getAffectedScope(filePath, content, fileDiff, {
+                        maxFileLines: config.ast?.max_file_lines,
+                        maxNodeLines: config.ast?.max_node_lines,
+                    });
+                    if (result?.snippets?.length) {
+                        snippetsByFile.set(filePath, result);
+                    }
+                } catch (error) {
+                    this.logger.warn(`AST 片段生成失败: ${filePath}`, error);
+                }
+            }
+            return snippetsByFile.size > 0 ? snippetsByFile : undefined;
+        };
 
         const aiErrorIssues: ReviewIssue[] = [];
         const runAiReview = async (): Promise<ReviewIssue[]> => {
@@ -167,9 +197,11 @@ export class ReviewEngine {
             }
 
             try {
+                const astSnippetsByFile = await buildAstSnippetsByFile();
                 const aiRequest = {
                     files: filteredFiles.map(file => ({ path: file })),
                     diffByFile: useAiDiff ? options!.diffByFile : undefined,
+                    astSnippetsByFile,
                 };
                 this.logger.info(`开始调用AI审查，文件数量: ${aiRequest.files.length}`);
                 const aiIssues = await this.aiReviewer.review(aiRequest);

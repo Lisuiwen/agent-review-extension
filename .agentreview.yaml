@@ -21,7 +21,9 @@ rules:
   business_logic:
     enabled: true
     action: "block_commit"
-
+ast:
+  enabled: true
+  preview_only: true
 # AI审查配置
 # 支持通过VSCode Settings UI或此配置文件进行配置
 # 优先级：VSCode Settings > 此配置文件 > 默认配置

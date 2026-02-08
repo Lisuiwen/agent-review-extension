@@ -73,6 +73,12 @@ export interface AgentReviewConfig {
         diff_only?: boolean;                // staged 审查时仅发送变更片段给 AI（默认 true）
         action: 'block_commit' | 'warning' | 'log';  // 违反规则时的行为
     };
+    ast?: {
+        enabled?: boolean;          // 是否启用 AST 片段模式（默认 false）
+        max_node_lines?: number;   // 单个 AST 节点的最大行数
+        max_file_lines?: number;   // 文件总行数超过阈值则回退
+        preview_only?: boolean;     // 为 true 时不调用大模型，仅打印将发送的 AST/变更切片内容
+    };
     git_hooks?: {
         auto_install: boolean;
         pre_commit_enabled: boolean;
@@ -719,6 +725,12 @@ export class ConfigManager implements vscode.Disposable {
                     action: 'warning',
                     no_todo: true,
                 },
+            },
+            ast: {
+                enabled: true,
+                max_node_lines: 200,
+                max_file_lines: 2000,
+                preview_only: true,
             },
             git_hooks: {
                 auto_install: true,
