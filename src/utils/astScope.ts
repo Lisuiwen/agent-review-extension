@@ -1,10 +1,11 @@
 import * as path from 'path';
 import { parse } from '@babel/parser';
+import { parse as parseSfc } from '@vue/compiler-sfc';
 import type { FileDiff } from './diffTypes';
 
 /**
  * 受影响的 AST 片段
- * 
+ *
  * startLine/endLine 均为新文件行号（1-based）
  */
 export interface AffectedScopeSnippet {
@@ -29,9 +30,12 @@ export interface AstScopeOptions {
 }
 
 /**
- * 获取变更影响的 AST 片段（仅支持 JS/TS/JSX/TSX）
- * 
- * 若解析失败或不支持的语言，返回 null 以回退为 diff 片段
+ * 获取变更影响的 AST 片段
+ *
+ * 支持：.js / .jsx / .ts / .tsx（整文件 Babel AST）；.vue（SFC 按 block 解析）。
+ * .vue 策略：变更行落在哪个 block 就解析哪个 block；script/scriptSetup 用 Babel，template 用模板 AST
+ * 仅做片段定位与截取，模板 AST 不参与规则引擎。
+ * 若解析失败或不支持的语言，返回 null 以回退为 diff 片段。
  */
 export const getAffectedScope = (
     filePath: string,
@@ -40,6 +44,9 @@ export const getAffectedScope = (
     options?: AstScopeOptions
 ): AffectedScopeResult | null => {
     const ext = path.extname(filePath).toLowerCase();
+    if (ext === '.vue') {
+        return getAffectedScopeVueSfc(content, fileDiff, options);
+    }
     if (!['.js', '.jsx', '.ts', '.tsx'].includes(ext)) {
         return null;
     }
@@ -171,5 +178,159 @@ const collectSmallestNodes = (ast: any, changedLines: number[]): Map<number, any
         }
     };
     visit(ast);
+    return bestByLine;
+};
+
+/**
+ * Vue SFC：按 block 解析，仅 script/scriptSetup/template；行号均为源文件行号。
+ * 模板 AST 仅用于片段定位，不参与规则引擎。某 block 解析失败则仅该 block 降级为 diff。
+ */
+const getAffectedScopeVueSfc = (
+    content: string,
+    fileDiff: FileDiff,
+    options?: AstScopeOptions
+): AffectedScopeResult | null => {
+    if (!fileDiff?.hunks?.length) {
+        return null;
+    }
+    const lines = content.split('\n');
+    if (options?.maxFileLines && lines.length > options.maxFileLines) {
+        return null;
+    }
+    const changedLines = collectChangedLines(fileDiff);
+    if (changedLines.length === 0) {
+        return null;
+    }
+
+    let descriptor: ReturnType<typeof parseSfc>['descriptor'];
+    try {
+        const result = parseSfc(content, { filename: 'anonymous.vue' });
+        descriptor = result.descriptor;
+        if (result.errors?.length && !descriptor.template && !descriptor.script && !descriptor.scriptSetup) {
+            return null;
+        }
+    } catch {
+        return null;
+    }
+
+    const allSnippets: AffectedScopeSnippet[] = [];
+
+    const pushScriptBlockSnippets = (block: { content: string; loc: { start: { line: number }; end: { line: number } } } | null) => {
+        if (!block?.content || !block.loc?.start?.line) return;
+        const blockStartLine = block.loc.start.line;
+        const blockEndLine = block.loc.end.line;
+        const changedInBlock = changedLines.filter((line) => line >= blockStartLine && line <= blockEndLine);
+        if (changedInBlock.length === 0) return;
+        const relativeLines = changedInBlock.map((line) => line - blockStartLine + 1);
+        let ast: any;
+        try {
+            ast = parse(block.content, {
+                sourceType: 'module',
+                plugins: ['typescript', 'jsx'],
+                errorRecovery: true,
+            });
+        } catch {
+            return;
+        }
+        const bestByLine = collectSmallestNodes(ast, relativeLines);
+        const uniqueNodes = new Map<string, { startLine: number; endLine: number }>();
+        for (const node of bestByLine.values()) {
+            const loc = node?.loc;
+            if (!loc?.start?.line || !loc?.end?.line) continue;
+            const startLine = blockStartLine + loc.start.line - 1;
+            const endLine = blockStartLine + loc.end.line - 1;
+            const key = `${startLine}:${endLine}:${node.type}`;
+            if (!uniqueNodes.has(key)) uniqueNodes.set(key, { startLine, endLine });
+        }
+        for (const { startLine, endLine } of uniqueNodes.values()) {
+            const normalizedStart = Math.max(1, startLine);
+            const normalizedEnd = Math.min(lines.length, endLine);
+            const lineCount = normalizedEnd - normalizedStart + 1;
+            if (options?.maxNodeLines && lineCount > options.maxNodeLines) continue;
+            const source = lines.slice(normalizedStart - 1, normalizedEnd).join('\n');
+            allSnippets.push({ startLine: normalizedStart, endLine: normalizedEnd, source });
+        }
+    };
+
+    pushScriptBlockSnippets(descriptor.script ?? null);
+    pushScriptBlockSnippets(descriptor.scriptSetup ?? null);
+
+    const template = descriptor.template;
+    if (template && !template.src && template.loc?.start?.line != null) {
+        const blockStartLine = template.loc.start.line;
+        const blockEndLine = template.loc.end.line;
+        const changedInBlock = changedLines.filter((line) => line >= blockStartLine && line <= blockEndLine);
+        if (changedInBlock.length > 0 && template.ast) {
+            const bestByLine = collectSmallestTemplateNodes(template.ast, changedInBlock);
+            const uniqueNodes = new Map<string, { startLine: number; endLine: number }>();
+            for (const node of bestByLine.values()) {
+                const loc = (node as any)?.loc;
+                if (!loc?.start?.line || !loc?.end?.line) continue;
+                const startLine = loc.start.line;
+                const endLine = loc.end.line;
+                const key = `${startLine}:${endLine}:${(node as any).type}`;
+                if (!uniqueNodes.has(key)) uniqueNodes.set(key, { startLine, endLine });
+            }
+            for (const { startLine, endLine } of uniqueNodes.values()) {
+                const normalizedStart = Math.max(1, startLine);
+                const normalizedEnd = Math.min(lines.length, endLine);
+                const lineCount = normalizedEnd - normalizedStart + 1;
+                if (options?.maxNodeLines && lineCount > options.maxNodeLines) continue;
+                const source = lines.slice(normalizedStart - 1, normalizedEnd).join('\n');
+                allSnippets.push({ startLine: normalizedStart, endLine: normalizedEnd, source });
+            }
+        }
+    }
+
+    if (allSnippets.length === 0) {
+        return null;
+    }
+    const rawSnippets = allSnippets;
+    const snippets = rawSnippets.filter(
+        (a) => !rawSnippets.some((b) => b !== a && b.startLine <= a.startLine && b.endLine >= a.endLine)
+    );
+    snippets.sort((a, b) => (a.startLine !== b.startLine ? a.startLine - b.startLine : a.endLine - b.endLine));
+    return { snippets };
+};
+
+/**
+ * Vue 模板 AST：遍历节点树，按变更行取最小包含节点；loc 为 compiler-sfc 提供的源文件行号。
+ */
+const collectSmallestTemplateNodes = (ast: any, changedLines: number[]): Map<number, any> => {
+    const bestByLine = new Map<number, any>();
+    const visit = (node: any): void => {
+        if (!node || typeof node !== 'object') return;
+        const loc = node.loc;
+        if (loc?.start?.line != null && loc?.end?.line != null) {
+            const startLine = loc.start.line;
+            const endLine = loc.end.line;
+            for (const line of changedLines) {
+                if (line < startLine || line > endLine) continue;
+                const current = bestByLine.get(line);
+                const newSpan = endLine - startLine;
+                if (!current) {
+                    bestByLine.set(line, node);
+                    continue;
+                }
+                const currentLoc = current.loc;
+                const currentSpan = currentLoc.end.line - currentLoc.start.line;
+                if (newSpan <= currentSpan) bestByLine.set(line, node);
+            }
+        }
+        const children = node.children;
+        if (Array.isArray(children)) {
+            children.forEach((child: any) => visit(child));
+        }
+        const branches = node.branches;
+        if (Array.isArray(branches)) {
+            branches.forEach((b: any) => visit(b));
+        }
+        if (node.codegenNode && typeof node.codegenNode === 'object') {
+            visit(node.codegenNode);
+        }
+    };
+    if (ast?.children) {
+        ast.children.forEach((child: any) => visit(child));
+    }
     return bestByLine;
 };

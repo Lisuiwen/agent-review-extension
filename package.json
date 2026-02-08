@@ -178,6 +178,7 @@
   },
   "dependencies": {
     "@babel/parser": "^7.28.0",
+    "@vue/compiler-sfc": "^3.4.0",
     "axios": "^1.6.0",
     "js-yaml": "^4.1.0",
     "minimatch": "^10.1.1",
