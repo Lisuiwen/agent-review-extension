@@ -193,7 +193,8 @@ vi.mock('vscode', () => {
     };
 
     const languages = {
-        registerCodeLensProvider: () => ({ dispose: () => {} })
+        registerCodeLensProvider: () => ({ dispose: () => {} }),
+        registerHoverProvider: () => ({ dispose: () => {} })
     };
 
     const ProgressLocation = {

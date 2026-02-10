@@ -29,6 +29,18 @@ export interface AstScopeOptions {
     maxFileLines?: number;
 }
 
+export type AstFallbackReason =
+    | 'unsupportedExt'
+    | 'parseFailed'
+    | 'maxFileLines'
+    | 'maxNodeLines'
+    | 'emptyResult';
+
+export interface AffectedScopeWithDiagnostics {
+    result: AffectedScopeResult | null;
+    fallbackReason?: AstFallbackReason;
+}
+
 /**
  * 获取变更影响的 AST 片段
  *
@@ -43,26 +55,35 @@ export const getAffectedScope = (
     fileDiff: FileDiff,
     options?: AstScopeOptions
 ): AffectedScopeResult | null => {
+    return getAffectedScopeWithDiagnostics(filePath, content, fileDiff, options).result;
+};
+
+export const getAffectedScopeWithDiagnostics = (
+    filePath: string,
+    content: string,
+    fileDiff: FileDiff,
+    options?: AstScopeOptions
+): AffectedScopeWithDiagnostics => {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === '.vue') {
-        return getAffectedScopeVueSfc(content, fileDiff, options);
+        return getAffectedScopeVueSfcWithDiagnostics(content, fileDiff, options);
     }
     if (!['.js', '.jsx', '.ts', '.tsx'].includes(ext)) {
-        return null;
+        return { result: null, fallbackReason: 'unsupportedExt' };
     }
 
     if (!fileDiff?.hunks?.length) {
-        return null;
+        return { result: null, fallbackReason: 'emptyResult' };
     }
 
     const lines = content.split('\n');
     if (options?.maxFileLines && lines.length > options.maxFileLines) {
-        return null;
+        return { result: null, fallbackReason: 'maxFileLines' };
     }
 
     const changedLines = collectChangedLines(fileDiff);
     if (changedLines.length === 0) {
-        return null;
+        return { result: null, fallbackReason: 'emptyResult' };
     }
 
     let ast: any;
@@ -73,12 +94,12 @@ export const getAffectedScope = (
             errorRecovery: true,
         });
     } catch {
-        return null;
+        return { result: null, fallbackReason: 'parseFailed' };
     }
 
     const bestByLine = collectSmallestNodes(ast, changedLines);
     if (bestByLine.size === 0) {
-        return null;
+        return { result: null, fallbackReason: 'emptyResult' };
     }
 
     const uniqueNodes = new Map<string, { startLine: number; endLine: number }>();
@@ -101,24 +122,27 @@ export const getAffectedScope = (
         const normalizedEnd = Math.min(lines.length, endLine);
         const lineCount = normalizedEnd - normalizedStart + 1;
         if (options?.maxNodeLines && lineCount > options.maxNodeLines) {
-            return null;
+            return { result: null, fallbackReason: 'maxNodeLines' };
         }
         const source = lines.slice(normalizedStart - 1, normalizedEnd).join('\n');
         rawSnippets.push({ startLine: normalizedStart, endLine: normalizedEnd, source });
     }
 
     if (rawSnippets.length === 0) {
-        return null;
+        return { result: null, fallbackReason: 'emptyResult' };
     }
 
     // 去掉被其他片段完全包含的片段，避免同一段代码重复展示
     const snippets = rawSnippets.filter(
         (a) => !rawSnippets.some((b) => b !== a && b.startLine <= a.startLine && b.endLine >= a.endLine)
     );
+    if (snippets.length === 0) {
+        return { result: null, fallbackReason: 'emptyResult' };
+    }
     // 按文件行号排序，输出顺序与源码一致
     snippets.sort((a, b) => a.startLine !== b.startLine ? a.startLine - b.startLine : a.endLine - b.endLine);
 
-    return { snippets };
+    return { result: { snippets } };
 };
 
 const collectChangedLines = (fileDiff: FileDiff): number[] => {
@@ -185,21 +209,21 @@ const collectSmallestNodes = (ast: any, changedLines: number[]): Map<number, any
  * Vue SFC：按 block 解析，仅 script/scriptSetup/template；行号均为源文件行号。
  * 模板 AST 仅用于片段定位，不参与规则引擎。某 block 解析失败则仅该 block 降级为 diff。
  */
-const getAffectedScopeVueSfc = (
+const getAffectedScopeVueSfcWithDiagnostics = (
     content: string,
     fileDiff: FileDiff,
     options?: AstScopeOptions
-): AffectedScopeResult | null => {
+): AffectedScopeWithDiagnostics => {
     if (!fileDiff?.hunks?.length) {
-        return null;
+        return { result: null, fallbackReason: 'emptyResult' };
     }
     const lines = content.split('\n');
     if (options?.maxFileLines && lines.length > options.maxFileLines) {
-        return null;
+        return { result: null, fallbackReason: 'maxFileLines' };
     }
     const changedLines = collectChangedLines(fileDiff);
     if (changedLines.length === 0) {
-        return null;
+        return { result: null, fallbackReason: 'emptyResult' };
     }
 
     let descriptor: ReturnType<typeof parseSfc>['descriptor'];
@@ -207,10 +231,10 @@ const getAffectedScopeVueSfc = (
         const result = parseSfc(content, { filename: 'anonymous.vue' });
         descriptor = result.descriptor;
         if (result.errors?.length && !descriptor.template && !descriptor.script && !descriptor.scriptSetup) {
-            return null;
+            return { result: null, fallbackReason: 'parseFailed' };
         }
     } catch {
-        return null;
+        return { result: null, fallbackReason: 'parseFailed' };
     }
 
     const allSnippets: AffectedScopeSnippet[] = [];
@@ -283,14 +307,17 @@ const getAffectedScopeVueSfc = (
     }
 
     if (allSnippets.length === 0) {
-        return null;
+        return { result: null, fallbackReason: 'emptyResult' };
     }
     const rawSnippets = allSnippets;
     const snippets = rawSnippets.filter(
         (a) => !rawSnippets.some((b) => b !== a && b.startLine <= a.startLine && b.endLine >= a.endLine)
     );
+    if (snippets.length === 0) {
+        return { result: null, fallbackReason: 'emptyResult' };
+    }
     snippets.sort((a, b) => (a.startLine !== b.startLine ? a.startLine - b.startLine : a.endLine - b.endLine));
-    return { snippets };
+    return { result: { snippets } };
 };
 
 /**

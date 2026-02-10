@@ -34,6 +34,7 @@ import type { FileDiff } from '../utils/diffTypes';
 import { checkNoSpaceInFilename, checkNoTodo } from '../shared/ruleChecks';
 import * as path from 'path';
 import * as fs from 'fs';
+import { RuntimeTraceLogger, type RuntimeTraceSession } from '../utils/runtimeTraceLogger';
 
 /**
  * 规则接口（未来扩展用）
@@ -57,6 +58,7 @@ export interface Rule {
 export class RuleEngine {
     private configManager: ConfigManager;
     private logger: Logger;
+    private runtimeTraceLogger: RuntimeTraceLogger;
     private rules: Rule[] = [];
     // 大文件阈值：超过该大小的文件将被跳过，避免内存占用过高
     private static readonly MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
@@ -66,6 +68,7 @@ export class RuleEngine {
     constructor(configManager: ConfigManager) {
         this.configManager = configManager;
         this.logger = new Logger('RuleEngine');
+        this.runtimeTraceLogger = RuntimeTraceLogger.getInstance();
     }
 
     async initialize(): Promise<void> {
@@ -84,12 +87,32 @@ export class RuleEngine {
      * @returns 发现的问题列表
      */
     async checkFile(filePath: string, content: string, fileDiff?: FileDiff | null): Promise<ReviewIssue[]> {
-        this.logger.debug(`检查文件: ${filePath}`);
+        const result = this.checkFileWithMetrics(filePath, content, fileDiff);
+        return result.issues;
+    }
+
+    private checkFileWithMetrics = (
+        filePath: string,
+        content: string,
+        fileDiff?: FileDiff | null
+    ): {
+        issues: ReviewIssue[];
+        candidateLines: number;
+        checkedLines: number;
+        skippedUnchangedLines: number;
+    } => {
         const issues: ReviewIssue[] = [];
         const config = this.configManager.getConfig();
+        let candidateLines = 0;
+        let checkedLines = 0;
 
         if (!config.rules.enabled) {
-            return issues;
+            return {
+                issues,
+                candidateLines,
+                checkedLines,
+                skippedUnchangedLines: 0,
+            };
         }
 
         // 规则1：文件名（与行无关，始终检查）
@@ -104,6 +127,7 @@ export class RuleEngine {
         // 规则2：no_todo；有 fileDiff 时仅扫描变更行
         if (config.rules.code_quality?.enabled && config.rules.code_quality.no_todo) {
             let changedLineNumbers: Set<number> | undefined;
+            candidateLines = content.split('\n').length;
             if (fileDiff?.hunks?.length) {
                 changedLineNumbers = new Set<number>();
                 for (const h of fileDiff.hunks) {
@@ -112,6 +136,7 @@ export class RuleEngine {
                     }
                 }
             }
+            checkedLines = changedLineNumbers?.size ?? candidateLines;
             issues.push(
                 ...checkNoTodo(filePath, content, {
                     action: config.rules.code_quality.action,
@@ -120,8 +145,13 @@ export class RuleEngine {
             );
         }
 
-        return issues;
-    }
+        return {
+            issues,
+            candidateLines,
+            checkedLines,
+            skippedUnchangedLines: Math.max(0, candidateLines - checkedLines),
+        };
+    };
 
     /**
      * 批量检查多个文件
@@ -132,19 +162,44 @@ export class RuleEngine {
      * @param diffByFile - 可选，每文件的 diff；有则仅扫描变更行
      * @returns 所有文件的问题列表（合并后的）
      */
-    async checkFiles(files: string[], diffByFile?: Map<string, FileDiff> | null): Promise<ReviewIssue[]> {
+    async checkFiles(
+        files: string[],
+        diffByFile?: Map<string, FileDiff> | null,
+        traceSession?: RuntimeTraceSession | null
+    ): Promise<ReviewIssue[]> {
         const issues: ReviewIssue[] = [];
+        const scanStartAt = Date.now();
+        let skippedMissing = 0;
+        let skippedLarge = 0;
+        let skippedBinary = 0;
+        let bytesRead = 0;
+        let candidateLines = 0;
+        let checkedLines = 0;
+        let skippedUnchangedLines = 0;
+
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'RuleEngine',
+            event: 'rule_scan_start',
+            phase: 'rules',
+            data: {
+                files: files.length,
+                diffMode: !!diffByFile,
+            },
+        });
 
         for (const file of files) {
             try {
                 if (!fs.existsSync(file)) {
                     this.logger.warn(`文件不存在: ${file}`);
+                    skippedMissing++;
                     continue;
                 }
 
                 const stat = await fs.promises.stat(file);
                 if (stat.size > RuleEngine.MAX_FILE_SIZE_BYTES) {
                     this.logger.warn(`文件过大，已跳过: ${file} (${stat.size} bytes)`);
+                    skippedLarge++;
                     issues.push({
                         file,
                         line: 1,
@@ -159,6 +214,7 @@ export class RuleEngine {
                 const isBinary = await this.isBinaryFile(file);
                 if (isBinary) {
                     this.logger.warn(`检测到二进制文件，已跳过: ${file}`);
+                    skippedBinary++;
                     issues.push({
                         file,
                         line: 1,
@@ -171,13 +227,43 @@ export class RuleEngine {
                 }
 
                 const content = await fs.promises.readFile(file, 'utf-8');
+                bytesRead += Buffer.byteLength(content, 'utf8');
                 const fileDiff = diffByFile?.get(file) ?? null;
-                const fileIssues = await this.checkFile(file, content, fileDiff);
-                issues.push(...fileIssues);
+                const checkResult = this.checkFileWithMetrics(file, content, fileDiff);
+                candidateLines += checkResult.candidateLines;
+                checkedLines += checkResult.checkedLines;
+                skippedUnchangedLines += checkResult.skippedUnchangedLines;
+                issues.push(...checkResult.issues);
             } catch (error) {
                 this.logger.error(`检查文件失败: ${file}`, error);
             }
         }
+
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'RuleEngine',
+            event: 'rule_scan_summary',
+            phase: 'rules',
+            durationMs: Date.now() - scanStartAt,
+            data: {
+                filesScanned: files.length,
+                skippedMissing,
+                skippedLarge,
+                skippedBinary,
+                bytesRead,
+            },
+        });
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'RuleEngine',
+            event: 'rule_diff_filter_summary',
+            phase: 'rules',
+            data: {
+                candidateLines,
+                checkedLines,
+                skippedUnchangedLines,
+            },
+        });
 
         return issues;
     }

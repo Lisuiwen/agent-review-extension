@@ -198,6 +198,8 @@ describe('ReviewEngine 优化逻辑', () => {
 
         const reviewPromise = reviewEngine.review(['src/app.ts']);
 
+        // 等待 runAiReview 内部执行到 aiReviewer.review（多轮微任务）
+        await Promise.resolve();
         await Promise.resolve();
 
         expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);

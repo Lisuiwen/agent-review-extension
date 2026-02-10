@@ -22,6 +22,7 @@ import { registerRefreshCommand } from './commands/refreshCommand';
 import { registerAllowCommitOnceCommand } from './commands/allowCommitOnceCommand';
 import { registerFixIssueCommand } from './commands/fixIssueCommand';
 import type { CommandContext } from './commands/commandContext';
+import { RuntimeTraceLogger } from './utils/runtimeTraceLogger';
 
 let reviewEngine: ReviewEngine | undefined;
 let configManager: ConfigManager | undefined;
@@ -49,6 +50,13 @@ export const activate = async (context: vscode.ExtensionContext) => {
     try {
         configManager = new ConfigManager();
         await configManager.initialize(context);
+        const runtimeTraceLogger = RuntimeTraceLogger.getInstance();
+        const runtimeBaseDir = context.globalStorageUri?.fsPath || path.join(context.extensionPath, '.agentreview-runtime');
+        await runtimeTraceLogger.initialize({
+            baseDir: runtimeBaseDir,
+            config: configManager.getConfig().runtime_log,
+        });
+        Logger.setInfoOutputEnabled(runtimeTraceLogger.shouldOutputInfoToChannel());
 
         reviewEngine = new ReviewEngine(configManager);
         await reviewEngine.initialize();
@@ -96,10 +104,11 @@ export const activate = async (context: vscode.ExtensionContext) => {
     }
 };
 
-export const deactivate = () => {
+export const deactivate = async (): Promise<void> => {
     reviewPanel?.dispose();
     statusBar?.dispose();
     configManager?.dispose();
+    await RuntimeTraceLogger.getInstance().flushAndCloseAll();
     Logger.disposeSharedOutputChannel();
     reviewEngine = undefined;
     configManager = undefined;

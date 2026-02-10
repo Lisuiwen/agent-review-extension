@@ -7,12 +7,17 @@ let sharedOutputChannel: vscode.OutputChannel | undefined;
 export class Logger {
     private outputChannel: vscode.OutputChannel;
     private prefix: string;
+    private static infoOutputEnabled = true;
     // 共享输出通道的统一清理入口（在插件停用时调用）
     static disposeSharedOutputChannel = (): void => {
         if (sharedOutputChannel) {
             sharedOutputChannel.dispose();
             sharedOutputChannel = undefined;
         }
+    };
+
+    static setInfoOutputEnabled = (enabled: boolean): void => {
+        Logger.infoOutputEnabled = enabled;
     };
 
     constructor(prefix: string = 'AgentReview') {
@@ -26,9 +31,11 @@ export class Logger {
 
     info(message: string, ...args: any[]): void {
         const logMessage = `[${this.prefix}] [INFO] ${message}`;
-        this.outputChannel.appendLine(logMessage);
-        if (args.length > 0) {
-            this.outputChannel.appendLine(JSON.stringify(args, null, 2));
+        if (Logger.infoOutputEnabled) {
+            this.outputChannel.appendLine(logMessage);
+            if (args.length > 0) {
+                this.outputChannel.appendLine(JSON.stringify(args, null, 2));
+            }
         }
     }
 

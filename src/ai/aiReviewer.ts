@@ -7,6 +7,7 @@ import type { ReviewIssue } from '../types/review';
 import { FileScanner } from '../utils/fileScanner';
 import type { FileDiff } from '../utils/diffTypes';
 import type { AffectedScopeResult } from '../utils/astScope';
+import { RuntimeTraceLogger, type RuntimeTraceSession } from '../utils/runtimeTraceLogger';
 
 /**
  * AI审查配置接口
@@ -25,6 +26,11 @@ export interface AIReviewConfig {
     retry_count?: number;
     retry_delay?: number;
     diff_only?: boolean;
+    batching_mode?: 'file_count' | 'ast_snippet';
+    ast_snippet_budget?: number;
+    ast_chunk_strategy?: 'even' | 'contiguous';
+    batch_concurrency?: number;
+    max_request_chars?: number;
     action: 'block_commit' | 'warning' | 'log';
 }
 
@@ -101,6 +107,16 @@ export type AIReviewRequest = z.infer<typeof AIReviewRequestSchema>;
  */
 export type AIReviewResponse = z.infer<typeof AIReviewResponseSchema>;
 
+type ReviewUnitSourceType = 'ast' | 'diff' | 'full';
+
+interface ReviewUnit {
+    unitId: string;
+    path: string;
+    content: string;
+    snippetCount: number;
+    sourceType: ReviewUnitSourceType;
+}
+
 /**
  * 常量定义
  */
@@ -110,6 +126,11 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_MAX_TOKENS = 8000; // 增加默认token限制，确保有足够空间返回详细分析
 const DEFAULT_BATCH_SIZE = 5; // AI 审查默认批次大小
+const DEFAULT_BATCHING_MODE: NonNullable<AIReviewConfig['batching_mode']> = 'file_count';
+const DEFAULT_AST_SNIPPET_BUDGET = 25;
+const DEFAULT_AST_CHUNK_STRATEGY: NonNullable<AIReviewConfig['ast_chunk_strategy']> = 'even';
+const DEFAULT_BATCH_CONCURRENCY = 2;
+const DEFAULT_MAX_REQUEST_CHARS = 50000;
 const DEFAULT_SYSTEM_PROMPT = `你是一个经验丰富的代码审查专家。你的任务是深入分析代码，找出所有潜在问题，并提供详细的改进建议。
 
 审查时请关注以下方面：
@@ -168,6 +189,7 @@ export class AIReviewer {
     private configManager: ConfigManager;
     private logger: Logger;
     private fileScanner: FileScanner;
+    private runtimeTraceLogger: RuntimeTraceLogger;
     private config: AIReviewConfig | null = null;
     private axiosInstance: AxiosInstance;
     private responseCache = new Map<string, { response: AIReviewResponse; isPartial: boolean }>();
@@ -177,6 +199,7 @@ export class AIReviewer {
         this.configManager = configManager;
         this.logger = new Logger('AIReviewer');
         this.fileScanner = new FileScanner();
+        this.runtimeTraceLogger = RuntimeTraceLogger.getInstance();
         
         // 创建axios实例，统一配置
         // Moonshot API 使用 OpenAI 兼容格式，认证方式也是 Bearer Token
@@ -221,11 +244,8 @@ export class AIReviewer {
      * 从ConfigManager加载AI审查配置
      */
     async initialize(): Promise<void> {
-        this.logger.info('AI审查服务初始化');
-        
         const config = this.configManager.getConfig();
         if (!config.ai_review) {
-            this.logger.info('AI审查未配置（config.ai_review 不存在）');
             this.config = null;
             return;
         }
@@ -251,6 +271,11 @@ export class AIReviewer {
             retry_count: config.ai_review.retry_count ?? DEFAULT_MAX_RETRIES,
             retry_delay: config.ai_review.retry_delay || DEFAULT_RETRY_DELAY,
             diff_only: config.ai_review.diff_only ?? true,
+            batching_mode: config.ai_review.batching_mode ?? DEFAULT_BATCHING_MODE,
+            ast_snippet_budget: config.ai_review.ast_snippet_budget ?? DEFAULT_AST_SNIPPET_BUDGET,
+            ast_chunk_strategy: config.ai_review.ast_chunk_strategy ?? DEFAULT_AST_CHUNK_STRATEGY,
+            batch_concurrency: config.ai_review.batch_concurrency ?? DEFAULT_BATCH_CONCURRENCY,
+            max_request_chars: config.ai_review.max_request_chars ?? DEFAULT_MAX_REQUEST_CHARS,
             action: config.ai_review.action
         };
 
@@ -259,13 +284,8 @@ export class AIReviewer {
 
         const ep = this.config.apiEndpoint || '';
         const endpointResolved = !!ep && !ep.includes('${');
-        this.logger.info(`AI审查服务已初始化: enabled=${this.config.enabled}, format=${this.config.api_format}, model=${this.config.model || '未配置'}`);
-        if (ep) {
-            if (endpointResolved) {
-                this.logger.info(`[端点已解析] 当前 API 地址: ${ep}`);
-            } else {
-                this.logger.warn(`[端点未解析] 仍含占位符，请检查 .env 或设置中的环境变量: ${ep.substring(0, 60)}${ep.length > 60 ? '...' : ''}`);
-            }
+        if (ep && !endpointResolved) {
+            this.logger.warn(`[端点未解析] 仍含占位符，请检查 .env 或设置中的环境变量: ${ep.substring(0, 60)}${ep.length > 60 ? '...' : ''}`);
         }
         // 检查关键配置
         if (!ep) {
@@ -277,8 +297,6 @@ export class AIReviewer {
         } else if (this.config.apiKey.startsWith('${') && this.config.apiKey.endsWith('}')) {
             this.logger.warn(`⚠️ AI API密钥环境变量未解析: ${this.config.apiKey}`);
             this.logger.warn('请确保设置了 OPENAI_API_KEY 环境变量，或在项目根目录创建 .env 文件');
-        } else {
-            this.logger.info(`✓ AI API密钥已配置（长度: ${this.config.apiKey.length}）`);
         }
     }
 
@@ -295,12 +313,13 @@ export class AIReviewer {
         request: AIReviewRequest & {
             diffByFile?: Map<string, FileDiff>;
             astSnippetsByFile?: Map<string, AffectedScopeResult>;
-        }
+        },
+        traceSession?: RuntimeTraceSession | null
     ): Promise<ReviewIssue[]> {
+        const reviewStartAt = Date.now();
         const validatedRequest = this.validateRequest(request);
         const diffByFile = request.diffByFile;
         const astSnippetsByFile = request.astSnippetsByFile;
-        this.logger.info(`AI审查 ${validatedRequest.files.length} 个文件`);
 
         await this.ensureInitialized();
         if (!this.isConfigValid()) {
@@ -328,11 +347,11 @@ export class AIReviewer {
                         ? this.buildDiffSnippetForFile(f.path, fileDiff)
                         : undefined;
                     if (!content) {
-                        this.logger.warn(`[diff_only] 文件 ${f.path} 未取得变更片段(hasFileDiff=${!!fileDiff}, hunksLength=${fileDiff?.hunks?.length ?? 0})，将改为发送整文件`);
+                        this.logger.debug(`[diff_only] 文件 ${f.path} 未取得变更片段，回退整文件发送`);
                     }
                 }
                 if (!content && useAstSnippets) {
-                    this.logger.warn(`[ast_only] 文件 ${f.path} 未取得 AST 片段，将改为发送整文件`);
+                    this.logger.debug(`[ast_only] 文件 ${f.path} 未取得 AST 片段，回退整文件发送`);
                 }
                 return { path: f.path, content };
             })
@@ -387,59 +406,70 @@ export class AIReviewer {
                 return [];
             }
 
-            const batches = this.splitIntoBatches(validFiles, DEFAULT_BATCH_SIZE);
-            const processedFiles = new Set<string>();
-            const allIssues: ReviewIssue[] = [];
-
-            for (let i = 0; i < batches.length; i++) {
-                const batchIndex = i + 1;
-                const batch = batches[i];
-                const batchFiles = batch.filter(file => {
-                    if (processedFiles.has(file.path)) {
-                        this.logger.warn(`批处理重复文件已跳过: ${file.path}`);
-                        return false;
-                    }
-                    processedFiles.add(file.path);
-                    return true;
-                });
-
-                if (batchFiles.length === 0) {
-                    this.logger.warn(`批次 ${batchIndex}/${batches.length} 没有可审查文件，已跳过`);
-                    continue;
-                }
-
-                this.logger.info(`AI审查批次 ${batchIndex}/${batches.length}: ${batchFiles.length} 个文件`);
-
-                try {
-                    const response = await this.callAPI(
-                        { files: batchFiles },
-                        { isDiffContent: useDiffContent }
-                    );
-                    let batchIssues = this.transformToReviewIssues(
-                        response,
-                        batchFiles,
-                        { useDiffLineNumbers: useDiffContent }
-                    );
-                    if (useDiffContent && allowedLinesByFile.size > 0) {
-                        const before = batchIssues.length;
-                        batchIssues = batchIssues.filter(issue => {
-                            const allowed = allowedLinesByFile.get(path.normalize(issue.file));
-                            if (!allowed) return false;
-                            return allowed.has(issue.line);
-                        });
-                        if (before > batchIssues.length) {
-                            this.logger.info(`[diff_only] 已过滤掉 ${before - batchIssues.length} 条非变更行上的 AI 问题，保留 ${batchIssues.length} 条`);
-                        }
-                    }
-                    allIssues.push(...batchIssues);
-                } catch (error) {
-                    const handledIssues = this.handleReviewError(error);
-                    allIssues.push(...handledIssues);
-                }
+            const reviewUnits = this.buildReviewUnits(validFiles, {
+                useAstSnippets,
+                astSnippetsByFile,
+                useDiffMode: !!useDiffMode,
+                diffByFile: diffByFile ?? undefined,
+            });
+            if (reviewUnits.length === 0) {
+                this.logger.warn('没有可审查单元');
+                return [];
             }
 
-            return allIssues;
+            const useAstSnippetBatching = useAstSnippets && this.config?.batching_mode === 'ast_snippet';
+            const batches = useAstSnippetBatching
+                ? this.splitUnitsBySnippetBudget(reviewUnits, this.getAstSnippetBudget())
+                : this.splitIntoBatches(reviewUnits, DEFAULT_BATCH_SIZE);
+
+            const totalAstSnippetCount = this.countAstSnippetMap(astSnippetsByFile);
+            const totalSnippetCount = this.countUnitSnippets(reviewUnits);
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'AIReviewer',
+                event: 'ai_plan_summary',
+                phase: 'ai',
+                data: {
+                    files: validatedRequest.files.length,
+                    loadedFiles: validFiles.length,
+                    units: reviewUnits.length,
+                    batches: batches.length,
+                    astSnippets: totalAstSnippetCount,
+                    snippets: totalSnippetCount,
+                    batchingMode: useAstSnippetBatching ? 'ast_snippet' : 'file_count',
+                    concurrency: this.getBatchConcurrency(),
+                    budget: useAstSnippetBatching ? this.getAstSnippetBudget() : DEFAULT_BATCH_SIZE,
+                },
+            });
+
+            const issues = await this.processReviewUnitBatches(batches, {
+                useDiffContent,
+                allowedLinesByFile,
+            }, traceSession);
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'AIReviewer',
+                event: 'ai_batch_done',
+                phase: 'ai',
+                durationMs: Date.now() - reviewStartAt,
+                data: {
+                    scope: 'all_batches',
+                },
+            });
+            return issues;
         } catch (error) {
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'AIReviewer',
+                event: 'ai_batch_failed',
+                phase: 'ai',
+                level: 'warn',
+                durationMs: Date.now() - reviewStartAt,
+                data: {
+                    scope: 'all_batches',
+                    errorClass: error instanceof Error ? error.name : 'UnknownError',
+                },
+            });
             return this.handleReviewError(error);
         }
     }
@@ -501,7 +531,6 @@ export class AIReviewer {
             return false;
         }
         this.validateApiKey();
-        this.logger.info(`AI审查配置检查通过: endpoint=${ep}, model=${model}, hasApiKey=${this.hasValidApiKey()}`);
         return true;
     }
 
@@ -555,8 +584,15 @@ export class AIReviewer {
      * 根据 AST 片段构建带行号标注的内容，供 AI 审查使用
      */
     private buildAstSnippetForFile(filePath: string, result: AffectedScopeResult): string {
+        return this.buildAstSnippetForSnippets(filePath, result.snippets);
+    }
+
+    private buildAstSnippetForSnippets(
+        filePath: string,
+        snippets: AffectedScopeResult['snippets']
+    ): string {
         const lines: string[] = [`文件: ${filePath}`, '以下为变更相关的 AST 片段，行号为新文件中的行号。', ''];
-        for (const snippet of result.snippets) {
+        for (const snippet of snippets) {
             lines.push(`# 行 ${snippet.startLine}`);
             lines.push(snippet.source);
             lines.push('');
@@ -579,28 +615,12 @@ export class AIReviewer {
                 // 如果文件已有内容且不为空，直接使用（diff/AST 模式下为变更片段）
                 // 注意：如果 content 是空字符串，也需要读取文件
                 if (file.content !== undefined && file.content.trim().length > 0) {
-                    if (!previewOnly) {
-                        const isDiffSnippet = file.content.includes('以下为变更片段，行号为新文件中的行号。');
-                        const isAstSnippet = file.content.includes('以下为变更相关的 AST 片段，行号为新文件中的行号。');
-                        const snippetType = isAstSnippet
-                            ? 'AST片段'
-                            : isDiffSnippet
-                                ? '变更片段'
-                                : '已提供内容';
-                        this.logger.info(`[发给AI] ${file.path}: ${snippetType}, ${file.content.length} 字符`);
-                    }
-                    this.logger.debug(`使用已提供的文件内容: ${file.path} (长度: ${file.content.length})`);
                     return { path: file.path, content: file.content };
                 }
                 // 否则读取整文件（diff 模式下不应走到这里，若走到说明该文件未匹配到 diff）
-                if (!previewOnly) {
-                    this.logger.info(`[发给AI] ${file.path}: 读取整文件（未使用变更片段）`);
-                }
-                this.logger.debug(`读取文件内容: ${file.path}`);
                 try {
                     const content = await this.fileScanner.readFile(file.path);
-                    this.logger.debug(`成功读取文件: ${file.path} (长度: ${content.length})`);
-                    if (content.length === 0) {
+                    if (!previewOnly && content.length === 0) {
                         this.logger.warn(`文件为空: ${file.path}`);
                     }
                     return { path: file.path, content };
@@ -627,6 +647,414 @@ export class AIReviewer {
             batches.push(files.slice(i, i + batchSize));
         }
         return batches;
+    };
+
+    private getAstSnippetBudget = (): number => {
+        const raw = this.config?.ast_snippet_budget ?? DEFAULT_AST_SNIPPET_BUDGET;
+        if (!Number.isFinite(raw) || raw <= 0) {
+            return DEFAULT_AST_SNIPPET_BUDGET;
+        }
+        return Math.max(1, Math.floor(raw));
+    };
+
+    private getBatchConcurrency = (): number => {
+        const raw = this.config?.batch_concurrency ?? DEFAULT_BATCH_CONCURRENCY;
+        if (!Number.isFinite(raw) || raw <= 0) {
+            return DEFAULT_BATCH_CONCURRENCY;
+        }
+        return Math.max(1, Math.min(8, Math.floor(raw)));
+    };
+
+    private getMaxRequestChars = (): number => {
+        const raw = this.config?.max_request_chars ?? DEFAULT_MAX_REQUEST_CHARS;
+        if (!Number.isFinite(raw) || raw <= 0) {
+            return DEFAULT_MAX_REQUEST_CHARS;
+        }
+        return Math.max(1000, Math.floor(raw));
+    };
+
+    private buildReviewUnits = (
+        validFiles: Array<{ path: string; content: string }>,
+        options: {
+            useAstSnippets: boolean;
+            astSnippetsByFile?: Map<string, AffectedScopeResult>;
+            useDiffMode: boolean;
+            diffByFile?: Map<string, FileDiff>;
+        }
+    ): ReviewUnit[] => {
+        const units: ReviewUnit[] = [];
+        const useAstSnippetBatching = options.useAstSnippets && this.config?.batching_mode === 'ast_snippet';
+        const astSnippetBudget = this.getAstSnippetBudget();
+        const astChunkStrategy = this.config?.ast_chunk_strategy ?? DEFAULT_AST_CHUNK_STRATEGY;
+        let unitCounter = 0;
+
+        for (const file of validFiles) {
+            const normalizedPath = path.normalize(file.path);
+            const astResult = options.astSnippetsByFile?.get(normalizedPath) ?? options.astSnippetsByFile?.get(file.path);
+
+            if (useAstSnippetBatching && astResult?.snippets?.length) {
+                const chunks = this.chunkAstSnippets(astResult.snippets, astSnippetBudget, astChunkStrategy);
+                for (let i = 0; i < chunks.length; i++) {
+                    const chunk = chunks[i];
+                    unitCounter++;
+                    units.push({
+                        unitId: `${file.path}#ast#${i + 1}#${unitCounter}`,
+                        path: file.path,
+                        content: this.buildAstSnippetForSnippets(file.path, chunk),
+                        snippetCount: Math.max(1, chunk.length),
+                        sourceType: 'ast',
+                    });
+                }
+                continue;
+            }
+
+            let snippetCount = 1;
+            let sourceType: ReviewUnitSourceType = 'full';
+            if (astResult?.snippets?.length) {
+                snippetCount = astResult.snippets.length;
+                sourceType = 'ast';
+            } else if (options.useDiffMode && options.diffByFile) {
+                const fileDiff = options.diffByFile.get(normalizedPath) ?? options.diffByFile.get(file.path);
+                if (fileDiff?.hunks?.length) {
+                    snippetCount = fileDiff.hunks.length;
+                    sourceType = 'diff';
+                }
+            }
+
+            unitCounter++;
+            units.push({
+                unitId: `${file.path}#unit#${unitCounter}`,
+                path: file.path,
+                content: file.content,
+                snippetCount: Math.max(1, snippetCount),
+                sourceType,
+            });
+        }
+
+        return units;
+    };
+
+    private chunkAstSnippets = (
+        snippets: AffectedScopeResult['snippets'],
+        budget: number,
+        strategy: NonNullable<AIReviewConfig['ast_chunk_strategy']>
+    ): Array<AffectedScopeResult['snippets']> => {
+        if (snippets.length <= budget) {
+            return [snippets];
+        }
+
+        if (strategy === 'contiguous') {
+            const chunks: Array<AffectedScopeResult['snippets']> = [];
+            for (let i = 0; i < snippets.length; i += budget) {
+                chunks.push(snippets.slice(i, i + budget));
+            }
+            return chunks;
+        }
+
+        const chunks: Array<AffectedScopeResult['snippets']> = [];
+        const groupCount = Math.ceil(snippets.length / budget);
+        const baseSize = Math.floor(snippets.length / groupCount);
+        const remainder = snippets.length % groupCount;
+        let cursor = 0;
+        for (let i = 0; i < groupCount; i++) {
+            const size = baseSize + (i < remainder ? 1 : 0);
+            const nextCursor = Math.min(snippets.length, cursor + size);
+            chunks.push(snippets.slice(cursor, nextCursor));
+            cursor = nextCursor;
+        }
+        return chunks.filter(chunk => chunk.length > 0);
+    };
+
+    private splitUnitsBySnippetBudget = (units: ReviewUnit[], snippetBudget: number): ReviewUnit[][] => {
+        const budget = Math.max(1, snippetBudget);
+        const batches: ReviewUnit[][] = [];
+        let current: ReviewUnit[] = [];
+        let currentWeight = 0;
+
+        for (const unit of units) {
+            const weight = Math.max(1, unit.snippetCount);
+            if (current.length > 0 && currentWeight + weight > budget) {
+                batches.push(current);
+                current = [];
+                currentWeight = 0;
+            }
+            current.push(unit);
+            currentWeight += weight;
+        }
+
+        if (current.length > 0) {
+            batches.push(current);
+        }
+        return batches;
+    };
+
+    private processReviewUnitBatches = async (
+        batches: ReviewUnit[][],
+        options: {
+            useDiffContent: boolean;
+            allowedLinesByFile: Map<string, Set<number>>;
+        },
+        traceSession?: RuntimeTraceSession | null
+    ): Promise<ReviewIssue[]> => {
+        if (batches.length === 0) {
+            return [];
+        }
+
+        const poolStartAt = Date.now();
+        const maxConcurrency = Math.min(this.getBatchConcurrency(), batches.length);
+        const results: ReviewIssue[][] = new Array(batches.length);
+        const processedUnitIds = new Set<string>();
+        let nextBatchIndex = 0;
+
+        const workers = Array.from({ length: maxConcurrency }, async () => {
+            while (true) {
+                const currentIndex = nextBatchIndex;
+                nextBatchIndex++;
+                if (currentIndex >= batches.length) {
+                    break;
+                }
+                results[currentIndex] = await this.processSingleReviewBatch(
+                    batches[currentIndex],
+                    currentIndex + 1,
+                    batches.length,
+                    processedUnitIds,
+                    options,
+                    traceSession
+                );
+            }
+        });
+
+        await Promise.all(workers);
+        const flattened = results.flat();
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'AIReviewer',
+            event: 'ai_batch_done',
+            phase: 'ai',
+            durationMs: Date.now() - poolStartAt,
+            data: {
+                scope: 'pool',
+                batches: batches.length,
+                concurrency: maxConcurrency,
+            },
+        });
+        return flattened;
+    };
+
+    private processSingleReviewBatch = async (
+        batch: ReviewUnit[],
+        batchIndex: number,
+        totalBatches: number,
+        processedUnitIds: Set<string>,
+        options: {
+            useDiffContent: boolean;
+            allowedLinesByFile: Map<string, Set<number>>;
+        },
+        traceSession?: RuntimeTraceSession | null
+    ): Promise<ReviewIssue[]> => {
+        const batchStartAt = Date.now();
+        const batchUnits = batch.filter(unit => {
+            if (processedUnitIds.has(unit.unitId)) {
+                this.logger.warn(`批处理重复审查单元已跳过: ${unit.unitId}`);
+                return false;
+            }
+            processedUnitIds.add(unit.unitId);
+            return true;
+        });
+
+        if (batchUnits.length === 0) {
+            this.logger.warn(`批次 ${batchIndex}/${totalBatches} 没有可审查单元，已跳过`);
+            return [];
+        }
+
+        const batchSnippetCount = this.countUnitSnippets(batchUnits);
+        const batchEstimatedChars = this.estimateRequestChars(
+            batchUnits.map(unit => ({ path: unit.path, content: unit.content }))
+        );
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'AIReviewer',
+            event: 'ai_batch_start',
+            phase: 'ai',
+            data: {
+                batchIndex,
+                totalBatches,
+                units: batchUnits.length,
+                snippets: batchSnippetCount,
+                estimatedChars: batchEstimatedChars,
+            },
+        });
+
+        try {
+            const issues = await this.executeBatchWithFallback(batchUnits, options, true, traceSession);
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'AIReviewer',
+                event: 'ai_batch_done',
+                phase: 'ai',
+                durationMs: Date.now() - batchStartAt,
+                data: {
+                    batchIndex,
+                    totalBatches,
+                    units: batchUnits.length,
+                },
+            });
+            return issues;
+        } catch (error) {
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'AIReviewer',
+                event: 'ai_batch_failed',
+                phase: 'ai',
+                level: 'warn',
+                durationMs: Date.now() - batchStartAt,
+                data: {
+                    batchIndex,
+                    totalBatches,
+                    errorClass: error instanceof Error ? error.name : 'UnknownError',
+                },
+            });
+            return this.handleReviewError(error);
+        }
+    };
+
+    private executeBatchWithFallback = async (
+        batchUnits: ReviewUnit[],
+        options: {
+            useDiffContent: boolean;
+            allowedLinesByFile: Map<string, Set<number>>;
+        },
+        allowSplit: boolean,
+        traceSession?: RuntimeTraceSession | null
+    ): Promise<ReviewIssue[]> => {
+        const batchFiles = batchUnits.map(unit => ({
+            path: unit.path,
+            content: unit.content,
+        }));
+
+        const estimatedChars = this.estimateRequestChars(batchFiles);
+        const maxRequestChars = this.getMaxRequestChars();
+        if (allowSplit && batchFiles.length > 1 && estimatedChars > maxRequestChars) {
+            this.logger.warn(`[batch_guard] 批次估算长度 ${estimatedChars} 超过上限 ${maxRequestChars}，将二分降载`);
+            const [leftUnits, rightUnits] = this.splitUnitsInHalf(batchUnits);
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'AIReviewer',
+                event: 'batch_split_triggered',
+                phase: 'ai',
+                level: 'warn',
+                data: {
+                    reason: 'max_request_chars',
+                    leftUnits: leftUnits.length,
+                    rightUnits: rightUnits.length,
+                },
+            });
+            const leftIssues = await this.executeBatchWithFallback(leftUnits, options, false, traceSession);
+            const rightIssues = await this.executeBatchWithFallback(rightUnits, options, false, traceSession);
+            return [...leftIssues, ...rightIssues];
+        }
+
+        try {
+            const response = await this.callAPI(
+                { files: batchFiles },
+                { isDiffContent: options.useDiffContent },
+                traceSession
+            );
+            const batchIssues = this.transformToReviewIssues(
+                response,
+                batchFiles,
+                { useDiffLineNumbers: options.useDiffContent }
+            );
+            return this.filterIssuesByAllowedLines(batchIssues, options);
+        } catch (error) {
+            if (allowSplit && batchFiles.length > 1 && this.isContextTooLongError(error)) {
+                this.logger.warn('[batch_guard] 检测到上下文超限错误，批次将二分后重试一次');
+                const [leftUnits, rightUnits] = this.splitUnitsInHalf(batchUnits);
+                this.runtimeTraceLogger.logEvent({
+                    session: traceSession,
+                    component: 'AIReviewer',
+                    event: 'batch_split_triggered',
+                    phase: 'ai',
+                    level: 'warn',
+                    data: {
+                        reason: 'context_too_long',
+                        leftUnits: leftUnits.length,
+                        rightUnits: rightUnits.length,
+                    },
+                });
+                const leftIssues = await this.executeBatchWithFallback(leftUnits, options, false, traceSession);
+                const rightIssues = await this.executeBatchWithFallback(rightUnits, options, false, traceSession);
+                return [...leftIssues, ...rightIssues];
+            }
+            throw error;
+        }
+    };
+
+    private filterIssuesByAllowedLines = (
+        issues: ReviewIssue[],
+        options: {
+            useDiffContent: boolean;
+            allowedLinesByFile: Map<string, Set<number>>;
+        }
+    ): ReviewIssue[] => {
+        if (!options.useDiffContent || options.allowedLinesByFile.size === 0) {
+            return issues;
+        }
+
+        const before = issues.length;
+        const filtered = issues.filter(issue => {
+            const allowed = options.allowedLinesByFile.get(path.normalize(issue.file));
+            if (!allowed) {
+                return false;
+            }
+            return allowed.has(issue.line);
+        });
+        if (before > filtered.length) {
+            this.logger.debug('[diff_only] 已过滤非变更行问题');
+        }
+        return filtered;
+    };
+
+    private countAstSnippetMap = (astSnippetsByFile?: Map<string, AffectedScopeResult>): number => {
+        if (!astSnippetsByFile || astSnippetsByFile.size === 0) {
+            return 0;
+        }
+        let total = 0;
+        for (const result of astSnippetsByFile.values()) {
+            total += result.snippets.length;
+        }
+        return total;
+    };
+
+    private countUnitSnippets = (units: ReviewUnit[]): number => {
+        return units.reduce((sum, unit) => sum + Math.max(1, unit.snippetCount), 0);
+    };
+
+    private estimateRequestChars = (files: Array<{ path: string; content: string }>): number => {
+        return files.reduce((sum, file) => sum + file.path.length + file.content.length + 32, 0);
+    };
+
+    private splitUnitsInHalf = (units: ReviewUnit[]): [ReviewUnit[], ReviewUnit[]] => {
+        const mid = Math.ceil(units.length / 2);
+        return [units.slice(0, mid), units.slice(mid)];
+    };
+
+    private isContextTooLongError = (error: unknown): boolean => {
+        if (!axios.isAxiosError(error)) {
+            return false;
+        }
+
+        const status = error.response?.status;
+        if (status === 413) {
+            return true;
+        }
+
+        const responseText = typeof error.response?.data === 'string'
+            ? error.response.data
+            : JSON.stringify(error.response?.data ?? '');
+        const combinedText = `${error.message} ${responseText}`.toLowerCase();
+        const tooLongPattern = /(context|context_length_exceeded|too many tokens|max(?:imum)? context|prompt too long|request too large|payload too large)/;
+        return status === 400 && tooLongPattern.test(combinedText);
     };
 
     /**
@@ -686,7 +1114,8 @@ export class AIReviewer {
      */
     private async callAPI(
         request: { files: Array<{ path: string; content: string }> },
-        options?: { isDiffContent?: boolean }
+        options?: { isDiffContent?: boolean },
+        traceSession?: RuntimeTraceSession | null
     ): Promise<AIReviewResponse> {
         if (!this.config) {
             throw new Error('AI审查配置未初始化');
@@ -701,7 +1130,6 @@ export class AIReviewer {
             throw new Error(`AI API端点URL无效: ${url.substring(0, 60)}${url.length > 60 ? '...' : ''}`);
         }
 
-        this.logger.info(`[请求前] 本次调用 URL: ${url}；若返回 404，请对照服务商文档确认是否为 Chat Completions 地址`);
         const requestHash = this.calculateRequestHash(request);
 
         const requestBody = this.config.api_format === 'custom'
@@ -709,8 +1137,36 @@ export class AIReviewer {
             : this.buildOpenAIRequest(request, options?.isDiffContent);
 
         const userMsgForLog = (requestBody as { messages?: Array<{ role: string; content: string }> }).messages?.find(m => m.role === 'user');
-        const inputLen = userMsgForLog?.content?.length ?? 0;
-        this.logger.info(`[传给大模型] 模式: ${options?.isDiffContent ? '仅变更相关片段(diff/ast)' : '整文件'}，user 消息长度: ${inputLen} 字符`,userMsgForLog?.content);
+        const inputLen = userMsgForLog?.content?.length ?? this.estimateRequestChars(request.files);
+        const mode = options?.isDiffContent ? 'diff_or_ast' : 'full';
+        const callStartAt = Date.now();
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'AIReviewer',
+            event: 'llm_call_start',
+            phase: 'ai',
+            data: {
+                mode,
+                files: request.files.length,
+                inputChars: inputLen,
+            },
+        });
+        const logCallSummary = (attempts: number, partial: boolean): void => {
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'AIReviewer',
+                event: 'llm_call_done',
+                phase: 'ai',
+                durationMs: Date.now() - callStartAt,
+                data: {
+                    mode,
+                    files: request.files.length,
+                    attempts,
+                    partial,
+                    inputChars: inputLen,
+                },
+            });
+        };
 
         if (this.config.api_format !== 'custom') {
             const baseMessages = (requestBody as { messages: Array<{ role: string; content: string }> }).messages;
@@ -725,8 +1181,6 @@ export class AIReviewer {
 
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
             try {
-                this.logger.debug(`AI API调用 (尝试 ${attempt + 1}/${maxRetries + 1})`);
-                
                 const currentRequestBody = continuationRequestBody || requestBody;
                 const response = await this.axiosInstance.post(
                     url,
@@ -738,6 +1192,7 @@ export class AIReviewer {
                 if (this.config.api_format === 'custom') {
                     const parsedResponse = this.parseCustomResponse(response.data);
                     const mergedResponse = this.mergeCachedIssues(requestHash, parsedResponse, false);
+                    logCallSummary(attempt + 1, false);
                     return mergedResponse;
                 }
 
@@ -745,19 +1200,22 @@ export class AIReviewer {
                 const mergedResponse = this.mergeCachedIssues(requestHash, parsedResult.response, parsedResult.isPartial);
 
                 if (!parsedResult.isPartial) {
+                    logCallSummary(attempt + 1, false);
                     return mergedResponse;
                 }
 
-                this.logger.warn(`AI响应疑似被截断，已提取 ${mergedResponse.issues.length} 个问题，尝试续写补全`);
+                this.logger.warn('AI响应疑似被截断，尝试续写补全');
 
                 if (attempt === maxRetries) {
                     this.logger.warn('续写重试次数已用尽，返回已解析的部分结果');
+                    logCallSummary(attempt + 1, true);
                     return mergedResponse;
                 }
 
                 const baseMessages = this.baseMessageCache.get(requestHash);
                 if (!baseMessages) {
                     this.logger.warn('续写失败：未找到基础提示词，返回已解析的部分结果');
+                    logCallSummary(attempt + 1, true);
                     return mergedResponse;
                 }
 
@@ -779,8 +1237,37 @@ export class AIReviewer {
                 if (this.shouldRetry(error as AxiosError)) {
                     const delay = baseDelay * Math.pow(2, attempt);
                     this.logger.warn(`AI API调用失败，${delay}ms后重试 (${attempt + 1}/${maxRetries})`);
+                    this.runtimeTraceLogger.logEvent({
+                        session: traceSession,
+                        component: 'AIReviewer',
+                        event: 'llm_retry_scheduled',
+                        phase: 'ai',
+                        level: 'warn',
+                        data: {
+                            mode,
+                            attempt: attempt + 1,
+                            delayMs: delay,
+                            statusCode: axios.isAxiosError(error) ? (error.response?.status ?? 0) : 0,
+                            reason: this.getRetryReason(error),
+                        },
+                    });
                     await this.sleep(delay);
                 } else {
+                    this.runtimeTraceLogger.logEvent({
+                        session: traceSession,
+                        component: 'AIReviewer',
+                        event: 'llm_call_abort',
+                        phase: 'ai',
+                        level: 'warn',
+                        durationMs: Date.now() - callStartAt,
+                        data: {
+                            mode,
+                            files: request.files.length,
+                            attempts: attempt + 1,
+                            inputChars: inputLen,
+                            errorClass: error instanceof Error ? error.name : 'UnknownError',
+                        },
+                    });
                     // 不应该重试的错误（如401认证失败），直接抛出
                     throw error;
                 }
@@ -788,6 +1275,21 @@ export class AIReviewer {
         }
 
         // 所有重试都失败，抛出最后一个错误
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'AIReviewer',
+            event: 'llm_call_failed',
+            phase: 'ai',
+            level: 'warn',
+            durationMs: Date.now() - callStartAt,
+            data: {
+                mode,
+                files: request.files.length,
+                attempts: maxRetries + 1,
+                inputChars: inputLen,
+                errorClass: lastError?.name ?? 'UnknownError',
+            },
+        });
         throw new Error(`AI API调用失败（已重试${maxRetries}次）: ${lastError?.message || '未知错误'}`);
     }
 
@@ -815,18 +1317,11 @@ export class AIReviewer {
             const ext = file.path.split('.').pop() || '';
             const language = this.getLanguageFromExtension(ext);
             const content = file.content;
-            const contentLength = content.length;
-            this.logger.debug(`构建请求 - 文件: ${file.path}, 内容长度: ${contentLength} 字符`);
-            if (contentLength === 0) {
+            if (content.length === 0) {
                 this.logger.warn(`警告: 文件内容为空: ${file.path}`);
-            } else if (contentLength < 100) {
-                this.logger.debug(`文件内容预览 (前${Math.min(100, contentLength)}字符): ${content.substring(0, 100)}`);
             }
             return `文件: ${file.path}\n\`\`\`${language}\n${content}\n\`\`\``;
         }).join('\n\n');
-
-        const totalContentLength = filesContent.length;
-        this.logger.debug(`构建的提示词总长度: ${totalContentLength} 字符`);
 
         const intro = isDiffContent
             ? '请仅针对以下**变更相关片段（diff/AST）**进行代码审查（非整文件）。片段中已用「# 行 N」标注新文件行号。'
@@ -1094,7 +1589,7 @@ ${lastIssueHint}
             // 验证解析后的数据
             const validatedResponse = AIReviewResponseSchema.parse(parseResult.parsed);
             
-            this.logger.info(`成功解析并验证AI响应，发现 ${validatedResponse.issues.length} 个问题`);
+            this.logger.debug('AI响应解析与结构校验通过');
             return {
                 response: validatedResponse,
                 isPartial: parseResult.isPartial,
@@ -1317,7 +1812,7 @@ ${lastIssueHint}
             throw new Error('JSON被截断且无法提取任何有效的issue对象');
         }
         
-        this.logger.warn(`JSON被截断，成功提取了 ${issues.length} 个完整的issue对象（可能还有更多未返回）`);
+        this.logger.warn('JSON被截断，已提取部分可解析内容');
         
         return { issues };
     }
@@ -1476,7 +1971,7 @@ ${lastIssueHint}
     private parseCustomResponse(responseData: unknown): AIReviewResponse {
         try {
             const validatedResponse = AIReviewResponseSchema.parse(responseData);
-            this.logger.info(`成功验证自定义API响应，发现 ${validatedResponse.issues.length} 个问题`);
+            this.logger.debug('自定义API响应结构校验通过');
             return validatedResponse;
         } catch (error) {
             if (error instanceof z.ZodError) {
@@ -1641,6 +2136,29 @@ ${lastIssueHint}
         // 其他错误（如401认证失败、400请求错误），不应该重试
         return false;
     }
+
+    /**
+     * 将重试原因归一化为可分析字段，便于后续统计调用失败分布
+     */
+    private getRetryReason = (error: unknown): string => {
+        if (!axios.isAxiosError(error)) {
+            return 'unknown';
+        }
+        if (!error.response) {
+            if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message)) {
+                return 'timeout';
+            }
+            return 'network';
+        }
+        const status = error.response.status;
+        if (status === 429) {
+            return 'rate_limit';
+        }
+        if (status >= 500) {
+            return 'server_error';
+        }
+        return `http_${status}`;
+    };
 
     /**
      * 延迟函数

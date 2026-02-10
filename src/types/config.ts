@@ -44,6 +44,11 @@ export interface AgentReviewConfig {
         retry_delay?: number;               // 重试延迟（毫秒）
         skip_on_blocking_errors?: boolean;  // 遇到阻止提交错误时跳过AI审查
         diff_only?: boolean;                // staged 审查时仅发送变更片段给 AI（默认 true）
+        batching_mode?: 'file_count' | 'ast_snippet'; // 批次模式
+        ast_snippet_budget?: number;        // AST 片段预算（每批次片段数量上限）
+        ast_chunk_strategy?: 'even' | 'contiguous'; // 同一文件片段拆分策略
+        batch_concurrency?: number;         // 批次并发数
+        max_request_chars?: number;         // 单次请求字符数上限
         action: 'block_commit' | 'warning' | 'log';  // 违反规则时的行为
     };
     ast?: {
@@ -60,5 +65,12 @@ export interface AgentReviewConfig {
     exclusions?: {
         files?: string[];
         directories?: string[];
+    };
+    runtime_log?: {
+        enabled?: boolean;
+        level?: 'info' | 'warn' | 'error' | 'debug';
+        retention_days?: number;
+        file_mode?: 'per_run';
+        format?: 'jsonl';
     };
 }

@@ -67,6 +67,23 @@ export const mergeConfig = (
                 preview_only: resolvedUserConfig.ast.preview_only ?? defaultAst.preview_only,
             };
         })(),
+        runtime_log: (() => {
+            const defaultRuntimeLog = defaultConfig.runtime_log ?? {
+                enabled: true,
+                level: 'info',
+                retention_days: 14,
+                file_mode: 'per_run',
+                format: 'jsonl',
+            };
+            if (!resolvedUserConfig.runtime_log) return defaultRuntimeLog;
+            return {
+                enabled: resolvedUserConfig.runtime_log.enabled ?? defaultRuntimeLog.enabled,
+                level: resolvedUserConfig.runtime_log.level ?? defaultRuntimeLog.level,
+                retention_days: resolvedUserConfig.runtime_log.retention_days ?? defaultRuntimeLog.retention_days,
+                file_mode: resolvedUserConfig.runtime_log.file_mode ?? defaultRuntimeLog.file_mode,
+                format: resolvedUserConfig.runtime_log.format ?? defaultRuntimeLog.format,
+            };
+        })(),
     };
 
     if (merged.ai_review) {

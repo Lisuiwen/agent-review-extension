@@ -2,24 +2,38 @@
  * AIReviewer 优化相关单元测试
  *
  * 覆盖功能：
- * 1. 批处理：文件数量超过批次上限时分批调用 API
- * 2. 批处理结果合并：多个批次的结果正确合并返回
- *
- * 说明：
- * - 使用 spy 拦截内部方法，避免真实文件读取与网络请求
- * - 只验证批处理调用次数与批次大小
+ * 1. file_count 兼容：默认 5 文件一批
+ * 2. AST 片段预算分批：60 片段 + budget=25 => 3 批
+ * 3. 同文件多单元不丢失
+ * 4. 并发池上限控制
+ * 5. max_request_chars 超限自动降载二分
+ * 6. 截断响应续写回归
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AIReviewer } from '../../ai/aiReviewer';
 import { createMockConfigManager } from '../helpers/mockConfigManager';
+import type { AffectedScopeResult } from '../../utils/astScope';
 
-describe('AIReviewer 批处理', () => {
+const createAstResult = (count: number, startLine = 1): AffectedScopeResult => ({
+    snippets: Array.from({ length: count }, (_, idx) => {
+        const line = startLine + idx;
+        return {
+            startLine: line,
+            endLine: line,
+            source: `const v${line} = ${line};`,
+        };
+    }),
+});
+
+type CallApiInput = { files: Array<{ path: string; content: string }> };
+
+describe('AIReviewer 批处理优化', () => {
     beforeEach(() => {
         vi.restoreAllMocks();
     });
 
-    it('超过批次大小时应分批调用 API', async () => {
+    it('batching_mode=file_count 时保持 5 文件一批', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -29,6 +43,7 @@ describe('AIReviewer 批处理', () => {
                 model: 'test-model',
                 timeout: 1000,
                 action: 'warning',
+                batching_mode: 'file_count',
             },
         });
 
@@ -40,24 +55,227 @@ describe('AIReviewer 批处理', () => {
             content: `export const value${index + 1} = ${index + 1};`,
         }));
 
-        const loadFilesSpy = vi
-            .spyOn(aiReviewer as unknown as { loadFilesWithContent: (input: Array<{ path: string }>) => Promise<typeof files> }, 'loadFilesWithContent')
-            .mockResolvedValue(files);
-
         const callApiSpy = vi
-            .spyOn(aiReviewer as unknown as { callAPI: (input: { files: typeof files }) => Promise<{ issues: Array<any> }> }, 'callAPI')
+            .spyOn(aiReviewer as unknown as { callAPI: (input: CallApiInput) => Promise<{ issues: Array<any> }> }, 'callAPI')
             .mockResolvedValue({ issues: [] });
 
-        const result = await aiReviewer.review({
-            files: files.map(file => ({ path: file.path })),
+        const result = await aiReviewer.review({ files });
+
+        expect(callApiSpy).toHaveBeenCalledTimes(3);
+        const batchSizes = callApiSpy.mock.calls.map(call => call[0].files.length).sort((a, b) => a - b);
+        expect(batchSizes).toEqual([1, 5, 5]);
+        expect(result).toEqual([]);
+    });
+
+    it('AST 60 片段按预算 25 分批时应拆为 3 批，且同文件多单元不丢失', async () => {
+        const configManager = createMockConfigManager({
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                api_key: 'test-api-key',
+                model: 'test-model',
+                timeout: 1000,
+                action: 'warning',
+                batching_mode: 'ast_snippet',
+                ast_snippet_budget: 25,
+                ast_chunk_strategy: 'even',
+                batch_concurrency: 2,
+            },
         });
 
-        expect(loadFilesSpy).toHaveBeenCalledTimes(1);
+        const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
+
+        const filePath = 'src/huge.ts';
+        const astSnippetsByFile = new Map<string, AffectedScopeResult>([
+            [filePath, createAstResult(60, 1)],
+        ]);
+
+        const callApiSpy = vi
+            .spyOn(aiReviewer as unknown as { callAPI: (input: CallApiInput) => Promise<{ issues: Array<any> }> }, 'callAPI')
+            .mockImplementation(async (input) => {
+                const content = input.files[0].content;
+                const match = content.match(/# 行 (\d+)/);
+                const line = match ? Number(match[1]) : 1;
+                return {
+                    issues: [{
+                        file: filePath,
+                        line,
+                        column: 1,
+                        message: `m-${line}`,
+                        severity: 'warning',
+                    }],
+                };
+            });
+
+        const result = await aiReviewer.review({
+            files: [{ path: filePath }],
+            astSnippetsByFile,
+        });
+
         expect(callApiSpy).toHaveBeenCalledTimes(3);
-        expect(callApiSpy.mock.calls[0][0].files.length).toBe(5);
-        expect(callApiSpy.mock.calls[1][0].files.length).toBe(5);
-        expect(callApiSpy.mock.calls[2][0].files.length).toBe(1);
-        expect(result.length).toBe(0);
+        expect(callApiSpy.mock.calls.every(call => call[0].files.length === 1)).toBe(true);
+        expect(callApiSpy.mock.calls.every(call => call[0].files[0].path === filePath)).toBe(true);
+
+        // 3 个 AST 子单元都应保留结果，不因同路径去重被误丢弃
+        expect(result.length).toBe(3);
+        const lines = result.map(issue => issue.line).sort((a, b) => a - b);
+        expect(lines).toEqual([1, 21, 41]);
+    });
+
+    it('并发=2 时同一时刻最多执行 2 个批次', async () => {
+        const configManager = createMockConfigManager({
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                api_key: 'test-api-key',
+                model: 'test-model',
+                timeout: 1000,
+                action: 'warning',
+                batching_mode: 'ast_snippet',
+                ast_snippet_budget: 1,
+                batch_concurrency: 2,
+            },
+        });
+
+        const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
+
+        const files = Array.from({ length: 4 }, (_, idx) => ({ path: `src/c${idx + 1}.ts` }));
+        const astSnippetsByFile = new Map<string, AffectedScopeResult>(
+            files.map((file, idx) => [file.path, createAstResult(1, idx + 1)])
+        );
+
+        let inFlight = 0;
+        let maxInFlight = 0;
+
+        const callApiSpy = vi
+            .spyOn(aiReviewer as unknown as { callAPI: (input: CallApiInput) => Promise<{ issues: Array<any> }> }, 'callAPI')
+            .mockImplementation(async (input) => {
+                inFlight++;
+                maxInFlight = Math.max(maxInFlight, inFlight);
+                await new Promise(resolve => setTimeout(resolve, 50));
+                inFlight--;
+                const match = input.files[0].content.match(/# 行 (\d+)/);
+                const line = match ? Number(match[1]) : 1;
+                return {
+                    issues: [{
+                        file: input.files[0].path,
+                        line,
+                        column: 1,
+                        message: 'ok',
+                        severity: 'warning',
+                    }],
+                };
+            });
+
+        const result = await aiReviewer.review({ files, astSnippetsByFile });
+
+        expect(callApiSpy).toHaveBeenCalledTimes(4);
+        expect(result.length).toBe(4);
+        expect(maxInFlight).toBe(2);
+    });
+
+    it('请求超出 max_request_chars 时应自动二分降载', async () => {
+        const configManager = createMockConfigManager({
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                api_key: 'test-api-key',
+                model: 'test-model',
+                timeout: 1000,
+                action: 'warning',
+                batching_mode: 'file_count',
+                max_request_chars: 80,
+            },
+        });
+
+        const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
+
+        const files = [
+            { path: 'src/a.ts', content: `const a = '${'x'.repeat(1200)}';` },
+            { path: 'src/b.ts', content: `const b = '${'y'.repeat(1200)}';` },
+        ];
+
+        const callApiSpy = vi
+            .spyOn(aiReviewer as unknown as { callAPI: (input: CallApiInput) => Promise<{ issues: Array<any> }> }, 'callAPI')
+            .mockImplementation(async (input) => ({
+                issues: [{
+                    file: input.files[0].path,
+                    line: 1,
+                    column: 1,
+                    message: 'ok',
+                    severity: 'warning',
+                }],
+            }));
+
+        const result = await aiReviewer.review({ files });
+
+        expect(callApiSpy).toHaveBeenCalledTimes(2);
+        expect(callApiSpy.mock.calls.every(call => call[0].files.length === 1)).toBe(true);
+        expect(result.length).toBe(2);
+    });
+
+    it('400/context too long 时应触发批次二分降载重试', async () => {
+        const configManager = createMockConfigManager({
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                api_key: 'test-api-key',
+                model: 'test-model',
+                timeout: 1000,
+                action: 'warning',
+                batching_mode: 'file_count',
+            },
+        });
+
+        const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
+
+        const files = [
+            { path: 'src/a.ts', content: 'const a = 1;' },
+            { path: 'src/b.ts', content: 'const b = 2;' },
+        ];
+
+        let attempt = 0;
+        const contextTooLongError = {
+            isAxiosError: true,
+            message: 'context_length_exceeded',
+            response: {
+                status: 400,
+                data: { error: { message: 'prompt too long' } },
+            },
+        };
+
+        const callApiSpy = vi
+            .spyOn(aiReviewer as unknown as { callAPI: (input: CallApiInput) => Promise<{ issues: Array<any> }> }, 'callAPI')
+            .mockImplementation(async (input) => {
+                attempt++;
+                if (attempt === 1) {
+                    throw contextTooLongError;
+                }
+                return {
+                    issues: [{
+                        file: input.files[0].path,
+                        line: 1,
+                        column: 1,
+                        message: 'ok',
+                        severity: 'warning',
+                    }],
+                };
+            });
+
+        const result = await aiReviewer.review({ files });
+
+        expect(callApiSpy).toHaveBeenCalledTimes(3);
+        expect(callApiSpy.mock.calls[0][0].files.length).toBe(2);
+        expect(callApiSpy.mock.calls.slice(1).every(call => call[0].files.length === 1)).toBe(true);
+        expect(result.length).toBe(2);
     });
 
     it('截断响应应触发续写并合并去重结果', async () => {
@@ -108,13 +326,13 @@ describe('AIReviewer 批处理', () => {
         const postMock = vi.fn()
             .mockResolvedValueOnce({
                 data: {
-                    choices: [{ message: { content: truncatedContent } }]
-                }
+                    choices: [{ message: { content: truncatedContent } }],
+                },
             })
             .mockResolvedValueOnce({
                 data: {
-                    choices: [{ message: { content: continuationContent } }]
-                }
+                    choices: [{ message: { content: continuationContent } }],
+                },
             });
 
         (aiReviewer as unknown as { axiosInstance: { post: typeof postMock } }).axiosInstance.post = postMock;
@@ -122,7 +340,7 @@ describe('AIReviewer 批处理', () => {
         const response = await (aiReviewer as unknown as {
             callAPI: (input: { files: Array<{ path: string; content: string }> }) => Promise<{ issues: Array<any> }>
         }).callAPI({
-            files: [{ path: 'src/a.ts', content: 'const a = 1;' }]
+            files: [{ path: 'src/a.ts', content: 'const a = 1;' }],
         });
 
         expect(postMock).toHaveBeenCalledTimes(2);
@@ -130,5 +348,4 @@ describe('AIReviewer 批处理', () => {
         expect(response.issues[0].file).toBe('src/a.ts');
         expect(response.issues[1].file).toBe('src/b.ts');
     });
-
 });

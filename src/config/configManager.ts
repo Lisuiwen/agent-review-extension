@@ -244,6 +244,21 @@ export class ConfigManager implements vscode.Disposable {
         if (settings.get('ai.diffOnly') !== undefined) {
             aiConfig.diff_only = settings.get('ai.diffOnly');
         }
+        if (settings.get('ai.batchingMode')) {
+            aiConfig.batching_mode = settings.get('ai.batchingMode');
+        }
+        if (settings.get('ai.astSnippetBudget') !== undefined) {
+            aiConfig.ast_snippet_budget = settings.get('ai.astSnippetBudget');
+        }
+        if (settings.get('ai.astChunkStrategy')) {
+            aiConfig.ast_chunk_strategy = settings.get('ai.astChunkStrategy');
+        }
+        if (settings.get('ai.batchConcurrency') !== undefined) {
+            aiConfig.batch_concurrency = settings.get('ai.batchConcurrency');
+        }
+        if (settings.get('ai.maxRequestChars') !== undefined) {
+            aiConfig.max_request_chars = settings.get('ai.maxRequestChars');
+        }
 
         // 如果没有任何配置，返回undefined
         if (Object.keys(aiConfig).length === 0) {
@@ -251,6 +266,42 @@ export class ConfigManager implements vscode.Disposable {
         }
 
         return resolveEnvInConfig(aiConfig, this.envVars, this.logger) as Partial<AgentReviewConfig['ai_review']>;
+    }
+
+    /**
+     * 从 VSCode Settings 读取运行链路日志配置
+     *
+     * 优先级：Settings > YAML > 默认
+     */
+    private loadRuntimeLogConfigFromSettings(): Partial<NonNullable<AgentReviewConfig['runtime_log']>> | undefined {
+        const settings = vscode.workspace.getConfiguration('agentreview');
+        const runtimeLogSettings = settings.get('runtimeLog');
+        if (!runtimeLogSettings || typeof runtimeLogSettings !== 'object') {
+            return undefined;
+        }
+
+        const runtimeLogConfig: Partial<NonNullable<AgentReviewConfig['runtime_log']>> = {};
+        if (settings.get('runtimeLog.enabled') !== undefined) {
+            runtimeLogConfig.enabled = settings.get('runtimeLog.enabled');
+        }
+        if (settings.get('runtimeLog.level')) {
+            runtimeLogConfig.level = settings.get('runtimeLog.level');
+        }
+        if (settings.get('runtimeLog.retentionDays') !== undefined) {
+            runtimeLogConfig.retention_days = settings.get('runtimeLog.retentionDays');
+        }
+        if (settings.get('runtimeLog.fileMode')) {
+            runtimeLogConfig.file_mode = settings.get('runtimeLog.fileMode');
+        }
+        if (settings.get('runtimeLog.format')) {
+            runtimeLogConfig.format = settings.get('runtimeLog.format');
+        }
+
+        if (Object.keys(runtimeLogConfig).length === 0) {
+            return undefined;
+        }
+
+        return runtimeLogConfig;
     }
 
     /**
@@ -344,8 +395,26 @@ export class ConfigManager implements vscode.Disposable {
                     ...(settingsAIConfig.retry_delay !== undefined && { retry_delay: settingsAIConfig.retry_delay }),
                     ...(existingAIConfig?.retry_delay !== undefined && settingsAIConfig.retry_delay === undefined && { retry_delay: existingAIConfig.retry_delay }),
                     diff_only: settingsAIConfig.diff_only ?? existingAIConfig?.diff_only ?? true,
+                    batching_mode: settingsAIConfig.batching_mode ?? existingAIConfig?.batching_mode ?? 'file_count',
+                    ast_snippet_budget: settingsAIConfig.ast_snippet_budget ?? existingAIConfig?.ast_snippet_budget ?? 25,
+                    ast_chunk_strategy: settingsAIConfig.ast_chunk_strategy ?? existingAIConfig?.ast_chunk_strategy ?? 'even',
+                    batch_concurrency: settingsAIConfig.batch_concurrency ?? existingAIConfig?.batch_concurrency ?? 2,
+                    max_request_chars: settingsAIConfig.max_request_chars ?? existingAIConfig?.max_request_chars ?? 50000,
                 };
                 yamlConfig.ai_review = mergedAIConfig;
+            }
+
+            const settingsRuntimeLogConfig = this.loadRuntimeLogConfigFromSettings();
+            if (settingsRuntimeLogConfig) {
+                this.logger.info('从VSCode Settings加载运行日志配置');
+                const existingRuntimeLog = yamlConfig.runtime_log || null;
+                yamlConfig.runtime_log = {
+                    enabled: settingsRuntimeLogConfig.enabled ?? existingRuntimeLog?.enabled ?? true,
+                    level: settingsRuntimeLogConfig.level ?? existingRuntimeLog?.level ?? 'info',
+                    retention_days: settingsRuntimeLogConfig.retention_days ?? existingRuntimeLog?.retention_days ?? 14,
+                    file_mode: settingsRuntimeLogConfig.file_mode ?? existingRuntimeLog?.file_mode ?? 'per_run',
+                    format: settingsRuntimeLogConfig.format ?? existingRuntimeLog?.format ?? 'jsonl',
+                };
             }
 
             // 步骤4：合并默认配置和用户配置（合并顺序：Settings > YAML > 默认）
@@ -525,6 +594,13 @@ export class ConfigManager implements vscode.Disposable {
             exclusions: {
                 files: [],
                 directories: [],
+            },
+            runtime_log: {
+                enabled: true,
+                level: 'info',
+                retention_days: 14,
+                file_mode: 'per_run',
+                format: 'jsonl',
             },
         };
     }

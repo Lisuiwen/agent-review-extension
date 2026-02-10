@@ -28,11 +28,8 @@ export const registerRunReviewCommand = (deps: CommandContext): vscode.Disposabl
             reviewPanel.setStatus('reviewing');
             reviewPanel.reveal();
 
-            logger.info('调用 reviewEngine.reviewStagedFiles()');
             const result = await reviewEngine.reviewStagedFiles();
-            logger.info(
-                `审查完成，结果: passed=${result.passed}, errors=${result.errors.length}, warnings=${result.warnings.length}, info=${result.info.length}`
-            );
+            logger.info('审查流程执行完成');
 
             reviewPanel.showReviewResult(result, 'completed');
             statusBar.updateWithResult(result);

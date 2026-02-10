@@ -168,6 +168,80 @@
           ],
           "default": "warning",
           "description": "AI审查发现问题时的行为：block_commit（阻止提交）、warning（警告但允许）、log（仅记录）"
+        },
+        "agentreview.ai.batchingMode": {
+          "type": "string",
+          "enum": [
+            "file_count",
+            "ast_snippet"
+          ],
+          "default": "file_count",
+          "description": "AI 批次模式：按文件数量或按 AST 片段数量分批"
+        },
+        "agentreview.ai.astSnippetBudget": {
+          "type": "number",
+          "default": 25,
+          "minimum": 1,
+          "description": "AST 片段分批模式下每批允许的片段总数上限"
+        },
+        "agentreview.ai.astChunkStrategy": {
+          "type": "string",
+          "enum": [
+            "even",
+            "contiguous"
+          ],
+          "default": "even",
+          "description": "同一文件 AST 片段拆分策略：even（均匀）或 contiguous（连续）"
+        },
+        "agentreview.ai.batchConcurrency": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "description": "AI 批次并发请求数"
+        },
+        "agentreview.ai.maxRequestChars": {
+          "type": "number",
+          "default": 50000,
+          "minimum": 1000,
+          "description": "单次请求字符数上限，超限时自动二分降载"
+        },
+        "agentreview.runtimeLog.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用运行链路日志落盘（JSONL）"
+        },
+        "agentreview.runtimeLog.level": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warn",
+            "error",
+            "debug"
+          ],
+          "default": "info",
+          "description": "运行链路日志级别过滤"
+        },
+        "agentreview.runtimeLog.retentionDays": {
+          "type": "number",
+          "minimum": 1,
+          "default": 14,
+          "description": "运行链路日志保留天数"
+        },
+        "agentreview.runtimeLog.fileMode": {
+          "type": "string",
+          "enum": [
+            "per_run"
+          ],
+          "default": "per_run",
+          "description": "运行链路日志切分模式（每次运行一个文件）"
+        },
+        "agentreview.runtimeLog.format": {
+          "type": "string",
+          "enum": [
+            "jsonl"
+          ],
+          "default": "jsonl",
+          "description": "运行链路日志文件格式"
         }
       }
     }
