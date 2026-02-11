@@ -47,6 +47,12 @@ vi.mock('vscode', () => {
 
     return {
         default: {
+            commands: {
+                registerCommand: (_name: string, cb: (...args: any[]) => any) => ({
+                    dispose: () => cb,
+                }),
+                executeCommand: async () => undefined,
+            },
             window: {
                 createOutputChannel: (name: string) => {
                     if (!outputChannels.has(name)) {
@@ -66,9 +72,11 @@ vi.mock('vscode', () => {
                     messages.push({ type: 'error', message });
                     return Promise.resolve(undefined);
                 },
+                showTextDocument: async () => undefined,
             },
             workspace: {
                 workspaceFolders: [],
+                openTextDocument: async (_target: string) => ({ uri: { fsPath: _target } }),
                 getConfiguration: () => ({
                     get: <T>(key: string, defaultValue?: T): T | undefined => {
                         return defaultValue;
@@ -87,6 +95,12 @@ vi.mock('vscode', () => {
             RelativePattern: class {
                 constructor(public workspaceFolder: any, public pattern: string) {}
             },
+        },
+        commands: {
+            registerCommand: (_name: string, cb: (...args: any[]) => any) => ({
+                dispose: () => cb,
+            }),
+            executeCommand: async () => undefined,
         },
         window: {
             createOutputChannel: (name: string) => {
@@ -107,9 +121,11 @@ vi.mock('vscode', () => {
                 messages.push({ type: 'error', message });
                 return Promise.resolve(undefined);
             },
+            showTextDocument: async () => undefined,
         },
         workspace: {
             workspaceFolders: [],
+            openTextDocument: async (_target: string) => ({ uri: { fsPath: _target } }),
             getConfiguration: () => ({
                 get: <T>(key: string, defaultValue?: T): T | undefined => {
                     return defaultValue;

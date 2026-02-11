@@ -21,8 +21,10 @@ import { registerInstallHooksCommand } from './commands/installHooksCommand';
 import { registerRefreshCommand } from './commands/refreshCommand';
 import { registerAllowCommitOnceCommand } from './commands/allowCommitOnceCommand';
 import { registerFixIssueCommand } from './commands/fixIssueCommand';
+import { registerExplainRuntimeLogCommand } from './commands/explainRuntimeLogCommand';
 import type { CommandContext } from './commands/commandContext';
 import { RuntimeTraceLogger } from './utils/runtimeTraceLogger';
+import { resolveRuntimeLogBaseDir } from './utils/runtimeLogPath';
 
 let reviewEngine: ReviewEngine | undefined;
 let configManager: ConfigManager | undefined;
@@ -51,7 +53,7 @@ export const activate = async (context: vscode.ExtensionContext) => {
         configManager = new ConfigManager();
         await configManager.initialize(context);
         const runtimeTraceLogger = RuntimeTraceLogger.getInstance();
-        const runtimeBaseDir = context.globalStorageUri?.fsPath || path.join(context.extensionPath, '.agentreview-runtime');
+        const runtimeBaseDir = resolveRuntimeLogBaseDir(context, configManager.getConfig().runtime_log);
         await runtimeTraceLogger.initialize({
             baseDir: runtimeBaseDir,
             config: configManager.getConfig().runtime_log,
@@ -92,6 +94,7 @@ export const activate = async (context: vscode.ExtensionContext) => {
             registerRefreshCommand(),
             registerAllowCommitOnceCommand(commandDeps),
             registerFixIssueCommand(commandDeps),
+            registerExplainRuntimeLogCommand(commandDeps, context),
             reviewPanel,
             statusBar,
             configManager

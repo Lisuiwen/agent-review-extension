@@ -35,6 +35,7 @@ import type { FileDiff } from '../utils/diffTypes';
 import type { ReviewIssue, ReviewResult } from '../types/review';
 import { getAffectedScopeWithDiagnostics, type AffectedScopeResult, type AstFallbackReason } from '../utils/astScope';
 import { RuntimeTraceLogger, type RuntimeTraceSession } from '../utils/runtimeTraceLogger';
+import { generateRuntimeSummaryForFile } from '../utils/runtimeLogExplainer';
 
 // 为保持向后兼容，从 reviewEngine 继续 export 类型（实际定义在 types/review）
 export type { ReviewIssue, ReviewResult } from '../types/review';
@@ -156,6 +157,7 @@ export class ReviewEngine {
                     durationMs: Date.now() - reviewStartAt,
                     data: { status: 'success' },
                 });
+                await this.generateRuntimeSummaryIfEnabled(traceSession, config);
                 return result;
             }
 
@@ -187,6 +189,7 @@ export class ReviewEngine {
                     durationMs: Date.now() - reviewStartAt,
                     data: { status: 'success' },
                 });
+                await this.generateRuntimeSummaryIfEnabled(traceSession, config);
                 return result;
             }
 
@@ -393,6 +396,7 @@ export class ReviewEngine {
                 durationMs: Date.now() - reviewStartAt,
                 data: { status: 'success' },
             });
+            await this.generateRuntimeSummaryIfEnabled(traceSession, config);
             return result;
         } catch (error) {
             const errorClass = error instanceof Error ? error.name : 'UnknownError';
@@ -408,6 +412,7 @@ export class ReviewEngine {
                     errorClass,
                 },
             });
+            await this.generateRuntimeSummaryIfEnabled(traceSession, config);
             throw error;
         } finally {
             if (ownTraceSession) {
@@ -473,6 +478,34 @@ export class ReviewEngine {
     };
 
     /**
+     * 按配置自动生成可读运行摘要（失败不影响主流程）
+     */
+    private generateRuntimeSummaryIfEnabled = async (
+        session: RuntimeTraceSession | null | undefined,
+        config: ReturnType<ConfigManager['getConfig']>
+    ): Promise<void> => {
+        if (!session) {
+            return;
+        }
+        const humanReadable = config.runtime_log?.human_readable;
+        if (!humanReadable?.enabled || !humanReadable.auto_generate_on_run_end) {
+            return;
+        }
+        const runLogFile = this.runtimeTraceLogger.getRunLogFilePath(session);
+        if (!runLogFile) {
+            return;
+        }
+        try {
+            await this.runtimeTraceLogger.flush();
+            await generateRuntimeSummaryForFile(runLogFile, {
+                granularity: humanReadable.granularity ?? 'summary_with_key_events',
+            });
+        } catch (error) {
+            this.logger.warn('自动生成运行日志摘要失败', error);
+        }
+    };
+
+    /**
      * 审查 Git staged 文件
      * 
      * 这是最常用的审查方法，会自动获取所有已暂存（staged）的文件
@@ -506,6 +539,7 @@ export class ReviewEngine {
                 durationMs: 0,
                 data: { status: 'success' },
             });
+            await this.generateRuntimeSummaryIfEnabled(traceSession, config);
             this.runtimeTraceLogger.endRunSession(traceSession);
             return {
                 passed: true,

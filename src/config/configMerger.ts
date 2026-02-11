@@ -74,6 +74,12 @@ export const mergeConfig = (
                 retention_days: 14,
                 file_mode: 'per_run',
                 format: 'jsonl',
+                base_dir_mode: 'workspace_docs_logs',
+                human_readable: {
+                    enabled: true,
+                    granularity: 'summary_with_key_events',
+                    auto_generate_on_run_end: true,
+                },
             };
             if (!resolvedUserConfig.runtime_log) return defaultRuntimeLog;
             return {
@@ -82,6 +88,14 @@ export const mergeConfig = (
                 retention_days: resolvedUserConfig.runtime_log.retention_days ?? defaultRuntimeLog.retention_days,
                 file_mode: resolvedUserConfig.runtime_log.file_mode ?? defaultRuntimeLog.file_mode,
                 format: resolvedUserConfig.runtime_log.format ?? defaultRuntimeLog.format,
+                base_dir_mode: resolvedUserConfig.runtime_log.base_dir_mode ?? defaultRuntimeLog.base_dir_mode,
+                human_readable: {
+                    enabled: resolvedUserConfig.runtime_log.human_readable?.enabled ?? defaultRuntimeLog.human_readable?.enabled,
+                    granularity: resolvedUserConfig.runtime_log.human_readable?.granularity ?? defaultRuntimeLog.human_readable?.granularity,
+                    auto_generate_on_run_end:
+                        resolvedUserConfig.runtime_log.human_readable?.auto_generate_on_run_end
+                        ?? defaultRuntimeLog.human_readable?.auto_generate_on_run_end,
+                },
             };
         })(),
     };

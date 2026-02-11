@@ -202,6 +202,18 @@ export class RuntimeTraceLogger {
         this.sessions.clear();
     };
 
+    flush = async (): Promise<void> => {
+        await this.writeQueue;
+    };
+
+    getRunLogFilePath = (session?: RuntimeTraceSession | null): string | null => {
+        if (!session) {
+            return null;
+        }
+        const state = this.sessions.get(session.runId);
+        return state?.filePath ?? null;
+    };
+
     async cleanupExpiredFiles(): Promise<void> {
         if (!this.isEnabled() || !this.runtimeLogDir) {
             return;

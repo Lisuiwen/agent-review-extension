@@ -45,6 +45,10 @@
       {
         "command": "agentreview.fixIssue",
         "title": "AgentReview: 修复当前问题"
+      },
+      {
+        "command": "agentreview.runtimeLog.explainLatest",
+        "title": "AgentReview: 解释最新运行日志"
       }
     ],
     "views": {
@@ -242,6 +246,35 @@
           ],
           "default": "jsonl",
           "description": "运行链路日志文件格式"
+        },
+        "agentreview.runtimeLog.baseDirMode": {
+          "type": "string",
+          "enum": [
+            "workspace_docs_logs",
+            "global_storage"
+          ],
+          "default": "workspace_docs_logs",
+          "description": "运行链路日志基础目录策略：workspace_docs_logs=项目 docs/logs，global_storage=VSCode 全局存储"
+        },
+        "agentreview.runtimeLog.humanReadable.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用运行日志可读摘要能力"
+        },
+        "agentreview.runtimeLog.humanReadable.granularity": {
+          "type": "string",
+          "enum": [
+            "stage_summary",
+            "events",
+            "summary_with_key_events"
+          ],
+          "default": "summary_with_key_events",
+          "description": "可读摘要粒度：阶段摘要/事件逐条/摘要+关键事件"
+        },
+        "agentreview.runtimeLog.humanReadable.autoGenerateOnRunEnd": {
+          "type": "boolean",
+          "default": false,
+          "description": "每次运行结束后自动生成可读摘要文件"
         }
       }
     }

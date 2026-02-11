@@ -296,6 +296,20 @@ export class ConfigManager implements vscode.Disposable {
         if (settings.get('runtimeLog.format')) {
             runtimeLogConfig.format = settings.get('runtimeLog.format');
         }
+        if (settings.get('runtimeLog.baseDirMode')) {
+            runtimeLogConfig.base_dir_mode = settings.get('runtimeLog.baseDirMode');
+        }
+        if (
+            settings.get('runtimeLog.humanReadable.enabled') !== undefined
+            || settings.get('runtimeLog.humanReadable.granularity')
+            || settings.get('runtimeLog.humanReadable.autoGenerateOnRunEnd') !== undefined
+        ) {
+            runtimeLogConfig.human_readable = {
+                enabled: settings.get('runtimeLog.humanReadable.enabled') ?? true,
+                granularity: settings.get('runtimeLog.humanReadable.granularity') ?? 'summary_with_key_events',
+                auto_generate_on_run_end: settings.get('runtimeLog.humanReadable.autoGenerateOnRunEnd') ?? false,
+            };
+        }
 
         if (Object.keys(runtimeLogConfig).length === 0) {
             return undefined;
@@ -414,6 +428,21 @@ export class ConfigManager implements vscode.Disposable {
                     retention_days: settingsRuntimeLogConfig.retention_days ?? existingRuntimeLog?.retention_days ?? 14,
                     file_mode: settingsRuntimeLogConfig.file_mode ?? existingRuntimeLog?.file_mode ?? 'per_run',
                     format: settingsRuntimeLogConfig.format ?? existingRuntimeLog?.format ?? 'jsonl',
+                    base_dir_mode: settingsRuntimeLogConfig.base_dir_mode ?? existingRuntimeLog?.base_dir_mode ?? 'workspace_docs_logs',
+                    human_readable: {
+                        enabled:
+                            settingsRuntimeLogConfig.human_readable?.enabled
+                            ?? existingRuntimeLog?.human_readable?.enabled
+                            ?? true,
+                        granularity:
+                            settingsRuntimeLogConfig.human_readable?.granularity
+                            ?? existingRuntimeLog?.human_readable?.granularity
+                            ?? 'summary_with_key_events',
+                        auto_generate_on_run_end:
+                            settingsRuntimeLogConfig.human_readable?.auto_generate_on_run_end
+                            ?? existingRuntimeLog?.human_readable?.auto_generate_on_run_end
+                            ?? false,
+                    },
                 };
             }
 
@@ -601,6 +630,12 @@ export class ConfigManager implements vscode.Disposable {
                 retention_days: 14,
                 file_mode: 'per_run',
                 format: 'jsonl',
+                base_dir_mode: 'workspace_docs_logs',
+                human_readable: {
+                    enabled: true,
+                    granularity: 'summary_with_key_events',
+                    auto_generate_on_run_end: true,
+                },
             },
         };
     }

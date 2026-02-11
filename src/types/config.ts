@@ -72,5 +72,11 @@ export interface AgentReviewConfig {
         retention_days?: number;
         file_mode?: 'per_run';
         format?: 'jsonl';
+        base_dir_mode?: 'workspace_docs_logs' | 'global_storage';
+        human_readable?: {
+            enabled?: boolean;
+            granularity?: 'stage_summary' | 'events' | 'summary_with_key_events';
+            auto_generate_on_run_end?: boolean;
+        };
     };
 }
