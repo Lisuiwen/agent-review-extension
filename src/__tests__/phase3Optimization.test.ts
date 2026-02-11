@@ -279,8 +279,23 @@ vi.mock('../utils/logger', () => {
             info = vi.fn(() => {});
             warn = vi.fn(() => {});
             error = vi.fn(() => {});
+            static setInfoOutputEnabled = vi.fn(() => {});
             static disposeSharedOutputChannel = vi.fn(() => {});
         }
+    };
+});
+
+vi.mock('../utils/runtimeTraceLogger', () => {
+    const runtimeTraceLoggerMock = {
+        initialize: vi.fn(async () => {}),
+        applyConfig: vi.fn(() => {}),
+        shouldOutputInfoToChannel: vi.fn(() => true),
+        flushAndCloseAll: vi.fn(async () => {}),
+    };
+    return {
+        RuntimeTraceLogger: class {
+            static getInstance = () => runtimeTraceLoggerMock;
+        },
     };
 });
 
@@ -289,7 +304,8 @@ import { activate } from '../extension';
 
 const createContext = (): import('vscode').ExtensionContext => ({
     subscriptions: [] as Array<{ dispose?: () => void }>,
-    extensionPath: 'd:/ext'
+    extensionPath: 'd:/ext',
+    globalStorageUri: { fsPath: 'd:/tmp/agentreview-test-global-storage' }
 } as unknown as import('vscode').ExtensionContext);
 
 beforeEach(() => {

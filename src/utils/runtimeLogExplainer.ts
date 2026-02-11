@@ -1,3 +1,10 @@
+/**
+ * 运行日志可读化：将 JSONL 解析为可读摘要
+ *
+ * 支持多种粒度（stage_summary / events / summary_with_key_events），
+ * 提供阶段耗时、关键事件、瓶颈提示等。
+ */
+
 import * as fs from 'fs';
 import * as path from 'path';
 import type { RuntimeEventRecord } from './runtimeTraceLogger';
@@ -64,6 +71,52 @@ const safeNum = (v: unknown): string => (typeof v === 'number' ? `${v}` : 'N/A')
 const safeVal = (v: unknown): string =>
     typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? `${v}` : 'N/A';
 
+const collectPhaseCost = (records: RuntimeEventRecord[]): Map<string, number> => {
+    const phaseCost = new Map<string, number>();
+    const setPhaseCost = (phase: string, durationMs?: number): void => {
+        if (typeof durationMs !== 'number') {
+            return;
+        }
+        phaseCost.set(phase, durationMs);
+    };
+
+    // 优先使用阶段汇总事件，避免嵌套事件耗时被重复累计。
+    for (const r of records) {
+        switch (r.event) {
+            case 'diff_fetch_summary':
+                setPhaseCost('staged', r.durationMs);
+                break;
+            case 'ast_scope_summary':
+                setPhaseCost('ast', r.durationMs);
+                break;
+            case 'rule_scan_summary':
+                setPhaseCost('rules', r.durationMs);
+                break;
+            case 'ai_review_done':
+                setPhaseCost('ai', r.durationMs);
+                break;
+            case 'run_end':
+                setPhaseCost('review', r.durationMs);
+                break;
+            default:
+                break;
+        }
+    }
+
+    // 兼容老日志：若没有汇总事件，则按 phase 取最大耗时而非累加。
+    if (phaseCost.size === 0) {
+        for (const r of records) {
+            if (!r.phase || typeof r.durationMs !== 'number') {
+                continue;
+            }
+            const previous = phaseCost.get(r.phase) ?? 0;
+            phaseCost.set(r.phase, Math.max(previous, r.durationMs));
+        }
+    }
+
+    return phaseCost;
+};
+
 const eventLine = (r: RuntimeEventRecord): string => {
     const data = r.data ?? {};
     switch (r.event) {
@@ -115,14 +168,9 @@ export const explainRuntimeRecords = (
         ? 'N/A'
         : `${Math.round(llmDones.reduce((sum, r) => sum + (r.durationMs ?? 0), 0) / llmDones.length)}`;
 
-    const phaseCost = new Map<string, number>();
-    for (const r of records) {
-        if (!r.phase || typeof r.durationMs !== 'number') {
-            continue;
-        }
-        phaseCost.set(r.phase, (phaseCost.get(r.phase) ?? 0) + r.durationMs);
-    }
+    const phaseCost = collectPhaseCost(records);
     const topPhases = [...phaseCost.entries()]
+        .filter(([phase]) => phase !== 'review')
         .sort((a, b) => b[1] - a[1])
         .slice(0, 2);
 
@@ -169,14 +217,13 @@ export const explainRuntimeRecords = (
         if (topPhases.length === 0) {
             lines.push('- 无可用耗时数据');
         } else {
+            const phaseHints: Record<string, string> = {
+                ai: '可尝试降低单批体积、提高并发上限或检查模型端耗时。',
+                rules: '可检查规则扫描范围与大文件过滤策略。',
+                ast: '可检查 AST 切片预算与解析回退比例。',
+            };
             for (const [phase, ms] of topPhases) {
-                const hint = phase === 'ai'
-                    ? '可尝试降低单批体积、提高并发上限或检查模型端耗时。'
-                    : phase === 'rules'
-                        ? '可检查规则扫描范围与大文件过滤策略。'
-                        : phase === 'ast'
-                            ? '可检查 AST 切片预算与解析回退比例。'
-                            : '可关注该阶段慢事件。';
+                const hint = phaseHints[phase] ?? '可关注该阶段慢事件。';
                 lines.push(`- ${phase}: ${ms}ms。${hint}`);
             }
         }
@@ -223,4 +270,3 @@ export const findLatestRuntimeJsonlFile = async (runtimeLogDir: string): Promise
         return null;
     }
 };
-

@@ -38,7 +38,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as yaml from 'js-yaml';
 import { Logger } from '../utils/logger';
 import type { AgentReviewConfig, RuleConfig } from '../types/config';
 import { loadYamlFromPath, loadPluginYaml } from './configLoader';
@@ -85,6 +84,13 @@ export class ConfigManager implements vscode.Disposable {
         this.envPath = workspaceFolder
             ? path.join(workspaceFolder.uri.fsPath, '.env')
             : '.env';
+    }
+
+    /** 仅当设置项被显式配置时返回值；workspaceFolder > workspace > global。避免 VSCode 默认值覆盖 YAML */
+    private getExplicitSetting<T>(settings: vscode.WorkspaceConfiguration, key: string): T | undefined {
+        const inspected = settings.inspect<T>(key);
+        if (!inspected) return undefined;
+        return (inspected.workspaceFolderValue ?? inspected.workspaceValue ?? inspected.globalValue) as T | undefined;
     }
 
     /**
@@ -188,83 +194,40 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
-     * 从VSCode Settings读取AI审查配置
-     * 
-     * 优先级：Settings > YAML > 默认
-     * 
-     * @returns AI审查配置对象（如果Settings中有配置）
+     * 从 VSCode Settings 读取 AI 审查配置。优先级：Settings > YAML > 默认。
      */
     private loadAIConfigFromSettings(): Partial<AgentReviewConfig['ai_review']> | undefined {
         const settings = vscode.workspace.getConfiguration('agentreview');
-        const aiSettings = settings.get('ai');
-        
-        if (!aiSettings || typeof aiSettings !== 'object') {
-            return undefined;
-        }
+        if (!settings.get('ai') || typeof settings.get('ai') !== 'object') return undefined;
 
-        const aiConfig: any = {};
-        
-        // 读取所有AI相关配置项
-        if (settings.get('ai.enabled') !== undefined) {
-            aiConfig.enabled = settings.get('ai.enabled');
+        const aiConfig: Record<string, unknown> = {};
+        const mappings: { key: string; configKey: string; explicit?: boolean }[] = [
+            { key: 'ai.enabled', configKey: 'enabled', explicit: true },
+            { key: 'ai.apiFormat', configKey: 'api_format' },
+            { key: 'ai.apiEndpoint', configKey: 'api_endpoint' },
+            { key: 'ai.apiKey', configKey: 'api_key' },
+            { key: 'ai.model', configKey: 'model' },
+            { key: 'ai.timeout', configKey: 'timeout', explicit: true },
+            { key: 'ai.temperature', configKey: 'temperature', explicit: true },
+            { key: 'ai.maxTokens', configKey: 'max_tokens', explicit: true },
+            { key: 'ai.systemPrompt', configKey: 'system_prompt' },
+            { key: 'ai.retryCount', configKey: 'retry_count', explicit: true },
+            { key: 'ai.retryDelay', configKey: 'retry_delay', explicit: true },
+            { key: 'ai.action', configKey: 'action' },
+            { key: 'ai.diffOnly', configKey: 'diff_only', explicit: true },
+            { key: 'ai.batchingMode', configKey: 'batching_mode' },
+            { key: 'ai.astSnippetBudget', configKey: 'ast_snippet_budget', explicit: true },
+            { key: 'ai.astChunkStrategy', configKey: 'ast_chunk_strategy' },
+            { key: 'ai.batchConcurrency', configKey: 'batch_concurrency', explicit: true },
+            { key: 'ai.maxRequestChars', configKey: 'max_request_chars', explicit: true },
+        ];
+        for (const { key, configKey, explicit } of mappings) {
+            const val = settings.get(key);
+            if (explicit ? val !== undefined : val) {
+                (aiConfig as any)[configKey] = val;
+            }
         }
-        if (settings.get('ai.apiFormat')) {
-            aiConfig.api_format = settings.get('ai.apiFormat');
-        }
-        if (settings.get('ai.apiEndpoint')) {
-            aiConfig.api_endpoint = settings.get('ai.apiEndpoint');
-        }
-        if (settings.get('ai.apiKey')) {
-            aiConfig.api_key = settings.get('ai.apiKey');
-        }
-        if (settings.get('ai.model')) {
-            aiConfig.model = settings.get('ai.model');
-        }
-        if (settings.get('ai.timeout') !== undefined) {
-            aiConfig.timeout = settings.get('ai.timeout');
-        }
-        if (settings.get('ai.temperature') !== undefined) {
-            aiConfig.temperature = settings.get('ai.temperature');
-        }
-        if (settings.get('ai.maxTokens') !== undefined) {
-            aiConfig.max_tokens = settings.get('ai.maxTokens');
-        }
-        if (settings.get('ai.systemPrompt')) {
-            aiConfig.system_prompt = settings.get('ai.systemPrompt');
-        }
-        if (settings.get('ai.retryCount') !== undefined) {
-            aiConfig.retry_count = settings.get('ai.retryCount');
-        }
-        if (settings.get('ai.retryDelay') !== undefined) {
-            aiConfig.retry_delay = settings.get('ai.retryDelay');
-        }
-        if (settings.get('ai.action')) {
-            aiConfig.action = settings.get('ai.action');
-        }
-        if (settings.get('ai.diffOnly') !== undefined) {
-            aiConfig.diff_only = settings.get('ai.diffOnly');
-        }
-        if (settings.get('ai.batchingMode')) {
-            aiConfig.batching_mode = settings.get('ai.batchingMode');
-        }
-        if (settings.get('ai.astSnippetBudget') !== undefined) {
-            aiConfig.ast_snippet_budget = settings.get('ai.astSnippetBudget');
-        }
-        if (settings.get('ai.astChunkStrategy')) {
-            aiConfig.ast_chunk_strategy = settings.get('ai.astChunkStrategy');
-        }
-        if (settings.get('ai.batchConcurrency') !== undefined) {
-            aiConfig.batch_concurrency = settings.get('ai.batchConcurrency');
-        }
-        if (settings.get('ai.maxRequestChars') !== undefined) {
-            aiConfig.max_request_chars = settings.get('ai.maxRequestChars');
-        }
-
-        // 如果没有任何配置，返回undefined
-        if (Object.keys(aiConfig).length === 0) {
-            return undefined;
-        }
-
+        if (Object.keys(aiConfig).length === 0) return undefined;
         return resolveEnvInConfig(aiConfig, this.envVars, this.logger) as Partial<AgentReviewConfig['ai_review']>;
     }
 
@@ -275,39 +238,62 @@ export class ConfigManager implements vscode.Disposable {
      */
     private loadRuntimeLogConfigFromSettings(): Partial<NonNullable<AgentReviewConfig['runtime_log']>> | undefined {
         const settings = vscode.workspace.getConfiguration('agentreview');
-        const runtimeLogSettings = settings.get('runtimeLog');
-        if (!runtimeLogSettings || typeof runtimeLogSettings !== 'object') {
-            return undefined;
+        const runtimeLogConfig: Partial<NonNullable<AgentReviewConfig['runtime_log']>> = {};
+        const enabled = this.getExplicitSetting<boolean>(settings, 'runtimeLog.enabled');
+        if (enabled !== undefined) {
+            runtimeLogConfig.enabled = enabled;
+        }
+        const level = this.getExplicitSetting<NonNullable<AgentReviewConfig['runtime_log']>['level']>(
+            settings,
+            'runtimeLog.level'
+        );
+        if (level !== undefined) {
+            runtimeLogConfig.level = level;
+        }
+        const retentionDays = this.getExplicitSetting<number>(settings, 'runtimeLog.retentionDays');
+        if (retentionDays !== undefined) {
+            runtimeLogConfig.retention_days = retentionDays;
+        }
+        const fileMode = this.getExplicitSetting<NonNullable<AgentReviewConfig['runtime_log']>['file_mode']>(
+            settings,
+            'runtimeLog.fileMode'
+        );
+        if (fileMode !== undefined) {
+            runtimeLogConfig.file_mode = fileMode;
+        }
+        const format = this.getExplicitSetting<NonNullable<AgentReviewConfig['runtime_log']>['format']>(
+            settings,
+            'runtimeLog.format'
+        );
+        if (format !== undefined) {
+            runtimeLogConfig.format = format;
+        }
+        const baseDirMode = this.getExplicitSetting<NonNullable<AgentReviewConfig['runtime_log']>['base_dir_mode']>(
+            settings,
+            'runtimeLog.baseDirMode'
+        );
+        if (baseDirMode !== undefined) {
+            runtimeLogConfig.base_dir_mode = baseDirMode;
         }
 
-        const runtimeLogConfig: Partial<NonNullable<AgentReviewConfig['runtime_log']>> = {};
-        if (settings.get('runtimeLog.enabled') !== undefined) {
-            runtimeLogConfig.enabled = settings.get('runtimeLog.enabled');
-        }
-        if (settings.get('runtimeLog.level')) {
-            runtimeLogConfig.level = settings.get('runtimeLog.level');
-        }
-        if (settings.get('runtimeLog.retentionDays') !== undefined) {
-            runtimeLogConfig.retention_days = settings.get('runtimeLog.retentionDays');
-        }
-        if (settings.get('runtimeLog.fileMode')) {
-            runtimeLogConfig.file_mode = settings.get('runtimeLog.fileMode');
-        }
-        if (settings.get('runtimeLog.format')) {
-            runtimeLogConfig.format = settings.get('runtimeLog.format');
-        }
-        if (settings.get('runtimeLog.baseDirMode')) {
-            runtimeLogConfig.base_dir_mode = settings.get('runtimeLog.baseDirMode');
-        }
+        const humanReadableEnabled = this.getExplicitSetting<boolean>(settings, 'runtimeLog.humanReadable.enabled');
+        const humanReadableGranularity = this.getExplicitSetting<
+            NonNullable<NonNullable<AgentReviewConfig['runtime_log']>['human_readable']>['granularity']
+        >(settings, 'runtimeLog.humanReadable.granularity');
+        const humanReadableAutoGenerate = this.getExplicitSetting<boolean>(
+            settings,
+            'runtimeLog.humanReadable.autoGenerateOnRunEnd'
+        );
+
         if (
-            settings.get('runtimeLog.humanReadable.enabled') !== undefined
-            || settings.get('runtimeLog.humanReadable.granularity')
-            || settings.get('runtimeLog.humanReadable.autoGenerateOnRunEnd') !== undefined
+            humanReadableEnabled !== undefined
+            || humanReadableGranularity !== undefined
+            || humanReadableAutoGenerate !== undefined
         ) {
             runtimeLogConfig.human_readable = {
-                enabled: settings.get('runtimeLog.humanReadable.enabled') ?? true,
-                granularity: settings.get('runtimeLog.humanReadable.granularity') ?? 'summary_with_key_events',
-                auto_generate_on_run_end: settings.get('runtimeLog.humanReadable.autoGenerateOnRunEnd') ?? false,
+                ...(humanReadableEnabled !== undefined ? { enabled: humanReadableEnabled } : {}),
+                ...(humanReadableGranularity !== undefined ? { granularity: humanReadableGranularity } : {}),
+                ...(humanReadableAutoGenerate !== undefined ? { auto_generate_on_run_end: humanReadableAutoGenerate } : {}),
             };
         }
 
@@ -471,12 +457,35 @@ export class ConfigManager implements vscode.Disposable {
      * 支持标准 .env 格式：KEY=value、KEY="value"、# 注释、空行忽略。
      * 不覆盖系统环境变量（process.env）。
      */
+    /** 解析 .env 文件内容并合并到 envVars（不覆盖已有键、不覆盖 process.env） */
+    private parseAndMergeEnvContent(content: string, envPath: string, logPrefix = '从.env文件'): void {
+        const lines = content.split(/\r?\n/);
+        let lineNumber = 0;
+        for (const line of lines) {
+            lineNumber++;
+            const trimmedLine = line.trim();
+            if (!trimmedLine || trimmedLine.startsWith('#')) continue;
+            const match = trimmedLine.match(/^([^=#\s]+)\s*=\s*(.*)$/);
+            if (match) {
+                const key = match[1].trim();
+                let value = match[2].trim();
+                if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                    value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'");
+                }
+                if (!process.env[key] && !this.envVars.has(key)) {
+                    this.envVars.set(key, value);
+                    this.logger.debug(`${logPrefix}加载环境变量: ${key} (${envPath})`);
+                }
+            } else {
+                this.logger.warn(`.env文件第${lineNumber}行格式不正确，已跳过: ${trimmedLine}`);
+            }
+        }
+    }
+
     private async loadEnvFile(): Promise<void> {
         this.envVars.clear();
         const folders = vscode.workspace.workspaceFolders ?? [];
-        const envPaths = folders.length > 0
-            ? folders.map(f => path.join(f.uri.fsPath, '.env'))
-            : [this.envPath || '.env'];
+        const envPaths = folders.length > 0 ? folders.map(f => path.join(f.uri.fsPath, '.env')) : [this.envPath || '.env'];
         this.logger.info(`加载.env文件: ${envPaths.join(', ')}`);
         try {
             for (const envPath of envPaths) {
@@ -484,52 +493,15 @@ export class ConfigManager implements vscode.Disposable {
                     this.logger.debug(`.env文件不存在，跳过: ${envPath}`);
                     continue;
                 }
-                const fileContent = await fs.promises.readFile(envPath, 'utf-8');
-                const lines = fileContent.split(/\r?\n/);
-                let lineNumber = 0;
-                for (const line of lines) {
-                    lineNumber++;
-                    const trimmedLine = line.trim();
-                    if (!trimmedLine || trimmedLine.startsWith('#')) continue;
-                    const match = trimmedLine.match(/^([^=#\s]+)\s*=\s*(.*)$/);
-                    if (match) {
-                        const key = match[1].trim();
-                        let value = match[2].trim();
-                        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-                            value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'");
-                        }
-                        if (!process.env[key] && !this.envVars.has(key)) {
-                            this.envVars.set(key, value);
-                            this.logger.debug(`从.env文件加载环境变量: ${key} (${envPath})`);
-                        }
-                    } else {
-                        this.logger.warn(`.env文件第${lineNumber}行格式不正确，已跳过: ${trimmedLine}`);
-                    }
-                }
+                const content = await fs.promises.readFile(envPath, 'utf-8');
+                this.parseAndMergeEnvContent(content, envPath);
             }
-            // 单工作区且工作区内无 .env 时，回退到扩展目录的 .env（便于开发/调试时在扩展根目录放 .env）
             if (this.envVars.size === 0 && this.extensionPath) {
                 const fallbackEnv = path.join(this.extensionPath, '.env');
                 if (fs.existsSync(fallbackEnv)) {
                     this.logger.info(`工作区未找到.env，从扩展目录加载: ${fallbackEnv}`);
-                    const fileContent = await fs.promises.readFile(fallbackEnv, 'utf-8');
-                    const lines = fileContent.split(/\r?\n/);
-                    for (const line of lines) {
-                        const trimmedLine = line.trim();
-                        if (!trimmedLine || trimmedLine.startsWith('#')) continue;
-                        const match = trimmedLine.match(/^([^=#\s]+)\s*=\s*(.*)$/);
-                        if (match) {
-                            const key = match[1].trim();
-                            let value = match[2].trim();
-                            if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-                                value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'");
-                            }
-                            if (!process.env[key] && !this.envVars.has(key)) {
-                                this.envVars.set(key, value);
-                                this.logger.debug(`从扩展目录.env加载: ${key}`);
-                            }
-                        }
-                    }
+                    const content = await fs.promises.readFile(fallbackEnv, 'utf-8');
+                    this.parseAndMergeEnvContent(content, fallbackEnv, '从扩展目录.env');
                 }
             }
             this.logger.info(`从.env文件加载了 ${this.envVars.size} 个环境变量`);
@@ -634,7 +606,7 @@ export class ConfigManager implements vscode.Disposable {
                 human_readable: {
                     enabled: true,
                     granularity: 'summary_with_key_events',
-                    auto_generate_on_run_end: true,
+                    auto_generate_on_run_end: false,
                 },
             },
         };

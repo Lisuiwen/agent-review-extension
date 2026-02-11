@@ -100,6 +100,13 @@ git_hooks:
   pre_commit_enabled: true
   allow_commit_once: true
 
+runtime_log:
+  enabled: true
+  human_readable:
+    enabled: true
+    granularity: "summary_with_key_events"
+    auto_generate_on_run_end: true
+
 exclusions:
   files:
     - "**/*.min.js"

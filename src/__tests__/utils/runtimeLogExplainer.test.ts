@@ -44,6 +44,20 @@ describe('runtimeLogExplainer', () => {
         expect(text).toContain('瓶颈提示');
     });
 
+    it('瓶颈阶段耗时应优先使用阶段汇总事件，避免批次事件重复累计', () => {
+        const records = [
+            { ts: '2026-02-10T10:00:00.000Z', level: 'info', runId: 'r2', component: 'ReviewEngine', event: 'run_start', phase: 'review', data: { trigger: 'manual' } },
+            { ts: '2026-02-10T10:00:00.050Z', level: 'info', runId: 'r2', component: 'AIReviewer', event: 'ai_batch_done', phase: 'ai', durationMs: 120, data: { batchIndex: 1 } },
+            { ts: '2026-02-10T10:00:00.100Z', level: 'info', runId: 'r2', component: 'AIReviewer', event: 'ai_batch_done', phase: 'ai', durationMs: 130, data: { batchIndex: 2 } },
+            { ts: '2026-02-10T10:00:00.200Z', level: 'info', runId: 'r2', component: 'AIReviewer', event: 'ai_review_done', phase: 'ai', durationMs: 300, data: { scope: 'all_batches' } },
+            { ts: '2026-02-10T10:00:00.300Z', level: 'info', runId: 'r2', component: 'RuleEngine', event: 'rule_scan_summary', phase: 'rules', durationMs: 220, data: { filesScanned: 2 } },
+            { ts: '2026-02-10T10:00:01.000Z', level: 'info', runId: 'r2', component: 'ReviewEngine', event: 'run_end', phase: 'review', durationMs: 1000, data: { status: 'success' } },
+        ] as any;
+        const text = explainRuntimeRecords(records, { granularity: 'summary_with_key_events' });
+        expect(text).toContain('- ai: 300ms');
+        expect(text).not.toContain('- ai: 550ms');
+    });
+
     it('应生成 summary 文件', async () => {
         const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agentreview-explainer-'));
         tempDirs.push(tempDir);
@@ -73,4 +87,3 @@ describe('runtimeLogExplainer', () => {
         expect(latest).toBe(newFile);
     });
 });
-

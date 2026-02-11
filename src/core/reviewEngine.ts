@@ -90,6 +90,14 @@ export class ReviewEngine {
     }
 
     /**
+     * 应用运行链路日志配置，并同步控制台输出策略
+     */
+    private applyRuntimeTraceConfig = (config: ReturnType<ConfigManager['getConfig']>): void => {
+        this.runtimeTraceLogger.applyConfig(config.runtime_log);
+        Logger.setInfoOutputEnabled(this.runtimeTraceLogger.shouldOutputInfoToChannel());
+    };
+
+    /**
      * 审查指定的文件列表
      *
      * 当 options.diffByFile 存在且配置启用时，规则引擎仅扫描变更行、AI 仅审查变更片段。
@@ -112,8 +120,9 @@ export class ReviewEngine {
         };
 
         const config = this.configManager.getConfig();
-        this.runtimeTraceLogger.applyConfig(config.runtime_log);
-        Logger.setInfoOutputEnabled(this.runtimeTraceLogger.shouldOutputInfoToChannel());
+        if (!options?.traceSession) {
+            this.applyRuntimeTraceConfig(config);
+        }
         const ownTraceSession = !options?.traceSession;
         const traceSession =
             options?.traceSession ?? this.runtimeTraceLogger.startRunSession(options?.diffByFile ? 'staged' : 'manual');
@@ -304,12 +313,7 @@ export class ReviewEngine {
                 } catch (error) {
                     this.logger.error('AI审查失败', error);
                     const message = error instanceof Error ? error.message : String(error);
-                    const action = config.ai_review?.action || 'warning';
-                    const severity = action === 'block_commit'
-                        ? 'error'
-                        : action === 'log'
-                            ? 'info'
-                            : 'warning';
+                    const severity = this.actionToSeverity(config.ai_review?.action ?? 'warning');
                     const isTimeout = /timeout|超时/i.test(message);
                     aiErrorIssues.push({
                         file: '',
@@ -328,40 +332,34 @@ export class ReviewEngine {
 
             const builtinRulesEnabled = config.rules.builtin_rules_enabled !== false && config.rules.enabled;
             const skipOnBlocking = config.ai_review?.skip_on_blocking_errors !== false;
-            if (config.ai_review?.enabled) {
-                if (skipOnBlocking) {
-                    if (builtinRulesEnabled) {
-                        ruleIssues = await this.ruleEngine.checkFiles(
-                            filteredFiles,
-                            useRuleDiff ? options?.diffByFile : undefined,
-                            traceSession
-                        );
-                        const hasBlockingErrors = this.hasBlockingErrors(ruleIssues, ruleActionMap);
-                        if (hasBlockingErrors) {
-                            this.logger.warn('检测到阻止提交错误，已跳过AI审查');
-                        } else {
-                            aiIssues = await runAiReview();
-                        }
+            const aiEnabled = config.ai_review?.enabled ?? false;
+
+            const runRuleEngine = () => this.ruleEngine.checkFiles(
+                filteredFiles,
+                useRuleDiff ? options?.diffByFile : undefined,
+                traceSession
+            );
+
+            if (aiEnabled) {
+                if (skipOnBlocking && builtinRulesEnabled) {
+                    ruleIssues = await runRuleEngine();
+                    if (this.hasBlockingErrors(ruleIssues, ruleActionMap)) {
+                        this.logger.warn('检测到阻止提交错误，已跳过AI审查');
                     } else {
                         aiIssues = await runAiReview();
                     }
+                } else if (skipOnBlocking) {
+                    aiIssues = await runAiReview();
                 } else {
-                    const aiPromise = runAiReview();
-                    if (builtinRulesEnabled) {
-                        ruleIssues = await this.ruleEngine.checkFiles(
-                            filteredFiles,
-                            useRuleDiff ? options?.diffByFile : undefined,
-                            traceSession
-                        );
-                    }
-                    aiIssues = await aiPromise;
+                    const [ruleResult, aiResult] = await Promise.all([
+                        builtinRulesEnabled ? runRuleEngine() : Promise.resolve([]),
+                        runAiReview(),
+                    ]);
+                    ruleIssues = ruleResult;
+                    aiIssues = aiResult;
                 }
             } else if (builtinRulesEnabled) {
-                ruleIssues = await this.ruleEngine.checkFiles(
-                    filteredFiles,
-                    useRuleDiff ? options?.diffByFile : undefined,
-                    traceSession
-                );
+                ruleIssues = await runRuleEngine();
             }
 
             const allIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
@@ -431,11 +429,13 @@ export class ReviewEngine {
     private hasBlockingErrors = (
         issues: ReviewIssue[],
         ruleActionMap: Map<string, 'block_commit' | 'warning' | 'log' | undefined>
-    ): boolean => {
-        return issues.some(issue => {
-            const action = ruleActionMap.get(issue.rule);
-            return action === 'block_commit';
-        });
+    ): boolean => issues.some(issue => ruleActionMap.get(issue.rule) === 'block_commit');
+
+    /** 将 action 配置映射为 issue 的 severity */
+    private actionToSeverity = (action: 'block_commit' | 'warning' | 'log'): 'error' | 'warning' | 'info' => {
+        if (action === 'block_commit') return 'error';
+        if (action === 'log') return 'info';
+        return 'warning';
     };
 
     /**
@@ -518,8 +518,7 @@ export class ReviewEngine {
     async reviewStagedFiles(): Promise<ReviewResult> {
         this.logger.show();
         const config = this.configManager.getConfig();
-        this.runtimeTraceLogger.applyConfig(config.runtime_log);
-        Logger.setInfoOutputEnabled(this.runtimeTraceLogger.shouldOutputInfoToChannel());
+        this.applyRuntimeTraceConfig(config);
         const traceSession = this.runtimeTraceLogger.startRunSession('staged');
 
         const stagedFiles = await this.fileScanner.getStagedFiles();

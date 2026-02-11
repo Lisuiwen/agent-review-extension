@@ -144,11 +144,16 @@ describe('RuntimeTraceLogger', () => {
 
         const oldFile = path.join(runtimeDir, 'old.jsonl');
         const keepFile = path.join(runtimeDir, 'keep.jsonl');
+        const oldSummaryFile = path.join(runtimeDir, 'old.summary.log');
+        const keepSummaryFile = path.join(runtimeDir, 'keep.summary.log');
         await fs.promises.writeFile(oldFile, '{}\n', 'utf8');
         await fs.promises.writeFile(keepFile, '{}\n', 'utf8');
+        await fs.promises.writeFile(oldSummaryFile, 'old summary\n', 'utf8');
+        await fs.promises.writeFile(keepSummaryFile, 'keep summary\n', 'utf8');
 
         const twentyDaysAgo = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000);
         await fs.promises.utimes(oldFile, twentyDaysAgo, twentyDaysAgo);
+        await fs.promises.utimes(oldSummaryFile, twentyDaysAgo, twentyDaysAgo);
 
         await runtimeTraceLogger.initialize({
             baseDir,
@@ -157,7 +162,9 @@ describe('RuntimeTraceLogger', () => {
 
         const files = await fs.promises.readdir(runtimeDir);
         expect(files.includes('old.jsonl')).toBe(false);
+        expect(files.includes('old.summary.log')).toBe(false);
         expect(files.includes('keep.jsonl')).toBe(true);
+        expect(files.includes('keep.summary.log')).toBe(true);
     });
 
     it('运行链路日志会剔除结果统计字段', async () => {

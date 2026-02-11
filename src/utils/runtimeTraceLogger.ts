@@ -1,3 +1,10 @@
+/**
+ * 运行链路日志记录器
+ *
+ * 将审查流程中的关键事件以 JSONL 格式写入文件，供调试与可读摘要生成。
+ * 支持按 runId 分文件、日志级别过滤、过期文件自动清理。
+ */
+
 import * as fs from 'fs';
 import * as path from 'path';
 import type { AgentReviewConfig } from '../types/config';
@@ -18,6 +25,8 @@ export type RuntimeEventName =
     | 'ai_plan_summary'
     | 'ai_batch_start'
     | 'ai_batch_done'
+    | 'ai_pool_done'
+    | 'ai_review_done'
     | 'ai_batch_failed'
     | 'llm_call_start'
     | 'llm_call_done'
@@ -107,15 +116,14 @@ export class RuntimeTraceLogger {
         await this.cleanupExpiredFiles();
     }
 
+    /** 应用运行日志配置；无效 level/fileMode/format 回退为默认 */
     applyConfig = (config?: AgentReviewConfig['runtime_log']): void => {
         const level = config?.level;
         const fileMode = config?.file_mode;
         const format = config?.format;
         this.config = {
             enabled: config?.enabled ?? DEFAULT_RUNTIME_LOG_CONFIG.enabled,
-            level: level === 'debug' || level === 'info' || level === 'warn' || level === 'error'
-                ? level
-                : DEFAULT_RUNTIME_LOG_CONFIG.level,
+            level: level === 'debug' || level === 'info' || level === 'warn' || level === 'error' ? level : DEFAULT_RUNTIME_LOG_CONFIG.level,
             retentionDays: Math.max(1, config?.retention_days ?? DEFAULT_RUNTIME_LOG_CONFIG.retentionDays),
             fileMode: fileMode === 'per_run' ? fileMode : DEFAULT_RUNTIME_LOG_CONFIG.fileMode,
             format: format === 'jsonl' ? format : DEFAULT_RUNTIME_LOG_CONFIG.format,
@@ -223,7 +231,10 @@ export class RuntimeTraceLogger {
         const expireBefore = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
         const entries = await fs.promises.readdir(this.runtimeLogDir, { withFileTypes: true });
         await Promise.all(entries.map(async entry => {
-            if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
+            if (
+                !entry.isFile()
+                || (!entry.name.endsWith('.jsonl') && !entry.name.endsWith('.summary.log'))
+            ) {
                 return;
             }
             const fullPath = path.join(this.runtimeLogDir!, entry.name);

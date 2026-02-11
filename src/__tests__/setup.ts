@@ -81,6 +81,7 @@ vi.mock('vscode', () => {
                     get: <T>(key: string, defaultValue?: T): T | undefined => {
                         return defaultValue;
                     },
+                    inspect: <T>(_key: string) => undefined as any,
                 }),
                 createFileSystemWatcher: () => ({
                     onDidChange: () => {},
@@ -130,6 +131,7 @@ vi.mock('vscode', () => {
                 get: <T>(key: string, defaultValue?: T): T | undefined => {
                     return defaultValue;
                 },
+                inspect: <T>(_key: string) => undefined as any,
             }),
             createFileSystemWatcher: () => ({
                 onDidChange: () => {},

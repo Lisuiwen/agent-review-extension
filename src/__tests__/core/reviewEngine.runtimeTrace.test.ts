@@ -164,6 +164,8 @@ describe('ReviewEngine 运行链路日志完整性', () => {
             'llm_call_start',
             'llm_call_done',
             'ai_batch_done',
+            'ai_pool_done',
+            'ai_review_done',
             'run_end',
         ];
         for (const eventName of requiredEvents) {

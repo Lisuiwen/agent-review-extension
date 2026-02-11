@@ -177,6 +177,61 @@ rules:
         });
     });
 
+    describe('运行日志配置优先级', () => {
+        it('未显式配置 Settings 时，不应让默认值覆盖 YAML 的 human_readable.auto_generate_on_run_end', async () => {
+            const originalGetConfiguration = (vscode.workspace as any).getConfiguration;
+            try {
+                (vscode.workspace as any).getConfiguration = () => ({
+                    // 模拟 VSCode get() 可能返回默认值
+                    get: (key: string) => {
+                        const defaults: Record<string, unknown> = {
+                            runtimeLog: {},
+                            'runtimeLog.enabled': true,
+                            'runtimeLog.level': 'info',
+                            'runtimeLog.retentionDays': 14,
+                            'runtimeLog.fileMode': 'per_run',
+                            'runtimeLog.format': 'jsonl',
+                            'runtimeLog.baseDirMode': 'workspace_docs_logs',
+                            'runtimeLog.humanReadable.enabled': true,
+                            'runtimeLog.humanReadable.granularity': 'summary_with_key_events',
+                            'runtimeLog.humanReadable.autoGenerateOnRunEnd': false,
+                        };
+                        return defaults[key];
+                    },
+                    // 关键：inspect 表示“未显式设置”
+                    inspect: (_key: string) => ({
+                        defaultValue: undefined,
+                        globalValue: undefined,
+                        workspaceValue: undefined,
+                        workspaceFolderValue: undefined,
+                    }),
+                });
+
+                const yamlContent = `version: "1.0"
+runtime_log:
+  enabled: true
+  human_readable:
+    enabled: true
+    granularity: "summary_with_key_events"
+    auto_generate_on_run_end: true
+`;
+                await tempFs.createFile('.agentreview.yaml', yamlContent);
+                await configManager.initialize();
+
+                const config = configManager.getConfig();
+                expect(config.runtime_log?.human_readable?.auto_generate_on_run_end).toBe(true);
+            } finally {
+                (vscode.workspace as any).getConfiguration = originalGetConfiguration;
+            }
+        });
+
+        it('默认配置应与 Settings 默认值保持一致（auto_generate_on_run_end=false）', async () => {
+            await configManager.initialize();
+            const config = configManager.getConfig();
+            expect(config.runtime_log?.human_readable?.auto_generate_on_run_end).toBe(false);
+        });
+    });
+
     describe('测试用例 2.4: 配置文件错误处理', () => {
         it('应该优雅处理格式错误的 YAML 文件', async () => {
             // 创建格式错误的 YAML

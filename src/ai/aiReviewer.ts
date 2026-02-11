@@ -449,7 +449,7 @@ export class AIReviewer {
             this.runtimeTraceLogger.logEvent({
                 session: traceSession,
                 component: 'AIReviewer',
-                event: 'ai_batch_done',
+                event: 'ai_review_done',
                 phase: 'ai',
                 durationMs: Date.now() - reviewStartAt,
                 data: {
@@ -829,7 +829,7 @@ export class AIReviewer {
         this.runtimeTraceLogger.logEvent({
             session: traceSession,
             component: 'AIReviewer',
-            event: 'ai_batch_done',
+            event: 'ai_pool_done',
             phase: 'ai',
             durationMs: Date.now() - poolStartAt,
             data: {
@@ -1039,60 +1039,38 @@ export class AIReviewer {
         return [units.slice(0, mid), units.slice(mid)];
     };
 
+    /** 判断是否为上下文超长类错误（413 或 400+相关消息） */
     private isContextTooLongError = (error: unknown): boolean => {
-        if (!axios.isAxiosError(error)) {
-            return false;
-        }
-
+        if (!axios.isAxiosError(error)) return false;
         const status = error.response?.status;
-        if (status === 413) {
-            return true;
-        }
-
+        if (status === 413) return true;
         const responseText = typeof error.response?.data === 'string'
             ? error.response.data
             : JSON.stringify(error.response?.data ?? '');
-        const combinedText = `${error.message} ${responseText}`.toLowerCase();
         const tooLongPattern = /(context|context_length_exceeded|too many tokens|max(?:imum)? context|prompt too long|request too large|payload too large)/;
-        return status === 400 && tooLongPattern.test(combinedText);
+        return status === 400 && tooLongPattern.test(`${error.message} ${responseText}`.toLowerCase());
     };
 
-    /**
-     * 处理审查错误
-     * 
-     * @param error - 错误对象
-     * @returns 空数组或抛出错误
-     */
+    /** 将 action 映射为 severity；block_commit→error，log→info，warning→warning */
+    private actionToSeverity(action: 'block_commit' | 'warning' | 'log'): 'error' | 'warning' | 'info' {
+        if (action === 'block_commit') return 'error';
+        if (action === 'log') return 'info';
+        return 'warning';
+    }
+
+    /** 处理审查错误：block_commit 时抛出，否则返回单条 issue */
     private handleReviewError(error: unknown): ReviewIssue[] {
         this.logger.error('AI审查失败', error);
-        
-        const action = this.config?.action || 'warning';
-        const severity = action === 'block_commit'
-            ? 'error'
-            : action === 'log'
-                ? 'info'
-                : 'warning';
+        const action = this.config?.action ?? 'warning';
         const message = error instanceof Error ? error.message : String(error);
-        const isTimeout = axios.isAxiosError(error) && (
-            error.code === 'ECONNABORTED' || /timeout/i.test(error.message)
-        );
+        const isTimeout = axios.isAxiosError(error) && (error.code === 'ECONNABORTED' || /timeout/i.test(error.message));
         const userMessage = isTimeout
-            ? `AI审查超时（${this.config?.timeout || DEFAULT_TIMEOUT}ms），请稍后重试`
+            ? `AI审查超时（${this.config?.timeout ?? DEFAULT_TIMEOUT}ms），请稍后重试`
             : `AI审查失败: ${message}`;
         const rule = isTimeout ? 'ai_review_timeout' : 'ai_review_error';
-        
-        if (action === 'block_commit') {
-            throw new Error(userMessage);
-        }
-        
-        return [{
-            file: '',
-            line: 1,
-            column: 1,
-            message: userMessage,
-            rule,
-            severity
-        }];
+
+        if (action === 'block_commit') throw new Error(userMessage);
+        return [{ file: '', line: 1, column: 1, message: userMessage, rule, severity: this.actionToSeverity(action) }];
     }
 
     /**
@@ -2109,32 +2087,11 @@ ${lastIssueHint}
         return 'info';
     }
 
-    /**
-     * 判断是否应该重试
-     * 
-     * @param error - 错误对象
-     * @returns 是否应该重试
-     */
+    /** 是否应重试：无响应(网络/超时)、5xx、429 可重试；其余(401/400等)不重试 */
     private shouldRetry(error: AxiosError): boolean {
-        if (!error.response) {
-            // 网络错误或超时，应该重试
-            return true;
-        }
-
+        if (!error.response) return true;
         const status = error.response.status;
-        
-        // 5xx服务器错误，应该重试
-        if (status >= 500) {
-            return true;
-        }
-        
-        // 429限流，应该重试
-        if (status === 429) {
-            return true;
-        }
-        
-        // 其他错误（如401认证失败、400请求错误），不应该重试
-        return false;
+        return status >= 500 || status === 429;
     }
 
     /**
