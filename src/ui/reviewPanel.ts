@@ -486,6 +486,9 @@ export class ReviewPanel {
                 preserveFocus: false,
                 preview: true
             });
+            // #region agent log
+            fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H4',location:'reviewPanel.ts:489',message:'highlight_issue_selected',data:{file:issue.file,line:issue.line,column:issue.column,hasAstRange:!!issue.astRange,astRange:issue.astRange??null},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
 
             // 安全校正行列号，避免越界导致异常
             const safeLine = Math.min(Math.max(issue.line, 1), document.lineCount);
@@ -525,7 +528,15 @@ export class ReviewPanel {
                         astEndText.length
                     );
                     editor.setDecorations(this.astHighlightDecoration, [astRange]);
+                    // #region agent log
+                    fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H5',location:'reviewPanel.ts:528',message:'ast_decoration_applied',data:{docLineCount:document.lineCount,astStartLine,astEndLine},timestamp:Date.now()})}).catch(()=>{});
+                    // #endregion
                 }
+            }
+            if (!issue.astRange) {
+                // #region agent log
+                fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H4',location:'reviewPanel.ts:531',message:'ast_decoration_skipped_no_ast_range',data:{file:issue.file,line:issue.line},timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
             }
 
             this.activeIssueForActions = issue;

@@ -1,14 +1,17 @@
 /**
- * 命令：agentreview.allowIssueIgnore - 放行当前问题（写入 @ai-ignore 注释）
+ * 命令：agentreview.allowIssueIgnore - 放行当前问题（写入 @ai-ignore 注释 + 项目级指纹）
  *
  * 行为：
  * 1. 从 reviewPanel 当前激活的问题读取 file/line
  * 2. 在目标行上方插入注释（保留原缩进）
- * 3. 后续审查由 ReviewEngine.filterIgnoredIssues 按标记过滤该问题
+ * 3. 计算问题指纹并写入 .vscode/agentreview-ignore.json，抗行号偏移
+ * 4. 后续审查由 ReviewEngine.filterIgnoredIssues 先按指纹再按行号过滤
  */
 
 import * as vscode from 'vscode';
 import type { CommandContext } from './commandContext';
+import { computeIssueFingerprint } from '../utils/issueFingerprint';
+import { addIgnoredFingerprint } from '../config/ignoreStore';
 
 const commentPrefixByLanguage: Record<string, string> = {
     javascript: '//',
@@ -75,6 +78,15 @@ export const registerAllowIssueIgnoreCommand = (deps: CommandContext): vscode.Di
         const indent = indentMatch ? indentMatch[0] : '';
         const insertText = buildIgnoreComment(document.languageId, indent, reason.trim());
 
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (workspaceRoot) {
+            const content = document.getText();
+            const fingerprint = computeIssueFingerprint(issue, content, workspaceRoot);
+            if (fingerprint) {
+                await addIgnoredFingerprint(workspaceRoot, fingerprint);
+            }
+        }
+
         const edit = new vscode.WorkspaceEdit();
         edit.insert(document.uri, new vscode.Position(lineIndex, 0), insertText);
         const applied = await vscode.workspace.applyEdit(edit);
@@ -87,5 +99,5 @@ export const registerAllowIssueIgnoreCommand = (deps: CommandContext): vscode.Di
             filePath: issue.file,
             insertedLine: lineIndex + 1,
         });
-        vscode.window.showInformationMessage('已插入 @ai-ignore 注释，此问题后续审查将被忽略');
+        vscode.window.showInformationMessage('已插入 @ai-ignore 注释并记录指纹，此问题后续审查将被忽略');
     });

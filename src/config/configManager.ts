@@ -44,6 +44,7 @@ import { loadYamlFromPath, loadPluginYaml } from './configLoader';
 import { setupConfigWatcher } from './configWatcher';
 import { resolveEnvVariables, resolveEnvInConfig } from './envResolver';
 import { mergeConfig as mergeConfigFn } from './configMerger';
+import { getProjectRulesSummary as getProjectRulesSummaryImpl } from './projectRulesSummary';
 
 // 为保持向后兼容，从 configManager 继续 export 类型（实际定义在 types/config）
 export type { AgentReviewConfig, RuleConfig } from '../types/config';
@@ -66,6 +67,7 @@ export class ConfigManager implements vscode.Disposable {
     private extensionPath: string | undefined;  // 扩展安装目录（用于单工作区时回退加载 .env）
     private envVars: Map<string, string> = new Map();  // 从.env文件加载的环境变量
     private watcherDisposable: ReturnType<typeof setupConfigWatcher> | undefined;  // 配置与 .env 监听（含防抖）
+    private projectRulesSummaryCache: { root: string; mtime: number; summary: string } | null = null;
 
     /**
      * 构造函数
@@ -607,6 +609,36 @@ export class ConfigManager implements vscode.Disposable {
      */
     getConfig(): AgentReviewConfig {
         return this.config || this.getDefaultConfig();
+    }
+
+    /**
+     * 获取项目约定摘要（自然语言），供 AI System Prompt 注入。
+     * 根据根目录与 .eslintrc.json / .prettierrc.json / tsconfig.json 的 mtime 缓存。
+     */
+    async getProjectRulesSummary(): Promise<string> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const root = workspaceFolder?.uri.fsPath ?? '';
+        if (!root) return '';
+        let mtime = 0;
+        const keyFiles = ['.eslintrc.json', 'eslint.config.json', '.prettierrc.json', 'tsconfig.json'];
+        for (const name of keyFiles) {
+            const p = path.join(root, name);
+            try {
+                if (fs.existsSync(p)) {
+                    const stat = await fs.promises.stat(p);
+                    if (stat.mtimeMs > mtime) mtime = stat.mtimeMs;
+                }
+            } catch {
+                // 忽略单文件 stat 失败
+            }
+        }
+        const cached = this.projectRulesSummaryCache;
+        if (cached && cached.root === root && cached.mtime === mtime) {
+            return cached.summary;
+        }
+        const summary = await getProjectRulesSummaryImpl(root);
+        this.projectRulesSummaryCache = { root, mtime, summary };
+        return summary;
     }
 
     /**

@@ -7,7 +7,7 @@ import type { ReviewIssue } from '../types/review';
 import { FileScanner } from '../utils/fileScanner';
 import type { FileDiff } from '../utils/diffTypes';
 import type { AffectedScopeResult } from '../utils/astScope';
-import { buildLspReferenceContext } from '../utils/lspContext';
+import { buildLspReferenceContext, buildLspUsagesContext } from '../utils/lspContext';
 import { RuntimeTraceLogger, type RuntimeTraceSession } from '../utils/runtimeTraceLogger';
 
 /**
@@ -112,8 +112,12 @@ export type AIReviewRequest = z.infer<typeof AIReviewRequestSchema>;
  */
 export type AIReviewResponse = z.infer<typeof AIReviewResponseSchema>;
 
+/** 审查单元来源：ast=AST 片段，diff=diff 片段，full=整文件 */
 type ReviewUnitSourceType = 'ast' | 'diff' | 'full';
 
+/**
+ * 单次发给 AI 的审查单元（可能是一文件、一文件的多 AST 块、或按 snippet 预算拆分后的子集）
+ */
 interface ReviewUnit {
     unitId: string;
     path: string;
@@ -319,7 +323,7 @@ export class AIReviewer {
         request: AIReviewRequest & {
             diffByFile?: Map<string, FileDiff>;
             astSnippetsByFile?: Map<string, AffectedScopeResult>;
-            diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>;
+            diagnosticsByFile?: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>;
         },
         traceSession?: RuntimeTraceSession | null
     ): Promise<ReviewIssue[]> {
@@ -336,11 +340,13 @@ export class AIReviewer {
 
         this.resetReviewCache();
 
+        // 决定审查范围：仅变更(diff)、仅 AST 片段、或整文件
         const useDiffMode = this.config?.diff_only !== false && diffByFile && diffByFile.size > 0;
         const useAstSnippets = !!astSnippetsByFile && astSnippetsByFile.size > 0;
         const useDiffContent = useDiffMode || useAstSnippets;
         const astConfig = this.configManager.getConfig().ast;
         const enableLspContext = astConfig?.include_lsp_context !== false;
+        // 若为 diff/AST 模式：为每个文件构建要发送的内容（片段 + 可选 LSP 上下文）；否则沿用请求中的文件列表
         const filesToLoad = useDiffContent
             ? await Promise.all(validatedRequest.files.map(async (f) => {
                 const normalizedPath = path.normalize(f.path);
@@ -351,7 +357,12 @@ export class AIReviewer {
                     if (astSnippets?.snippets?.length) {
                         content = this.buildAstSnippetForFile(f.path, astSnippets);
                         if (enableLspContext) {
-                            referenceContext = await buildLspReferenceContext(f.path, astSnippets.snippets);
+                            const definitionContext = await buildLspReferenceContext(f.path, astSnippets.snippets);
+                            const usagesContext = await buildLspUsagesContext(f.path, astSnippets.snippets);
+                            const parts: string[] = [];
+                            if (definitionContext) parts.push(`## 依赖定义 (Definitions)\n${definitionContext}`);
+                            if (usagesContext) parts.push(usagesContext);
+                            referenceContext = parts.join('\n\n');
                         }
                     }
                 }
@@ -374,7 +385,7 @@ export class AIReviewer {
             }))
             : validatedRequest.files;
 
-        // diff/AST 模式下：仅保留「变更相关行」上的 AI 问题，过滤掉模型对未发送行的推断
+        // ---------- 构建「允许报告问题的行」集合（diff/AST 模式下只接受这些行上的 issue，避免模型猜未发送行）----------
         const allowedLinesByFile = new Map<string, Set<number>>();
         const addAllowedLine = (filePath: string, line: number): void => {
             const normalizedPath = path.normalize(filePath);
@@ -401,6 +412,7 @@ export class AIReviewer {
             }
         }
 
+        // ---------- 加载文件内容、预览模式短路、构建审查单元与批次 ----------
         try {
             const previewOnly = astConfig?.preview_only === true;
             if (previewOnly) {
@@ -422,6 +434,7 @@ export class AIReviewer {
                 return [];
             }
 
+            // 将「带内容的文件」打成审查单元（按 batching_mode 可能按文件或按 AST snippet 拆分）
             const reviewUnits = this.buildReviewUnits(validFiles, {
                 useAstSnippets,
                 astSnippetsByFile,
@@ -433,11 +446,13 @@ export class AIReviewer {
                 return [];
             }
 
+            // 按配置选择批次策略：ast_snippet 按片段预算切批，否则按文件数量切批
             const useAstSnippetBatching = useAstSnippets && this.config?.batching_mode === 'ast_snippet';
             const batches = useAstSnippetBatching
                 ? this.splitUnitsBySnippetBudget(reviewUnits, this.getAstSnippetBudget())
                 : this.splitIntoBatches(reviewUnits, DEFAULT_BATCH_SIZE);
 
+            // 打点：本次审查的文件数、单元数、批次数、并发与预算，便于排查与调优
             const totalAstSnippetCount = this.countAstSnippetMap(astSnippetsByFile);
             const totalSnippetCount = this.countUnitSnippets(reviewUnits);
             this.runtimeTraceLogger.logEvent({
@@ -462,6 +477,7 @@ export class AIReviewer {
                 useDiffContent,
                 allowedLinesByFile,
                 diagnosticsByFile,
+                astSnippetsByFile: astSnippetsByFile ?? undefined,
             }, traceSession);
             this.runtimeTraceLogger.logEvent({
                 session: traceSession,
@@ -681,6 +697,7 @@ export class AIReviewer {
         return batches;
     };
 
+    /** 从配置读取 AST 片段预算（每批最多多少个 snippet），非法时回退默认值 */
     private getAstSnippetBudget = (): number => {
         const raw = this.config?.ast_snippet_budget ?? DEFAULT_AST_SNIPPET_BUDGET;
         if (!Number.isFinite(raw) || raw <= 0) {
@@ -689,6 +706,7 @@ export class AIReviewer {
         return Math.max(1, Math.floor(raw));
     };
 
+    /** 从配置读取批处理并发数，限制在 1～8，非法时回退默认值 */
     private getBatchConcurrency = (): number => {
         const raw = this.config?.batch_concurrency ?? DEFAULT_BATCH_CONCURRENCY;
         if (!Number.isFinite(raw) || raw <= 0) {
@@ -697,6 +715,7 @@ export class AIReviewer {
         return Math.max(1, Math.min(8, Math.floor(raw)));
     };
 
+    /** 从配置读取单次请求最大字符数，用于超长时自动二分批次；非法时回退默认值，最小 1000 */
     private getMaxRequestChars = (): number => {
         const raw = this.config?.max_request_chars ?? DEFAULT_MAX_REQUEST_CHARS;
         if (!Number.isFinite(raw) || raw <= 0) {
@@ -705,6 +724,7 @@ export class AIReviewer {
         return Math.max(1000, Math.floor(raw));
     };
 
+    /** 将「带内容的文件」列表打成 ReviewUnit 数组：ast_snippet 模式下按 chunk 拆成多单元，否则每文件一单元 */
     private buildReviewUnits = (
         validFiles: Array<{ path: string; content: string }>,
         options: {
@@ -724,6 +744,7 @@ export class AIReviewer {
             const normalizedPath = path.normalize(file.path);
             const astResult = options.astSnippetsByFile?.get(normalizedPath) ?? options.astSnippetsByFile?.get(file.path);
 
+            // ast_snippet 模式且该文件有 AST 片段：按预算和策略切成多块，每块一个单元
             if (useAstSnippetBatching && astResult?.snippets?.length) {
                 const chunks = this.chunkAstSnippets(astResult.snippets, astSnippetBudget, astChunkStrategy);
                 for (let i = 0; i < chunks.length; i++) {
@@ -740,6 +761,7 @@ export class AIReviewer {
                 continue;
             }
 
+            // 非 ast_snippet 拆分：该文件一个单元，统计 snippet 数以供后续按权重切批
             let snippetCount = 1;
             let sourceType: ReviewUnitSourceType = 'full';
             if (astResult?.snippets?.length) {
@@ -766,6 +788,7 @@ export class AIReviewer {
         return units;
     };
 
+    /** 将 AST 片段按 budget 切块：contiguous=顺序每 budget 个一块；even=尽量均分到多块 */
     private chunkAstSnippets = (
         snippets: AffectedScopeResult['snippets'],
         budget: number,
@@ -775,6 +798,7 @@ export class AIReviewer {
             return [snippets];
         }
 
+        // 顺序切块：第 1～budget、budget+1～2*budget ...
         if (strategy === 'contiguous') {
             const chunks: Array<AffectedScopeResult['snippets']> = [];
             for (let i = 0; i < snippets.length; i += budget) {
@@ -783,6 +807,7 @@ export class AIReviewer {
             return chunks;
         }
 
+        // 均分：把 N 个 snippet 尽量平均分到 groupCount 组（余数往前几组多分 1 个）
         const chunks: Array<AffectedScopeResult['snippets']> = [];
         const groupCount = Math.ceil(snippets.length / budget);
         const baseSize = Math.floor(snippets.length / groupCount);
@@ -797,6 +822,7 @@ export class AIReviewer {
         return chunks.filter(chunk => chunk.length > 0);
     };
 
+    /** 按 snippet 权重将单元分组：当前组权重+新单元超过 budget 时开新批，保证每批权重不超过 budget */
     private splitUnitsBySnippetBudget = (units: ReviewUnit[], snippetBudget: number): ReviewUnit[][] => {
         const budget = Math.max(1, snippetBudget);
         const batches: ReviewUnit[][] = [];
@@ -820,12 +846,14 @@ export class AIReviewer {
         return batches;
     };
 
+    /** 并发执行多批审查：用固定数量的 worker 轮流取批次下标，各自调用 processSingleReviewBatch，最后合并结果 */
     private processReviewUnitBatches = async (
         batches: ReviewUnit[][],
         options: {
             useDiffContent: boolean;
             allowedLinesByFile: Map<string, Set<number>>;
-            diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>;
+            diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>;
+            astSnippetsByFile?: Map<string, AffectedScopeResult>;
         },
         traceSession?: RuntimeTraceSession | null
     ): Promise<ReviewIssue[]> => {
@@ -839,6 +867,7 @@ export class AIReviewer {
         const processedUnitIds = new Set<string>();
         let nextBatchIndex = 0;
 
+        // 多个 worker 并发：每个循环取一个 batch 下标，执行完再取下一个，直到没有更多批次
         const workers = Array.from({ length: maxConcurrency }, async () => {
             while (true) {
                 const currentIndex = nextBatchIndex;
@@ -859,6 +888,7 @@ export class AIReviewer {
 
         await Promise.all(workers);
         const flattened = results.flat();
+        // 打点：整个并发池耗时、批次数、并发数
         this.runtimeTraceLogger.logEvent({
             session: traceSession,
             component: 'AIReviewer',
@@ -882,7 +912,8 @@ export class AIReviewer {
         options: {
             useDiffContent: boolean;
             allowedLinesByFile: Map<string, Set<number>>;
-            diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>;
+            diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>;
+            astSnippetsByFile?: Map<string, AffectedScopeResult>;
         },
         traceSession?: RuntimeTraceSession | null
     ): Promise<ReviewIssue[]> => {
@@ -957,7 +988,8 @@ export class AIReviewer {
         options: {
             useDiffContent: boolean;
             allowedLinesByFile: Map<string, Set<number>>;
-            diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>;
+            diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>;
+            astSnippetsByFile?: Map<string, AffectedScopeResult>;
         },
         allowSplit: boolean,
         traceSession?: RuntimeTraceSession | null
@@ -1008,6 +1040,7 @@ export class AIReviewer {
                 { useDiffLineNumbers: options.useDiffContent }
             );
             const issuesInScope = this.filterIssuesByAllowedLines(batchIssues, options);
+            this.attachAstRangesForBatch(issuesInScope, options.astSnippetsByFile);
             return this.filterIssuesByDiagnostics(issuesInScope, diagnosticsForBatch);
         } catch (error) {
             if (allowSplit && batchFiles.length > 1 && this.isContextTooLongError(error)) {
@@ -1033,12 +1066,60 @@ export class AIReviewer {
         }
     };
 
+    /** 为批次内 issue 补充 astRange（与 reviewEngine.attachAstRanges 逻辑一致），供与 diagnostic range 重叠过滤使用 */
+    private attachAstRangesForBatch = (
+        issues: ReviewIssue[],
+        astSnippetsByFile?: Map<string, AffectedScopeResult>
+    ): void => {
+        if (!astSnippetsByFile || issues.length === 0) return;
+        let selectedSingleLineCount = 0;
+        let selectedMultiLineCount = 0;
+        let noAstResultCount = 0;
+        let noCandidatesCount = 0;
+        const samples: string[] = [];
+        for (const issue of issues) {
+            if (issue.astRange) continue;
+            const astResult = astSnippetsByFile.get(path.normalize(issue.file)) ?? astSnippetsByFile.get(issue.file);
+            if (!astResult?.snippets?.length) {
+                noAstResultCount++;
+                continue;
+            }
+            const candidates = astResult.snippets.filter(
+                s => issue.line >= s.startLine && issue.line <= s.endLine
+            );
+            if (candidates.length === 0) {
+                noCandidatesCount++;
+                continue;
+            }
+            const best = candidates.reduce((a, b) =>
+                (a.endLine - a.startLine) <= (b.endLine - b.startLine) ? a : b
+            );
+            issue.astRange = { startLine: best.startLine, endLine: best.endLine };
+            const span = best.endLine - best.startLine + 1;
+            if (span <= 1) {
+                selectedSingleLineCount++;
+            } else {
+                selectedMultiLineCount++;
+            }
+            if (samples.length < 3) {
+                const candidateSample = candidates
+                    .slice(0, 3)
+                    .map(item => `${item.startLine}-${item.endLine}`)
+                    .join(',');
+                samples.push(`${issue.file}@${issue.line}|best=${best.startLine}-${best.endLine}|candidates=${candidateSample}`);
+            }
+        }
+        // #region agent log
+        fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-2',hypothesisId:'N2',location:'aiReviewer.ts:1088',message:'attach_ast_ranges_for_batch_summary',data:{issues:issues.length,selectedSingleLineCount,selectedMultiLineCount,noAstResultCount,noCandidatesCount,samples},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+    };
+
     private filterIssuesByAllowedLines = (
         issues: ReviewIssue[],
         options: {
             useDiffContent: boolean;
             allowedLinesByFile: Map<string, Set<number>>;
-            diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>;
+            diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>;
         }
     ): ReviewIssue[] => {
         if (!options.useDiffContent || options.allowedLinesByFile.size === 0) {
@@ -1060,12 +1141,12 @@ export class AIReviewer {
     };
 
     /**
-     * 标准化 diagnostics 映射，统一路径格式，便于后续比对。
+     * 标准化 diagnostics 映射，统一路径格式，便于后续比对。保留 range 供重叠与相似度过滤使用。
      */
     private normalizeDiagnosticsMap = (
-        diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>
-    ): Map<string, Array<{ line: number; message: string }>> => {
-        const normalized = new Map<string, Array<{ line: number; message: string }>>();
+        diagnosticsByFile?: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>
+    ): Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>> => {
+        const normalized = new Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>();
         if (!diagnosticsByFile || diagnosticsByFile.size === 0) {
             return normalized;
         }
@@ -1076,16 +1157,16 @@ export class AIReviewer {
     };
 
     /**
-     * 从全量 diagnostics 中挑出当前批次涉及文件，减少提示词体积。
+     * 从全量 diagnostics 中挑出当前批次涉及文件，减少提示词体积。保留 range 供与 astRange 重叠过滤。
      */
     private pickDiagnosticsForFiles = (
-        diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>,
+        diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>,
         filePaths: string[]
-    ): Map<string, Array<{ line: number; message: string }>> => {
+    ): Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>> => {
         if (diagnosticsByFile.size === 0) {
             return diagnosticsByFile;
         }
-        const picked = new Map<string, Array<{ line: number; message: string }>>();
+        const picked = new Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>();
         for (const filePath of filePaths) {
             const normalizedPath = path.normalize(filePath);
             const diagnostics = diagnosticsByFile.get(normalizedPath);
@@ -1096,26 +1177,45 @@ export class AIReviewer {
         return picked;
     };
 
+    /** 简单分词：小写、去标点、按空白拆词，用于消息相似度 */
+    private tokenizeMessage = (msg: string): Set<string> => {
+        const normalized = msg.toLowerCase().replace(/[^\w\s\u4e00-\u9fff]/g, ' ').trim();
+        return new Set(normalized.split(/\s+/).filter(Boolean));
+    };
+
     /**
-     * 后置过滤：移除与本地 diagnostics 同行的 AI 问题，避免重复报告。
+     * 后置过滤：移除与本地 diagnostics 同行、或 astRange 与 diagnostic range 相交、或消息相似度超阈值的 AI 问题。
      */
     private filterIssuesByDiagnostics = (
         issues: ReviewIssue[],
-        diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>
+        diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>
     ): ReviewIssue[] => {
         if (diagnosticsByFile.size === 0) {
             return issues;
         }
+        const MESSAGE_SIMILARITY_THRESHOLD = 0.3;
         const before = issues.length;
         const filtered = issues.filter(issue => {
             const diagnostics = diagnosticsByFile.get(path.normalize(issue.file));
-            if (!diagnostics || diagnostics.length === 0) {
-                return true;
-            }
-            return !diagnostics.some(item => item.line === issue.line);
+            if (!diagnostics || diagnostics.length === 0) return true;
+            return !diagnostics.some(d => {
+                if (d.line === issue.line) return true;
+                const range = d.range;
+                const ast = issue.astRange;
+                if (ast && range && issue.file) {
+                    const overlap = ast.endLine >= range.startLine && ast.startLine <= range.endLine;
+                    if (overlap) return true;
+                }
+                const issueTokens = this.tokenizeMessage(issue.message);
+                const diagTokens = this.tokenizeMessage(d.message);
+                if (issueTokens.size === 0) return false;
+                const intersection = [...issueTokens].filter(t => diagTokens.has(t)).length;
+                if (intersection / issueTokens.size >= MESSAGE_SIMILARITY_THRESHOLD) return true;
+                return false;
+            });
         });
         if (before > filtered.length) {
-            this.logger.debug('[diagnostics] 已过滤与本地诊断同行的 AI 重复问题');
+            this.logger.debug('[diagnostics] 已过滤与本地诊断同行/重叠/语义相近的 AI 重复问题');
         }
         return filtered;
     };
@@ -1217,10 +1317,11 @@ export class AIReviewer {
         }
 
         const requestHash = this.calculateRequestHash(request);
+        const projectRulesSummary = await this.configManager.getProjectRulesSummary();
 
         const requestBody = this.config.api_format === 'custom'
             ? this.buildCustomRequest(request)
-            : this.buildOpenAIRequest(request, options?.isDiffContent, options?.diagnosticsByFile);
+            : this.buildOpenAIRequest(request, options?.isDiffContent, options?.diagnosticsByFile, projectRulesSummary);
 
         const userMsgForLog = (requestBody as { messages?: Array<{ role: string; content: string }> }).messages?.find(m => m.role === 'user');
         const inputLen = userMsgForLog?.content?.length ?? this.estimateRequestChars(request.files);
@@ -1389,7 +1490,8 @@ export class AIReviewer {
     private buildOpenAIRequest(
         request: { files: Array<{ path: string; content: string }> },
         isDiffContent?: boolean,
-        diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>
+        diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>,
+        projectRulesSummary?: string
     ): {
         model: string;
         messages: Array<{ role: string; content: string }>;
@@ -1399,6 +1501,10 @@ export class AIReviewer {
         if (!this.config) {
             throw new Error('AI审查配置未初始化');
         }
+        const baseSystem = this.config.system_prompt || DEFAULT_SYSTEM_PROMPT;
+        const systemContent = projectRulesSummary?.trim()
+            ? `${baseSystem}\n\n**项目约定（请遵守，勿建议与之冲突的修改）：**\n${projectRulesSummary.trim()}`
+            : baseSystem;
 
         const filesContent = request.files.map(file => {
             const ext = file.path.split('.').pop() || '';
@@ -1470,7 +1576,7 @@ ${lineHint ? `\n**行号说明：**\n${lineHint}\n` : ''}
             messages: [
                 {
                     role: 'system',
-                    content: this.config.system_prompt || DEFAULT_SYSTEM_PROMPT
+                    content: systemContent
                 },
                 {
                     role: 'user',

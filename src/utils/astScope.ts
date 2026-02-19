@@ -157,6 +157,33 @@ const collectChangedLines = (fileDiff: FileDiff): number[] => {
 
 const collectSmallestNodes = (ast: any, changedLines: number[]): Map<number, any> => {
     const bestByLine = new Map<number, any>();
+    /**
+     * 选择更合适的 AST 节点用于“范围高亮”：
+     * - 优先选择多行节点（如函数体）以提供稳定的上下文范围；
+     * - 若都为单行或都为多行，再按“更小跨度”选择，避免范围过大。
+     *
+     * 背景：纯“最小节点”策略容易退化为单行表达式，导致 AST 浅色高亮看起来像没生效。
+     */
+    const pickBetterNode = (current: any, candidate: any): any => {
+        if (!current) {
+            return candidate;
+        }
+        const currentStart = current?.loc?.start?.line;
+        const currentEnd = current?.loc?.end?.line;
+        const candidateStart = candidate?.loc?.start?.line;
+        const candidateEnd = candidate?.loc?.end?.line;
+        if (!currentStart || !currentEnd || !candidateStart || !candidateEnd) {
+            return current;
+        }
+        const currentSpan = currentEnd - currentStart;
+        const candidateSpan = candidateEnd - candidateStart;
+        const currentMultiLine = currentSpan > 0;
+        const candidateMultiLine = candidateSpan > 0;
+        if (currentMultiLine !== candidateMultiLine) {
+            return candidateMultiLine ? candidate : current;
+        }
+        return candidateSpan <= currentSpan ? candidate : current;
+    };
     const visit = (node: any): void => {
         if (!node || typeof node !== 'object') {
             return;
@@ -178,15 +205,7 @@ const collectSmallestNodes = (ast: any, changedLines: number[]): Map<number, any
                         continue;
                     }
                     const current = bestByLine.get(line);
-                    const newSpan = endLine - startLine;
-                    if (!current) {
-                        bestByLine.set(line, node);
-                        continue;
-                    }
-                    const currentSpan = current.loc.end.line - current.loc.start.line;
-                    if (newSpan <= currentSpan) {
-                        bestByLine.set(line, node);
-                    }
+                    bestByLine.set(line, pickBetterNode(current, node));
                 }
                 }
             }

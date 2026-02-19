@@ -17,6 +17,8 @@ export interface ReviewIssue {
     rule: string;               // 触发的规则名称（如 'no_space_in_filename'）
     severity: 'error' | 'warning' | 'info';  // 严重程度
     astRange?: { startLine: number; endLine: number }; // AST 片段范围（1-based，可选）
+    /** 内容寻址指纹，用于项目级忽略（抗行号偏移）；见 utils/issueFingerprint.ts */
+    fingerprint?: string;
     incremental?: boolean;      // 是否属于“本次增量问题”（true=增量，false/undefined=存量）
     ignored?: boolean;          // 是否被 @ai-ignore 覆盖（仅用于当前面板展示态）
     ignoreReason?: string;      // 放行原因（从 @ai-ignore 注释中提取，可选）

@@ -103,6 +103,60 @@ export const buildLspReferenceContext = async (
     return joined.length <= maxChars ? joined : `${joined.slice(0, maxChars)}\n...(参考上下文已截断)`;
 };
 
+/** 调用方上下文选项：最多条数、总字符上限 */
+const DEFAULT_MAX_USAGES = 5;
+const DEFAULT_MAX_USAGES_CHARS = 3000;
+
+/**
+ * 为变更片段内符号补充「调用方」上下文，供 AI 参考。
+ * 复用 collectIdentifierOccurrences，对每个 occurrence 调 getReferenceLocations，按 path:line 去重，限制条数与总字符。
+ */
+export const buildLspUsagesContext = async (
+    filePath: string,
+    snippets: AffectedScopeResult['snippets'],
+    options?: { maxUsages?: number; maxChars?: number }
+): Promise<string> => {
+    const maxUsages = options?.maxUsages ?? DEFAULT_MAX_USAGES;
+    const maxChars = options?.maxChars ?? DEFAULT_MAX_USAGES_CHARS;
+    if (maxUsages <= 0 || snippets.length === 0) return '';
+
+    const fileUri = vscode.Uri.file(filePath);
+    const candidates = collectIdentifierOccurrences(snippets);
+    const fileCache = new Map<string, string[]>();
+    const seenKey = new Set<string>();
+    const bySymbol: string[] = [];
+    let totalUsages = 0;
+    let totalChars = 0;
+
+    for (const occurrence of candidates) {
+        if (totalUsages >= maxUsages || totalChars >= maxChars) break;
+        const refs = await getReferenceLocations(fileUri, occurrence.line, occurrence.character);
+        const refBlocks: string[] = [];
+        for (const ref of refs) {
+            if (totalUsages >= maxUsages || totalChars >= maxChars) break;
+            const targetPath = normalizeFsPath(ref.uri.fsPath);
+            const line = ref.range.start.line + 1;
+            const key = `${targetPath}:${line}`;
+            if (seenKey.has(key)) continue;
+            seenKey.add(key);
+            const snippet = await readLineSnippet(targetPath, line, 1, fileCache);
+            if (!snippet) continue;
+            refBlocks.push(`- ${targetPath}:${line}\n  ${snippet.replace(/\n/g, '\n  ')}`);
+            totalUsages += 1;
+            totalChars += (targetPath + snippet).length + 20;
+        }
+        if (refBlocks.length > 0) {
+            bySymbol.push(`符号: ${occurrence.name}\n${refBlocks.join('\n')}`);
+        }
+    }
+
+    if (bySymbol.length === 0) return '';
+    const header = '## 调用方 (Usages)';
+    const body = bySymbol.join('\n\n');
+    const out = `${header}\n${body}`;
+    return out.length <= maxChars ? out : `${out.slice(0, maxChars)}\n...(调用方上下文已截断)`;
+};
+
 const normalizeFsPath = (input: string): string => path.normalize(input);
 
 const collectIdentifierOccurrences = (snippets: AffectedScopeResult['snippets']): IdentifierOccurrence[] => {
@@ -146,6 +200,35 @@ const getDefinitionLocations = async (
     try {
         const result = await vscode.commands.executeCommand<Array<vscode.Location | vscode.LocationLink> | undefined>(
             'vscode.executeDefinitionProvider',
+            fileUri,
+            new vscode.Position(Math.max(0, line - 1), Math.max(0, character - 1))
+        );
+        if (!Array.isArray(result) || result.length === 0) {
+            return [];
+        }
+        return result.map(item => {
+            if ('targetUri' in item) {
+                return new vscode.Location(item.targetUri, item.targetRange);
+            }
+            return item;
+        });
+    } catch {
+        return [];
+    }
+};
+
+/**
+ * 获取符号的引用位置（调用方），供 buildLspUsagesContext 使用。
+ * 内部调用 vscode.executeReferenceProvider；LocationLink 转为 Location。
+ */
+export const getReferenceLocations = async (
+    fileUri: vscode.Uri,
+    line: number,
+    character: number
+): Promise<vscode.Location[]> => {
+    try {
+        const result = await vscode.commands.executeCommand<Array<vscode.Location | vscode.LocationLink> | undefined>(
+            'vscode.executeReferenceProvider',
             fileUri,
             new vscode.Position(Math.max(0, line - 1), Math.max(0, character - 1))
         );

@@ -39,6 +39,8 @@ import type { ReviewIssue, ReviewResult } from '../types/review';
 import { getAffectedScopeWithDiagnostics, type AffectedScopeResult, type AstFallbackReason } from '../utils/astScope';
 import { RuntimeTraceLogger, type RuntimeTraceSession } from '../utils/runtimeTraceLogger';
 import { generateRuntimeSummaryForFile } from '../utils/runtimeLogExplainer';
+import { computeIssueFingerprint } from '../utils/issueFingerprint';
+import { loadIgnoredFingerprints } from '../config/ignoreStore';
 
 // 为保持向后兼容，从 reviewEngine 继续 export 类型（实际定义在 types/review）
 export type { ReviewIssue, ReviewResult } from '../types/review';
@@ -256,6 +258,13 @@ export class ReviewEngine {
                         });
                         if (scopeResult.result?.snippets?.length) {
                             snippetsByFile.set(filePath, scopeResult.result);
+                            const spans = scopeResult.result.snippets.map(s => s.endLine - s.startLine + 1);
+                            const maxSpan = spans.length ? Math.max(...spans) : 0;
+                            const minSpan = spans.length ? Math.min(...spans) : 0;
+                            const sample = scopeResult.result.snippets.slice(0, 3).map(s => `${s.startLine}-${s.endLine}`);
+                            // #region agent log
+                            fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-2',hypothesisId:'N1',location:'reviewEngine.ts:260',message:'ast_scope_snippets_generated',data:{filePath,snippetCount:scopeResult.result.snippets.length,minSpan,maxSpan,sample},timestamp:Date.now()})}).catch(()=>{});
+                            // #endregion
                         } else {
                             addFallback(scopeResult.fallbackReason);
                         }
@@ -382,7 +391,22 @@ export class ReviewEngine {
             }
 
             const deduplicatedIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
-            const allIssues = await this.filterIgnoredIssues(deduplicatedIssues);
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+            if (workspaceRoot) {
+                for (const issue of deduplicatedIssues) {
+                    if (issue.fingerprint) continue;
+                    try {
+                        const content = await this.fileScanner.readFile(issue.file);
+                        issue.fingerprint = computeIssueFingerprint(issue, content, workspaceRoot);
+                    } catch {
+                        // 文件读取失败则跳过该条指纹，过滤时不会按指纹命中
+                    }
+                }
+            }
+            const allIssues = await this.filterIgnoredIssues(deduplicatedIssues, workspaceRoot);
+            // #region agent log
+            fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H1',location:'reviewEngine.ts:399',message:'pre_attach_ast_ranges',data:{useAstScope:!!useAstScope,hasDiffByFile:!!options?.diffByFile,astMapSize:astSnippetsByFile?.size??0,allIssues:allIssues.length,aiIssues:aiIssues.length,ruleIssues:ruleIssues.length},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
             this.attachAstRanges(allIssues, astSnippetsByFile);
             this.markIncrementalIssues(allIssues, options?.diffByFile);
             for (const issue of allIssues) {
@@ -470,20 +494,43 @@ export class ReviewEngine {
         astSnippetsByFile?: Map<string, AffectedScopeResult>
     ): void => {
         if (!astSnippetsByFile || issues.length === 0) {
+            // #region agent log
+            fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H1',location:'reviewEngine.ts:486',message:'attach_ast_ranges_skipped',data:{hasAstMap:!!astSnippetsByFile,issuesCount:issues.length},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
             return;
         }
+        const stats = {
+            totalIssues: issues.length,
+            existingAstRange: 0,
+            normalizedHit: 0,
+            rawHit: 0,
+            missingAstResult: 0,
+            noCandidateByLine: 0,
+            attached: 0,
+        };
         for (const issue of issues) {
             if (issue.astRange) {
+                stats.existingAstRange++;
                 continue;
             }
-            const astResult = astSnippetsByFile.get(issue.file);
+            const normalizedPath = path.normalize(issue.file);
+            const hitByNormalized = astSnippetsByFile.get(normalizedPath);
+            const hitByRaw = astSnippetsByFile.get(issue.file);
+            if (hitByNormalized) {
+                stats.normalizedHit++;
+            } else if (hitByRaw) {
+                stats.rawHit++;
+            }
+            const astResult = hitByNormalized ?? hitByRaw;
             if (!astResult?.snippets?.length) {
+                stats.missingAstResult++;
                 continue;
             }
             const candidates = astResult.snippets.filter(snippet =>
                 issue.line >= snippet.startLine && issue.line <= snippet.endLine
             );
             if (candidates.length === 0) {
+                stats.noCandidateByLine++;
                 continue;
             }
             const bestSnippet = candidates.reduce((best, current) => {
@@ -495,7 +542,11 @@ export class ReviewEngine {
                 startLine: bestSnippet.startLine,
                 endLine: bestSnippet.endLine,
             };
+            stats.attached++;
         }
+        // #region agent log
+        fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H2-H3',location:'reviewEngine.ts:513',message:'attach_ast_ranges_summary',data:stats,timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
     };
 
     /**
@@ -507,8 +558,8 @@ export class ReviewEngine {
      */
     private collectDiagnosticsByFile = (
         files: string[]
-    ): Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint' }>> => {
-        const map = new Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint' }>>();
+    ): Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint'; range?: { startLine: number; endLine: number } }>> => {
+        const map = new Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint'; range?: { startLine: number; endLine: number } }>>();
         try {
             const diagnosticsGetter = (vscode as unknown as {
                 languages?: { getDiagnostics?: (uri?: vscode.Uri) => ReadonlyArray<vscode.Diagnostic> };
@@ -528,6 +579,10 @@ export class ReviewEngine {
                             line: item.range.start.line + 1,
                             message: item.message,
                             severity: this.toDiagnosticSeverity(item.severity),
+                            range: {
+                                startLine: item.range.start.line + 1,
+                                endLine: item.range.end.line + 1,
+                            },
                         }))
                     );
                 } catch {
@@ -553,10 +608,10 @@ export class ReviewEngine {
     };
 
     private pickDiagnosticsForFiles = (
-        diagnosticsByFile: Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint' }>>,
+        diagnosticsByFile: Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint'; range?: { startLine: number; endLine: number } }>>,
         filePaths: string[]
-    ): Map<string, Array<{ line: number; message: string }>> => {
-        const picked = new Map<string, Array<{ line: number; message: string }>>();
+    ): Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>> => {
+        const picked = new Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>();
         if (diagnosticsByFile.size === 0) {
             return picked;
         }
@@ -567,7 +622,11 @@ export class ReviewEngine {
             if (!diagnostics?.length) {
                 continue;
             }
-            picked.set(filePath, diagnostics.map(item => ({ line: item.line, message: item.message })));
+            picked.set(filePath, diagnostics.map(item => ({
+                line: item.line,
+                message: item.message,
+                range: item.range,
+            })));
         }
         return picked;
     };
@@ -621,18 +680,30 @@ export class ReviewEngine {
     };
 
     /**
-     * 识别并过滤「@ai-ignore」覆盖的问题。
-     *
-     * 规则：
-     * - 标记行本身忽略
-     * - 标记行后的首个非空行也忽略（覆盖常见“注释写在问题上方一行”的场景）
+     * 识别并过滤已忽略的问题。顺序不可颠倒：
+     * 1) 先按项目级指纹过滤（.vscode/agentreview-ignore.json）
+     * 2) 再按 @ai-ignore 行号过滤（标记行及下一非空行）
      */
-    private filterIgnoredIssues = async (issues: ReviewIssue[]): Promise<ReviewIssue[]> => {
+    private filterIgnoredIssues = async (
+        issues: ReviewIssue[],
+        workspaceRoot: string
+    ): Promise<ReviewIssue[]> => {
         if (issues.length === 0) {
             return issues;
         }
 
-        const issueFiles = Array.from(new Set(issues.map(item => path.normalize(item.file))));
+        let afterFingerprint = issues;
+        if (workspaceRoot) {
+            const ignoredSet = new Set(await loadIgnoredFingerprints(workspaceRoot));
+            afterFingerprint = issues.filter(
+                i => !(i.fingerprint && ignoredSet.has(i.fingerprint))
+            );
+            if (afterFingerprint.length < issues.length) {
+                this.logger.info(`已按指纹过滤 ${issues.length - afterFingerprint.length} 条项目级忽略问题`);
+            }
+        }
+
+        const issueFiles = Array.from(new Set(afterFingerprint.map(item => path.normalize(item.file))));
         const ignoredLinesByFile = new Map<string, Set<number>>();
 
         await Promise.all(issueFiles.map(async (filePath) => {
@@ -663,16 +734,12 @@ export class ReviewEngine {
             }
         }));
 
-        if (ignoredLinesByFile.size === 0) {
-            return issues;
-        }
-
-        const filtered = issues.filter(issue => {
+        const filtered = afterFingerprint.filter(issue => {
             const ignoredLines = ignoredLinesByFile.get(path.normalize(issue.file));
             return !ignoredLines?.has(issue.line);
         });
-        if (filtered.length < issues.length) {
-            this.logger.info(`已过滤 ${issues.length - filtered.length} 条 @ai-ignore 标记的问题`);
+        if (filtered.length < afterFingerprint.length) {
+            this.logger.info(`已过滤 ${afterFingerprint.length - filtered.length} 条 @ai-ignore 标记的问题`);
         }
         return filtered;
     };
