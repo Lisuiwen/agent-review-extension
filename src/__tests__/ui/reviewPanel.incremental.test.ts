@@ -115,4 +115,27 @@ describe('ReviewPanelProvider 增量/存量分栏', () => {
         expect(incrementalIssues[0].issue?.incremental).toBe(true);
         expect(existingIssues[0].issue?.incremental).toBe(false);
     });
+
+    it('当存量问题为 0 时，仍应展示“项目存量 (0)”分组', () => {
+        const provider = new ReviewPanelProvider({} as never);
+        const result: ReviewResult = {
+            passed: false,
+            errors: [{
+                file: 'src/incremental-only.ts',
+                line: 1,
+                column: 1,
+                message: '仅增量问题',
+                rule: 'ai_review',
+                severity: 'error',
+                incremental: true,
+            }],
+            warnings: [],
+            info: [],
+        };
+        provider.updateResult(result, 'completed');
+
+        const labels = provider.getChildren().map(item => item.label);
+        expect(labels.some(label => label.includes('你的增量 (1)'))).toBe(true);
+        expect(labels.some(label => label.includes('项目存量 (0)'))).toBe(true);
+    });
 });

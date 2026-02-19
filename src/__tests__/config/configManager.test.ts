@@ -74,6 +74,24 @@ describe('ConfigManager', () => {
             expect(config.rules.code_quality?.no_todo).toBe(true);
             expect(config.rules.code_quality?.action).toBe('warning');
         });
+
+        it('检测到项目规则文件且用户未显式配置时，应默认开启 builtin_rules_enabled', async () => {
+            await tempFs.createFile('.eslintrc.json', '{"root": true}');
+            await configManager.initialize();
+            const config = configManager.getConfig();
+            expect(config.rules.builtin_rules_enabled).toBe(true);
+        });
+
+        it('用户显式配置 builtin_rules_enabled 时，应优先使用用户配置', async () => {
+            await tempFs.createFile('.eslintrc.json', '{"root": true}');
+            await tempFs.createFile('.agentreview.yaml', `version: "1.0"
+rules:
+  builtin_rules_enabled: false
+`);
+            await configManager.initialize();
+            const config = configManager.getConfig();
+            expect(config.rules.builtin_rules_enabled).toBe(false);
+        });
     });
 
     describe('测试用例 2.2: YAML 配置文件读取', () => {

@@ -19,7 +19,7 @@
  * rules:
  *   enabled: true
  *   strict_mode: false
- *   builtin_rules_enabled: false  # 是否启用内置规则引擎（默认false，避免与项目自有规则冲突）
+ *   builtin_rules_enabled: false  # 是否启用内置规则引擎（若检测到项目规则文件且未显式配置，会自动开启）
  *   naming_convention:
  *     enabled: true
  *     action: "block_commit"
@@ -452,14 +452,14 @@ export class ConfigManager implements vscode.Disposable {
                 resolveEnvVariables(s, this.envVars, this.logger)
             );
 
-            // 自动退让：如果项目本身已存在 ESLint/TS/Prettier 规范，且用户未显式配置内置规则开关，则保持关闭内置规则
+            // 自动默认：如果项目本身已存在 ESLint/TS/Prettier 规范，且用户未显式配置内置规则开关，则默认开启内置规则
             const hasUserBuiltinRulesSetting = !!(
                 resolvedUserConfig.rules
                 && Object.prototype.hasOwnProperty.call(resolvedUserConfig.rules, 'builtin_rules_enabled')
             );
             if (!hasUserBuiltinRulesSetting && this.detectProjectRuleConfig()) {
-                this.config.rules.builtin_rules_enabled = false;
-                this.logger.info('检测到项目已有规范配置，自动关闭内置规则以避免冲突');
+                this.config.rules.builtin_rules_enabled = true;
+                this.logger.info('检测到项目已有规范配置，默认开启内置规则审查');
             }
             this.logger.info('配置文件加载成功');
             
@@ -568,7 +568,7 @@ export class ConfigManager implements vscode.Disposable {
      * 检测项目是否已经存在外部工程规范配置（ESLint / TS / Prettier）。
      *
      * 用途：
-     * - 当用户未显式设置 builtin_rules_enabled 时，自动退让为 false，减少规则冲突。
+     * - 当用户未显式设置 builtin_rules_enabled 时，如果探测到项目规则文件，则默认开启规则审查。
      */
     private detectProjectRuleConfig = (): boolean => {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -617,7 +617,7 @@ export class ConfigManager implements vscode.Disposable {
      * 默认规则：
      * - naming_convention: 启用，阻止提交，检查文件名空格
      * - code_quality: 启用，警告级别，检查 TODO 注释
-     * - git_hooks: 自动安装，启用 pre-commit，允许一次性放行
+     * - git_hooks: 自动安装，启用 pre-commit 规则审查
      * 
      * @returns 默认配置对象
      */
@@ -627,7 +627,7 @@ export class ConfigManager implements vscode.Disposable {
             rules: {
                 enabled: true,
                 strict_mode: false,
-                builtin_rules_enabled: false,  // 默认禁用内置规则引擎，避免与项目自有规则冲突
+                builtin_rules_enabled: false,  // 默认值为 false；若探测到项目规则文件且未显式配置，会自动开启
                 diff_only: true,               // 默认仅扫描变更行
                 naming_convention: {
                     enabled: true,

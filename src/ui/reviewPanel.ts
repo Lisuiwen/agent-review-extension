@@ -209,30 +209,21 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
             const incrementalIssues = allIssues.filter(issue => issue.incremental === true);
             const existingIssues = allIssues.filter(issue => issue.incremental !== true);
 
-            if (incrementalIssues.length > 0) {
-                items.push(new ReviewTreeItem(
-                    `你的增量 (${incrementalIssues.length})`,
-                    vscode.TreeItemCollapsibleState.Expanded,
-                    undefined,
-                    undefined,
-                    'incremental'
-                ));
-            }
-            if (existingIssues.length > 0) {
-                items.push(new ReviewTreeItem(
-                    `项目存量 (${existingIssues.length})`,
-                    vscode.TreeItemCollapsibleState.Collapsed,
-                    undefined,
-                    undefined,
-                    'existing'
-                ));
-            }
-
-            // 向后兼容：若没有打标数据，则按旧逻辑退化为单层文件分组
-            if (incrementalIssues.length === 0 && existingIssues.length === 0 && allIssues.length > 0) {
-                const fallbackFileItems = this.buildFileItems(allIssues);
-                items.push(...fallbackFileItems);
-            }
+            // 始终显示“你的增量 / 项目存量”两个分栏，数量可为 0，避免用户误以为缺失分栏。
+            items.push(new ReviewTreeItem(
+                `你的增量 (${incrementalIssues.length})`,
+                vscode.TreeItemCollapsibleState.Expanded,
+                undefined,
+                undefined,
+                'incremental'
+            ));
+            items.push(new ReviewTreeItem(
+                `项目存量 (${existingIssues.length})`,
+                vscode.TreeItemCollapsibleState.Collapsed,
+                undefined,
+                undefined,
+                'existing'
+            ));
 
             return items;
         }

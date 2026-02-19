@@ -27,7 +27,7 @@ flowchart LR
 |------|----------|----------|
 | 阶段 0 | 2026-01-21 | 插件基础框架 |
 | 阶段 1 | 2026-01-24 ~ 2026-01-26 | 配置管理、审查引擎、Git Hook、修复与高亮 |
-| 阶段 2 | 2026-02-08 | .agentreview.yaml、diff_only、AST 片段、一次性放行 |
+| 阶段 2 | 2026-02-08 | .agentreview.yaml、diff_only、AST 片段、放行此条（@ai-ignore） |
 | 阶段 3 | 2026-02-10 ~ 2026-02-11 | 批处理/并发、运行日志解释与 human_readable |
 
 ---
@@ -62,7 +62,7 @@ flowchart LR
 
 ## 阶段 2：YAML 配置与审查增强（2026-02-08）
 
-**目标**：项目级 YAML 配置、仅审查变更行（diff_only）、AST 片段审查、一次性放行提交、架构文档与命令结构优化。
+**目标**：项目级 YAML 配置、仅审查变更行（diff_only）、AST 片段审查、放行此条（@ai-ignore）、架构文档与命令结构优化。
 
 | Commit | 概要 |
 |--------|------|
@@ -71,10 +71,10 @@ flowchart LR
 | `37564e5` | **AST 片段模式**；astScope、@babel/parser；ConfigManager/AIReviewer/ReviewEngine 支持 |
 | `366262a` | Vue SFC 解析；@vue/compiler-sfc；astScope 单元测试 |
 | `a86656b` | AST 预览模式配置；ConfigManager 逐项合并 AST 默认值 |
-| `ebadf7e` | **一次性放行提交**；放行标记命令；ReviewEngine/ReviewPanel AST 与问题详情展示 |
+| `ebadf7e` | **放行此条（@ai-ignore）**；放行标记命令；ReviewEngine/ReviewPanel AST 与问题详情展示 |
 | `5d6fac6` | 架构改进文档、详细设计说明书；extension 命令注册简化；AI 模块与配置管理器环境变量解析 |
 
-**交付要点**：项目级 YAML、diff_only、AST 片段与 Vue SFC 支持、一次性放行入口、结果交互（AST 范围与问题详情）、架构与设计文档（对应 phase1-mvp「YAML 配置、结果交互优化、pre-commit 一次性放行」）。
+**交付要点**：项目级 YAML、diff_only、AST 片段与 Vue SFC 支持、放行此条（@ai-ignore）入口、结果交互（AST 范围与问题详情）、架构与设计文档（对应 phase1-mvp「YAML 配置、结果交互优化、放行此条」）。
 
 ---
 
@@ -99,7 +99,7 @@ flowchart LR
 5fdf5dc 运行日志解释命令；runtimeLogExplainer、runtimeLogPath；extension 注册与目录解析
 58597f3 AI 审查批处理配置与并发控制；AIReviewer、ConfigManager
 5d6fac6 架构改进文档与详细设计；extension 命令注册简化；AI 模块与环境变量解析
-ebadf7e 一次性放行提交；放行标记命令；ReviewEngine/ReviewPanel AST 与问题详情
+ebadf7e 放行此条（@ai-ignore）；放行标记命令；ReviewEngine/ReviewPanel AST 与问题详情
 a86656b AST 预览模式配置；ConfigManager 逐项合并 AST
 366262a Vue SFC 解析；@vue/compiler-sfc；astScope 单元测试
 37564e5 AST 片段模式；astScope、@babel/parser；ConfigManager/AIReviewer/ReviewEngine
