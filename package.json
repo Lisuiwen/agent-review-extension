@@ -21,6 +21,10 @@
         "icon": "$(play)"
       },
       {
+        "command": "agentreview.runStaged",
+        "title": "仅暂存变更审查"
+      },
+      {
         "command": "agentreview.review",
         "title": "AgentReview: 执行代码审查"
       },
@@ -44,6 +48,10 @@
       {
         "command": "agentreview.allowIssueIgnore",
         "title": "AgentReview: 放行当前问题（插入@ai-ignore注释）"
+      },
+      {
+        "command": "agentreview.reviewCurrentFileNow",
+        "title": "AgentReview: 立即复审当前文件"
       },
       {
         "command": "agentreview.runtimeLog.explainLatest",
@@ -155,7 +163,7 @@
         },
         "agentreview.ai.systemPrompt": {
           "type": "string",
-          "default": "你是一个专业的代码审查助手。请仔细审查代码，找出潜在的问题、bug、性能问题、安全问题等，并给出具体的改进建议。",
+          "default": "你是一个专业的代码审查助手。请审查代码并指出潜在问题、风险和改进建议。",
           "description": "系统提示词，用于指导AI审查行为"
         },
         "agentreview.ai.retryCount": {
@@ -218,6 +226,52 @@
           "type": "boolean",
           "default": false,
           "description": "保存文件时自动触发审查（异步非阻塞）"
+        },
+        "agentreview.ai.runOnSaveDebounceMs": {
+          "type": "number",
+          "default": 800,
+          "minimum": 0,
+          "description": "保存复审防抖时间（毫秒）"
+        },
+        "agentreview.ai.runOnSaveMaxRunsPerMinute": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "description": "每分钟最多触发保存复审次数（限频）"
+        },
+        "agentreview.ai.enableLocalRebase": {
+          "type": "boolean",
+          "default": true,
+          "description": "编辑时本地同步 issue 行号并标记待复审"
+        },
+        "agentreview.ai.largeChangeLineThreshold": {
+          "type": "number",
+          "default": 40,
+          "minimum": 1,
+          "description": "大改动阈值（超过后仅标记待复审，不做行号重映射）"
+        },
+        "agentreview.ai.idleRecheckEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "启用编辑停顿后自动复审当前文件"
+        },
+        "agentreview.ai.idleRecheckMs": {
+          "type": "number",
+          "default": 2500,
+          "minimum": 300,
+          "description": "编辑停顿触发复审间隔（毫秒）"
+        },
+        "agentreview.ai.autoReviewMaxParallelFiles": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 2,
+          "description": "保存复审并行文件数"
+        },
+        "agentreview.ai.reviewCurrentFileNowBypassRateLimit": {
+          "type": "boolean",
+          "default": false,
+          "description": "立即复审当前文件时是否绕过限频"
         },
         "agentreview.ai.funnelLint": {
           "type": "boolean",

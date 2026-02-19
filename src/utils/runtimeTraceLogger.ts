@@ -33,7 +33,8 @@ export type RuntimeEventName =
     | 'llm_call_abort'
     | 'llm_call_failed'
     | 'llm_retry_scheduled'
-    | 'batch_split_triggered';
+    | 'batch_split_triggered'
+    | 'diagnostics_filter_overdrop_fallback';
 
 export type RuntimeEventValue = string | number | boolean | null;
 export type RuntimeEventData = Record<string, RuntimeEventValue>;

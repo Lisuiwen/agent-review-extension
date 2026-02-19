@@ -138,4 +138,23 @@ describe('ReviewPanelProvider 增量/存量分栏', () => {
         expect(labels.some(label => label.includes('你的增量 (1)'))).toBe(true);
         expect(labels.some(label => label.includes('项目存量 (0)'))).toBe(true);
     });
+
+    it('无问题时应优先展示场景化 emptyStateHint', () => {
+        const provider = new ReviewPanelProvider({} as never);
+        provider.updateResult(
+            {
+                passed: true,
+                errors: [],
+                warnings: [],
+                info: [],
+            },
+            'completed',
+            '',
+            '当前保存文件复审未发现问题'
+        );
+
+        const labels = provider.getChildren().map(item => item.label);
+        expect(labels.some(label => label.includes('当前保存文件复审未发现问题'))).toBe(true);
+        expect(labels.some(label => label.includes('没有staged文件需要审查'))).toBe(false);
+    });
 });

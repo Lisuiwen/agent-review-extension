@@ -250,6 +250,51 @@ runtime_log:
         });
     });
 
+    describe('AI 配置优先级', () => {
+        it('未显式配置 Settings 时，不应让默认值覆盖 YAML 的 ai_review.run_on_save', async () => {
+            const originalGetConfiguration = (vscode.workspace as any).getConfiguration;
+            try {
+                (vscode.workspace as any).getConfiguration = () => ({
+                    // 模拟 get() 返回默认值（真实 VSCode 场景可能出现）
+                    get: (key: string) => {
+                        const defaults: Record<string, unknown> = {
+                            ai: {},
+                            'ai.enabled': false,
+                            'ai.runOnSave': false,
+                            'ai.timeout': 30000,
+                            'ai.temperature': 0.7,
+                        };
+                        return defaults[key];
+                    },
+                    // 关键：inspect 表示这些键都“未显式设置”
+                    inspect: (_key: string) => ({
+                        defaultValue: undefined,
+                        globalValue: undefined,
+                        workspaceValue: undefined,
+                        workspaceFolderValue: undefined,
+                    }),
+                });
+
+                const yamlContent = `version: "1.0"
+ai_review:
+  enabled: true
+  api_endpoint: "https://example.com/v1/chat/completions"
+  timeout: 30000
+  action: "warning"
+  run_on_save: true
+`;
+                await tempFs.createFile('.agentreview.yaml', yamlContent);
+                await configManager.initialize();
+
+                const config = configManager.getConfig();
+                expect(config.ai_review?.enabled).toBe(true);
+                expect(config.ai_review?.run_on_save).toBe(true);
+            } finally {
+                (vscode.workspace as any).getConfiguration = originalGetConfiguration;
+            }
+        });
+    });
+
     describe('测试用例 2.4: 配置文件错误处理', () => {
         it('应该优雅处理格式错误的 YAML 文件', async () => {
             // 创建格式错误的 YAML

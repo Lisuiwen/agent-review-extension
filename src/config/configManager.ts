@@ -200,36 +200,43 @@ export class ConfigManager implements vscode.Disposable {
      */
     private loadAIConfigFromSettings(): Partial<AgentReviewConfig['ai_review']> | undefined {
         const settings = vscode.workspace.getConfiguration('agentreview');
-        if (!settings.get('ai') || typeof settings.get('ai') !== 'object') return undefined;
 
         const aiConfig: Record<string, unknown> = {};
-        const mappings: { key: string; configKey: string; explicit?: boolean }[] = [
-            { key: 'ai.enabled', configKey: 'enabled', explicit: true },
+        const mappings: { key: string; configKey: string }[] = [
+            { key: 'ai.enabled', configKey: 'enabled' },
             { key: 'ai.apiFormat', configKey: 'api_format' },
             { key: 'ai.apiEndpoint', configKey: 'api_endpoint' },
             { key: 'ai.apiKey', configKey: 'api_key' },
             { key: 'ai.model', configKey: 'model' },
-            { key: 'ai.timeout', configKey: 'timeout', explicit: true },
-            { key: 'ai.temperature', configKey: 'temperature', explicit: true },
-            { key: 'ai.maxTokens', configKey: 'max_tokens', explicit: true },
+            { key: 'ai.timeout', configKey: 'timeout' },
+            { key: 'ai.temperature', configKey: 'temperature' },
+            { key: 'ai.maxTokens', configKey: 'max_tokens' },
             { key: 'ai.systemPrompt', configKey: 'system_prompt' },
-            { key: 'ai.retryCount', configKey: 'retry_count', explicit: true },
-            { key: 'ai.retryDelay', configKey: 'retry_delay', explicit: true },
+            { key: 'ai.retryCount', configKey: 'retry_count' },
+            { key: 'ai.retryDelay', configKey: 'retry_delay' },
             { key: 'ai.action', configKey: 'action' },
-            { key: 'ai.diffOnly', configKey: 'diff_only', explicit: true },
+            { key: 'ai.diffOnly', configKey: 'diff_only' },
             { key: 'ai.batchingMode', configKey: 'batching_mode' },
-            { key: 'ai.astSnippetBudget', configKey: 'ast_snippet_budget', explicit: true },
+            { key: 'ai.astSnippetBudget', configKey: 'ast_snippet_budget' },
             { key: 'ai.astChunkStrategy', configKey: 'ast_chunk_strategy' },
-            { key: 'ai.batchConcurrency', configKey: 'batch_concurrency', explicit: true },
-            { key: 'ai.maxRequestChars', configKey: 'max_request_chars', explicit: true },
-            { key: 'ai.runOnSave', configKey: 'run_on_save', explicit: true },
-            { key: 'ai.funnelLint', configKey: 'funnel_lint', explicit: true },
+            { key: 'ai.batchConcurrency', configKey: 'batch_concurrency' },
+            { key: 'ai.maxRequestChars', configKey: 'max_request_chars' },
+            { key: 'ai.runOnSave', configKey: 'run_on_save' },
+            { key: 'ai.runOnSaveDebounceMs', configKey: 'run_on_save_debounce_ms' },
+            { key: 'ai.runOnSaveMaxRunsPerMinute', configKey: 'run_on_save_max_runs_per_minute' },
+            { key: 'ai.enableLocalRebase', configKey: 'enable_local_rebase' },
+            { key: 'ai.largeChangeLineThreshold', configKey: 'large_change_line_threshold' },
+            { key: 'ai.idleRecheckEnabled', configKey: 'idle_recheck_enabled' },
+            { key: 'ai.idleRecheckMs', configKey: 'idle_recheck_ms' },
+            { key: 'ai.autoReviewMaxParallelFiles', configKey: 'auto_review_max_parallel_files' },
+            { key: 'ai.reviewCurrentFileNowBypassRateLimit', configKey: 'review_current_file_now_bypass_rate_limit' },
+            { key: 'ai.funnelLint', configKey: 'funnel_lint' },
             { key: 'ai.funnelLintSeverity', configKey: 'funnel_lint_severity' },
-            { key: 'ai.ignoreFormatOnlyDiff', configKey: 'ignore_format_only_diff', explicit: true },
+            { key: 'ai.ignoreFormatOnlyDiff', configKey: 'ignore_format_only_diff' },
         ];
-        for (const { key, configKey, explicit } of mappings) {
-            const val = settings.get(key);
-            if (explicit ? val !== undefined : val) {
+        for (const { key, configKey } of mappings) {
+            const val = this.getExplicitSetting<unknown>(settings, key);
+            if (val !== undefined) {
                 (aiConfig as any)[configKey] = val;
             }
         }
@@ -402,6 +409,38 @@ export class ConfigManager implements vscode.Disposable {
                     ...(existingAIConfig?.retry_delay !== undefined && settingsAIConfig.retry_delay === undefined && { retry_delay: existingAIConfig.retry_delay }),
                     diff_only: settingsAIConfig.diff_only ?? existingAIConfig?.diff_only ?? true,
                     run_on_save: settingsAIConfig.run_on_save ?? existingAIConfig?.run_on_save ?? false,
+                    run_on_save_debounce_ms:
+                        settingsAIConfig.run_on_save_debounce_ms
+                        ?? existingAIConfig?.run_on_save_debounce_ms
+                        ?? 800,
+                    run_on_save_max_runs_per_minute:
+                        settingsAIConfig.run_on_save_max_runs_per_minute
+                        ?? existingAIConfig?.run_on_save_max_runs_per_minute
+                        ?? 6,
+                    enable_local_rebase:
+                        settingsAIConfig.enable_local_rebase
+                        ?? existingAIConfig?.enable_local_rebase
+                        ?? true,
+                    large_change_line_threshold:
+                        settingsAIConfig.large_change_line_threshold
+                        ?? existingAIConfig?.large_change_line_threshold
+                        ?? 40,
+                    idle_recheck_enabled:
+                        settingsAIConfig.idle_recheck_enabled
+                        ?? existingAIConfig?.idle_recheck_enabled
+                        ?? false,
+                    idle_recheck_ms:
+                        settingsAIConfig.idle_recheck_ms
+                        ?? existingAIConfig?.idle_recheck_ms
+                        ?? 2500,
+                    auto_review_max_parallel_files:
+                        settingsAIConfig.auto_review_max_parallel_files
+                        ?? existingAIConfig?.auto_review_max_parallel_files
+                        ?? 1,
+                    review_current_file_now_bypass_rate_limit:
+                        settingsAIConfig.review_current_file_now_bypass_rate_limit
+                        ?? existingAIConfig?.review_current_file_now_bypass_rate_limit
+                        ?? false,
                     funnel_lint: settingsAIConfig.funnel_lint ?? existingAIConfig?.funnel_lint ?? false,
                     funnel_lint_severity:
                         settingsAIConfig.funnel_lint_severity
@@ -476,14 +515,10 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
-     * 加载.env文件
-     * 
-     * 从所有工作区根目录的 .env 中读取环境变量并合并（先加载的优先，不覆盖已有键）。
-     * 多根工作区时可在任意一个根目录放置 .env，避免“当前项目”下没有 .env 导致占位符未解析。
-     * 支持标准 .env 格式：KEY=value、KEY="value"、# 注释、空行忽略。
-     * 不覆盖系统环境变量（process.env）。
+     * 加载 .env 文件：从工作区根目录（及多根时各根）读取并合并环境变量；
+     * 支持 KEY=value、KEY="value"、# 注释；不覆盖 process.env 与已有键。
      */
-    /** 解析 .env 文件内容并合并到 envVars（不覆盖已有键、不覆盖 process.env） */
+    /** 解析 .env 内容并合并到 envVars（不覆盖已有键、不覆盖 process.env） */
     private parseAndMergeEnvContent(content: string, envPath: string, logPrefix = '从.env文件'): void {
         const lines = content.split(/\r?\n/);
         let lineNumber = 0;

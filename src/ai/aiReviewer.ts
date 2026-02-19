@@ -1,194 +1,71 @@
+﻿/**
+ * AI 瀹℃煡鍣ㄤ富鍏ュ彛
+ *
+ * 璐熻矗閰嶇疆鍔犺浇銆乺eview 娴佺▼缂栨帓銆丠TTP 璋冪敤涓庨噸璇曘€佺紦瀛樹笌缁啓锛涘叿浣撻€昏緫濮旀墭缁?aiReviewer.* 瀛愭ā鍧椼€? */
 import * as path from 'path';
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { z } from 'zod';
-import { ConfigManager, AgentReviewConfig } from '../config/configManager';
+import { ConfigManager } from '../config/configManager';
 import { Logger } from '../utils/logger';
 import type { ReviewIssue } from '../types/review';
 import { FileScanner } from '../utils/fileScanner';
 import type { FileDiff } from '../utils/diffTypes';
 import type { AffectedScopeResult } from '../utils/astScope';
-import { buildLspReferenceContext, buildLspUsagesContext } from '../utils/lspContext';
+import * as lspContext from '../utils/lspContext';
 import { RuntimeTraceLogger, type RuntimeTraceSession } from '../utils/runtimeTraceLogger';
 
-/**
- * AI审查配置接口
- * 从AgentReviewConfig中提取AI相关配置
- */
-export interface AIReviewConfig {
-    enabled: boolean;
-    api_format?: 'openai' | 'custom';
-    apiEndpoint: string;
-    apiKey?: string;
-    model?: string;
-    timeout: number;
-    temperature?: number;
-    max_tokens?: number;
-    system_prompt?: string;
-    retry_count?: number;
-    retry_delay?: number;
-    diff_only?: boolean;
-    batching_mode?: 'file_count' | 'ast_snippet';
-    ast_snippet_budget?: number;
-    ast_chunk_strategy?: 'even' | 'contiguous';
-    batch_concurrency?: number;
-    max_request_chars?: number;
-    run_on_save?: boolean;
-    funnel_lint?: boolean;
-    funnel_lint_severity?: 'error' | 'warning';
-    ignore_format_only_diff?: boolean;
-    action: 'block_commit' | 'warning' | 'log';
-}
+import {
+    type AIReviewConfig,
+    type AIReviewRequest,
+    type AIReviewResponse,
+    AIReviewRequestSchema,
+    handleZodError,
+    DEFAULT_TIMEOUT,
+    DEFAULT_BATCHING_MODE,
+    DEFAULT_AST_SNIPPET_BUDGET,
+    DEFAULT_AST_CHUNK_STRATEGY,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_DELAY,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_SYSTEM_PROMPT,
+    DEFAULT_BATCH_CONCURRENCY,
+    DEFAULT_MAX_REQUEST_CHARS,
+} from './aiReviewer.types';
+export type { AIReviewConfig, AIReviewRequest, AIReviewResponse } from './aiReviewer.types';
+
+import { buildDiffSnippetForFile, buildAstSnippetForFile, buildStructuredReviewContent } from './aiReviewer.snippets';
+import {
+    buildReviewUnits,
+    splitIntoBatches,
+    splitUnitsBySnippetBudget,
+    splitUnitsInHalf,
+    countUnitSnippets,
+    countAstSnippetMap,
+    estimateRequestChars,
+    getAstSnippetBudget,
+    getBatchConcurrency,
+    getMaxRequestChars,
+    DEFAULT_BATCH_SIZE,
+} from './aiReviewer.batching';
+import type { ReviewUnit } from './aiReviewer.types';
+import {
+    normalizeDiagnosticsMap,
+    filterIssuesByAllowedLines,
+    pickDiagnosticsForFiles,
+    attachAstRangesForBatch,
+    filterIssuesByDiagnostics,
+} from './aiReviewer.issueFilter';
+import { buildOpenAIRequest, buildCustomRequest, buildContinuationOpenAIRequest, getLanguageFromExtension } from './aiReviewer.prompts';
+import { parseOpenAIResponse, parseCustomResponse } from './aiReviewer.responseParser';
+import { transformToReviewIssues, actionToSeverity } from './aiReviewer.transform';
 
 /**
- * AI审查请求的 Zod Schema
- * 用于验证输入数据的格式和类型
+ * AI瀹℃煡鍣ㄧ被
  * 
- * 这个 schema 定义了发送给 AI API 的请求格式：
- * - files: 文件列表，每个文件包含路径，content可选（如果未提供会自动读取）
- */
-const AIReviewRequestSchema = z.object({
-    files: z.array(
-        z.object({
-            path: z.string().min(1, '文件路径不能为空'),
-            content: z.string().optional() // content可选，如果未提供或为空，会自动读取文件
-        })
-    ).min(1, '至少需要一个文件')
-});
-
-/**
- * AI审查响应的 Zod Schema
- * 用于验证 AI API 返回的数据格式
+ * 璐熻矗璋冪敤AI API杩涜浠ｇ爜瀹℃煡
+ * 鏀寔OpenAI鍏煎鏍煎紡鍜岃嚜瀹氫箟鏍煎紡
  * 
- * 这个 schema 定义了 AI API 应该返回的响应格式：
- * - issues: 问题列表，每个问题包含文件路径、位置、消息和严重程度
- */
-const AIReviewResponseSchema = z.object({
-    issues: z.array(
-        z.object({
-            file: z.string().min(1, '文件路径不能为空'),
-            line: z.number().int().positive('行号必须是正整数').default(1),
-            column: z.number().int().nonnegative('列号必须是非负整数').default(1),
-            snippet: z.string().optional(),
-            message: z.string().min(1, '问题描述不能为空'),
-            severity: z.enum(['error', 'warning', 'info'], {
-                message: '严重程度必须是 error、warning 或 info 之一'
-            })
-        })
-    )
-});
-
-/**
- * OpenAI API 响应的 Zod Schema
- * 用于验证 OpenAI 兼容格式的 API 响应
- * 
- * OpenAI/Moonshot API 返回格式：
- * {
- *   choices: [{
- *     message: {
- *       content: "JSON字符串"
- *     }
- *   }]
- * }
- */
-const OpenAIResponseSchema = z.object({
-    choices: z.array(
-        z.object({
-            message: z.object({
-                content: z.string().min(1, '响应内容不能为空')
-            })
-        })
-    ).min(1, '响应中必须包含至少一个 choice')
-});
-
-/**
- * AI审查请求类型
- * 从 Zod Schema 自动生成的 TypeScript 类型
- */
-export type AIReviewRequest = z.infer<typeof AIReviewRequestSchema>;
-
-/**
- * AI审查响应类型
- * 从 Zod Schema 自动生成的 TypeScript 类型
- */
-export type AIReviewResponse = z.infer<typeof AIReviewResponseSchema>;
-
-/** 审查单元来源：ast=AST 片段，diff=diff 片段，full=整文件 */
-type ReviewUnitSourceType = 'ast' | 'diff' | 'full';
-
-/**
- * 单次发给 AI 的审查单元（可能是一文件、一文件的多 AST 块、或按 snippet 预算拆分后的子集）
- */
-interface ReviewUnit {
-    unitId: string;
-    path: string;
-    content: string;
-    snippetCount: number;
-    sourceType: ReviewUnitSourceType;
-}
-
-/**
- * 常量定义
- */
-const DEFAULT_TIMEOUT = 30000;
-const DEFAULT_RETRY_DELAY = 1000;
-const DEFAULT_MAX_RETRIES = 3;
-const DEFAULT_TEMPERATURE = 0.7;
-const DEFAULT_MAX_TOKENS = 8000; // 增加默认token限制，确保有足够空间返回详细分析
-const DEFAULT_BATCH_SIZE = 5; // AI 审查默认批次大小
-const DEFAULT_BATCHING_MODE: NonNullable<AIReviewConfig['batching_mode']> = 'file_count';
-const DEFAULT_AST_SNIPPET_BUDGET = 25;
-const DEFAULT_AST_CHUNK_STRATEGY: NonNullable<AIReviewConfig['ast_chunk_strategy']> = 'even';
-const DEFAULT_BATCH_CONCURRENCY = 2;
-const DEFAULT_MAX_REQUEST_CHARS = 50000;
-const DEFAULT_SYSTEM_PROMPT = `你是一个经验丰富的代码审查专家。你的任务是深入分析代码，找出所有潜在问题，并提供详细的改进建议。
-
-审查时请关注以下方面：
-1. **Bug和运行时错误**：未定义的变量、空指针、类型错误、逻辑错误等
-2. **性能问题**：低效的算法、不必要的循环、内存泄漏、资源未释放等
-3. **安全问题**：SQL注入、XSS、CSRF、敏感信息泄露、不安全的API调用等
-4. **代码质量**：可读性、可维护性、代码重复、命名规范、注释缺失等
-5. **最佳实践**：设计模式、错误处理、边界条件、异常情况处理等
-6. **潜在问题**：即使代码能运行，也要指出可能在未来导致问题的代码模式
-
-请提供详细、具体、可操作的建议。即使代码看起来没有严重问题，也要提供改进建议和最佳实践。`;
-
-/**
- * 工具函数：格式化 Zod 错误信息
- * 
- * @param error - Zod 验证错误
- * @returns 格式化的错误消息字符串
- */
-function formatZodError(error: z.ZodError): string {
-    return error.issues.map((issue: z.ZodIssue) => 
-        `${issue.path.join('.')}: ${issue.message}`
-    ).join(', ');
-}
-
-/**
- * 工具函数：处理 Zod 验证错误
- * 
- * @param error - 可能的错误对象
- * @param logger - 日志记录器
- * @param context - 错误上下文描述
- * @throws 格式化的错误
- */
-function handleZodError(error: unknown, logger: Logger, context: string): never {
-    if (error instanceof z.ZodError) {
-        const errorDetails = formatZodError(error);
-        logger.error(`${context}格式验证失败`, { issues: error.issues });
-        throw new Error(`${context}格式验证失败: ${errorDetails}`);
-    }
-    throw error;
-}
-
-/**
- * AI审查器类
- * 
- * 负责调用AI API进行代码审查
- * 支持OpenAI兼容格式和自定义格式
- * 
- * 使用方式：
- * ```typescript
+ * 浣跨敤鏂瑰紡锛? * ```typescript
  * const aiReviewer = new AIReviewer(configManager);
  * await aiReviewer.initialize();
  * const issues = await aiReviewer.review({ files: [...] });
@@ -210,8 +87,8 @@ export class AIReviewer {
         this.fileScanner = new FileScanner();
         this.runtimeTraceLogger = RuntimeTraceLogger.getInstance();
         
-        // 创建axios实例，统一配置
-        // Moonshot API 使用 OpenAI 兼容格式，认证方式也是 Bearer Token
+        // 鍒涘缓axios瀹炰緥锛岀粺涓€閰嶇疆
+        // Moonshot API 浣跨敤 OpenAI 鍏煎鏍煎紡锛岃璇佹柟寮忎篃鏄?Bearer Token
         this.axiosInstance = axios.create({
             timeout: DEFAULT_TIMEOUT,
             headers: {
@@ -219,13 +96,13 @@ export class AIReviewer {
             }
         });
         
-        // 请求拦截器：添加认证信息
-        // Moonshot API 使用 Bearer Token 认证，格式：Authorization: Bearer <api_key>
+        // 璇锋眰鎷︽埅鍣細娣诲姞璁よ瘉淇℃伅
+        // Moonshot API 浣跨敤 Bearer Token 璁よ瘉锛屾牸寮忥細Authorization: Bearer <api_key>
         this.axiosInstance.interceptors.request.use(
             (config) => {
                 if (this.config?.apiKey) {
-                    // Moonshot API 使用标准的 Bearer Token 认证
-                    // 参考：https://platform.moonshot.cn/docs/guide/start-using-kimi-api
+                    // Moonshot API 浣跨敤鏍囧噯鐨?Bearer Token 璁よ瘉
+                    // 鍙傝€冿細https://platform.moonshot.cn/docs/guide/start-using-kimi-api
                     config.headers.Authorization = `Bearer ${this.config.apiKey}`;
                 }
                 return config;
@@ -233,15 +110,15 @@ export class AIReviewer {
             (error) => Promise.reject(error)
         );
         
-        // 响应拦截器：统一错误处理
+        // 鍝嶅簲鎷︽埅鍣細缁熶竴閿欒澶勭悊
         this.axiosInstance.interceptors.response.use(
             (response) => response,
             (error: AxiosError) => {
-                this.logger.error(`AI API调用失败: ${error.message}`);
+                this.logger.error(`AI API璋冪敤澶辫触: ${error.message}`);
                 if (error.response?.status === 404) {
                     const body = error.response?.data as { error?: { message?: string; type?: string } } | undefined;
                     const msg = body?.error?.message ?? '';
-                    this.logger.warn(`404 可能原因：① 模型不存在或无权限（厂商文档：404 = 不存在该 model 或 Permission denied）② 端点地址错误。当前使用 model 见上方日志。响应: ${msg || JSON.stringify(body ?? '')}`);
+                    this.logger.warn(`404 鍙兘鍘熷洜锛氣憼 妯″瀷涓嶅瓨鍦ㄦ垨鏃犳潈闄愶紙鍘傚晢鏂囨。锛?04 = 涓嶅瓨鍦ㄨ model 鎴?Permission denied锛夆憽 绔偣鍦板潃閿欒銆傚綋鍓嶄娇鐢?model 瑙佷笂鏂规棩蹇椼€傚搷搴? ${msg || JSON.stringify(body ?? '')}`);
                 }
                 return Promise.reject(error);
             }
@@ -249,8 +126,7 @@ export class AIReviewer {
     }
 
     /**
-     * 初始化AI审查器
-     * 从ConfigManager加载AI审查配置
+     * 鍒濆鍖朅I瀹℃煡鍣?     * 浠嶤onfigManager鍔犺浇AI瀹℃煡閰嶇疆
      */
     async initialize(): Promise<void> {
         const config = this.configManager.getConfig();
@@ -259,7 +135,7 @@ export class AIReviewer {
             return;
         }
 
-        // 转换配置格式；OpenAI 兼容格式下若只填了 base URL（如 https://api.moonshot.cn/v1），自动补全 /chat/completions，与官方文档一致
+        // 杞崲閰嶇疆鏍煎紡锛汷penAI 鍏煎鏍煎紡涓嬭嫢鍙～浜?base URL锛堝 https://api.moonshot.cn/v1锛夛紝鑷姩琛ュ叏 /chat/completions锛屼笌瀹樻柟鏂囨。涓€鑷?
         const rawEndpoint = (config.ai_review.api_endpoint || '').trim().replace(/\/+$/, '');
         const apiEndpoint =
             config.ai_review.api_format === 'custom'
@@ -288,36 +164,34 @@ export class AIReviewer {
             action: config.ai_review.action
         };
 
-        // 更新axios实例的超时时间
+        // 鏇存柊axios瀹炰緥鐨勮秴鏃舵椂闂?
         this.axiosInstance.defaults.timeout = this.config.timeout;
 
         const ep = this.config.apiEndpoint || '';
         const endpointResolved = !!ep && !ep.includes('${');
         if (ep && !endpointResolved) {
-            this.logger.warn(`[端点未解析] 仍含占位符，请检查 .env 或设置中的环境变量: ${ep.substring(0, 60)}${ep.length > 60 ? '...' : ''}`);
+            this.logger.warn(`[绔偣鏈В鏋怾 浠嶅惈鍗犱綅绗︼紝璇锋鏌?.env 鎴栬缃腑鐨勭幆澧冨彉閲? ${ep.substring(0, 60)}${ep.length > 60 ? '...' : ''}`);
         }
-        // 检查关键配置
+        // 妫€鏌ュ叧閿厤缃?
         if (!ep) {
             this.logger.warn('⚠️ AI API端点未配置，AI审查将无法执行');
         }
-        // 检查 apiKey 是否配置且已正确解析（不是环境变量占位符）
+        // 妫€鏌?apiKey 鏄惁閰嶇疆涓斿凡姝ｇ‘瑙ｆ瀽锛堜笉鏄幆澧冨彉閲忓崰浣嶇锛?
         if (!this.config.apiKey) {
-            this.logger.warn('⚠️ AI API密钥未配置，可能导致认证失败');
+            this.logger.warn('鈿狅笍 AI API瀵嗛挜鏈厤缃紝鍙兘瀵艰嚧璁よ瘉澶辫触');
         } else if (this.config.apiKey.startsWith('${') && this.config.apiKey.endsWith('}')) {
-            this.logger.warn(`⚠️ AI API密钥环境变量未解析: ${this.config.apiKey}`);
-            this.logger.warn('请确保设置了 OPENAI_API_KEY 环境变量，或在项目根目录创建 .env 文件');
+            this.logger.warn(`鈿狅笍 AI API瀵嗛挜鐜鍙橀噺鏈В鏋? ${this.config.apiKey}`);
+            this.logger.warn('璇风‘淇濊缃簡 OPENAI_API_KEY 鐜鍙橀噺锛屾垨鍦ㄩ」鐩牴鐩綍鍒涘缓 .env 鏂囦欢');
         }
     }
 
     /**
-     * 执行AI审查
+     * 鎵цAI瀹℃煡
      *
-     * 当 request.diffByFile 存在且配置 diff_only 启用时，仅发送变更片段；
-     * 当 request.astSnippetsByFile 存在时，优先发送 AST 片段。返回的 line 均为新文件行号。
-     * 当 request.diagnosticsByFile 存在时，会将其作为「已知问题白名单」注入提示词，并在结果后置过滤重复问题。
-     *
-     * @param request - 审查请求；可含 diffByFile 用于增量审查
-     * @returns 审查问题列表
+     * 褰?request.diffByFile 瀛樺湪涓旈厤缃?diff_only 鍚敤鏃讹紝浠呭彂閫佸彉鏇寸墖娈碉紱
+     * 褰?request.astSnippetsByFile 瀛樺湪鏃讹紝浼樺厛鍙戦€?AST 鐗囨銆傝繑鍥炵殑 line 鍧囦负鏂版枃浠惰鍙枫€?     * 褰?request.diagnosticsByFile 瀛樺湪鏃讹紝浼氬皢鍏朵綔涓恒€屽凡鐭ラ棶棰樼櫧鍚嶅崟銆嶆敞鍏ユ彁绀鸿瘝锛屽苟鍦ㄧ粨鏋滃悗缃繃婊ら噸澶嶉棶棰樸€?     *
+     * @param request - 瀹℃煡璇锋眰锛涘彲鍚?diffByFile 鐢ㄤ簬澧為噺瀹℃煡
+     * @returns 瀹℃煡闂鍒楄〃
      */
     async review(
         request: AIReviewRequest & {
@@ -331,7 +205,7 @@ export class AIReviewer {
         const validatedRequest = this.validateRequest(request);
         const diffByFile = request.diffByFile;
         const astSnippetsByFile = request.astSnippetsByFile;
-        const diagnosticsByFile = this.normalizeDiagnosticsMap(request.diagnosticsByFile);
+        const diagnosticsByFile = normalizeDiagnosticsMap(request.diagnosticsByFile);
 
         await this.ensureInitialized();
         if (!this.isConfigValid()) {
@@ -340,13 +214,44 @@ export class AIReviewer {
 
         this.resetReviewCache();
 
-        // 决定审查范围：仅变更(diff)、仅 AST 片段、或整文件
+        // 鍐冲畾瀹℃煡鑼冨洿锛氫粎鍙樻洿(diff)銆佷粎 AST 鐗囨銆佹垨鏁存枃浠?
         const useDiffMode = this.config?.diff_only !== false && diffByFile && diffByFile.size > 0;
         const useAstSnippets = !!astSnippetsByFile && astSnippetsByFile.size > 0;
         const useDiffContent = useDiffMode || useAstSnippets;
         const astConfig = this.configManager.getConfig().ast;
         const enableLspContext = astConfig?.include_lsp_context !== false;
-        // 若为 diff/AST 模式：为每个文件构建要发送的内容（片段 + 可选 LSP 上下文）；否则沿用请求中的文件列表
+        const lspReferenceBuilder = (() => {
+            try {
+                const candidate = (lspContext as unknown as Record<string, unknown>).buildLspReferenceContext;
+                return typeof candidate === 'function'
+                    ? candidate as (filePath: string, snippets: AffectedScopeResult['snippets']) => Promise<string>
+                    : null;
+            } catch {
+                return null;
+            }
+        })();
+        const lspUsagesBuilder = (() => {
+            try {
+                const candidate = (lspContext as unknown as Record<string, unknown>).buildLspUsagesContext;
+                return typeof candidate === 'function'
+                    ? candidate as (filePath: string, snippets: AffectedScopeResult['snippets']) => Promise<string>
+                    : null;
+            } catch {
+                return null;
+            }
+        })();
+        // 鑻ヤ负 diff/AST 妯″紡锛氫负姣忎釜鏂囦欢鏋勫缓瑕佸彂閫佺殑鍐呭锛堢墖娈?+ 鍙€?LSP 涓婁笅鏂囷級锛涘惁鍒欐部鐢ㄨ姹備腑鐨勬枃浠跺垪琛?
+        const headerContextCache = new Map<string, string>();
+        const getHeaderReferenceContext = async (filePath: string): Promise<string> => {
+            const normalizedPath = path.normalize(filePath);
+            const cached = headerContextCache.get(normalizedPath);
+            if (cached !== undefined) {
+                return cached;
+            }
+            const context = await this.buildFileHeaderReferenceContext(filePath);
+            headerContextCache.set(normalizedPath, context);
+            return context;
+        };
         const filesToLoad = useDiffContent
             ? await Promise.all(validatedRequest.files.map(async (f) => {
                 const normalizedPath = path.normalize(f.path);
@@ -355,21 +260,31 @@ export class AIReviewer {
                 if (useAstSnippets) {
                     const astSnippets = astSnippetsByFile!.get(normalizedPath) ?? astSnippetsByFile!.get(f.path);
                     if (astSnippets?.snippets?.length) {
-                        content = this.buildAstSnippetForFile(f.path, astSnippets);
+                        content = buildAstSnippetForFile(f.path, astSnippets);
                         if (enableLspContext) {
-                            const definitionContext = await buildLspReferenceContext(f.path, astSnippets.snippets);
-                            const usagesContext = await buildLspUsagesContext(f.path, astSnippets.snippets);
+                            const definitionContext = lspReferenceBuilder
+                                ? await lspReferenceBuilder(f.path, astSnippets.snippets)
+                                : '';
+                            const usagesContext = lspUsagesBuilder
+                                ? await lspUsagesBuilder(f.path, astSnippets.snippets)
+                                : '';
                             const parts: string[] = [];
-                            if (definitionContext) parts.push(`## 依赖定义 (Definitions)\n${definitionContext}`);
+                            if (definitionContext) parts.push(`## 渚濊禆瀹氫箟 (Definitions)\n${definitionContext}`);
                             if (usagesContext) parts.push(usagesContext);
                             referenceContext = parts.join('\n\n');
+                        }
+                        const headerContext = await getHeaderReferenceContext(f.path);
+                        if (headerContext) {
+                            referenceContext = referenceContext
+                                ? `${headerContext}\n\n${referenceContext}`
+                                : headerContext;
                         }
                     }
                 }
                 if (!content && useDiffMode) {
                     const fileDiff = diffByFile!.get(normalizedPath) ?? diffByFile!.get(f.path);
                     content = fileDiff?.hunks?.length
-                        ? this.buildDiffSnippetForFile(f.path, fileDiff)
+                        ? buildDiffSnippetForFile(f.path, fileDiff)
                         : undefined;
                     if (!content) {
                         this.logger.debug(`[diff_only] 文件 ${f.path} 未取得变更片段，回退整文件发送`);
@@ -379,13 +294,13 @@ export class AIReviewer {
                     this.logger.debug(`[ast_only] 文件 ${f.path} 未取得 AST 片段，回退整文件发送`);
                 }
                 if (content && referenceContext) {
-                    content = this.buildStructuredReviewContent(content, referenceContext);
+                    content = buildStructuredReviewContent(content, referenceContext);
                 }
                 return { path: f.path, content };
             }))
             : validatedRequest.files;
 
-        // ---------- 构建「允许报告问题的行」集合（diff/AST 模式下只接受这些行上的 issue，避免模型猜未发送行）----------
+        // ---------- 鏋勫缓銆屽厑璁告姤鍛婇棶棰樼殑琛屻€嶉泦鍚堬紙diff/AST 妯″紡涓嬪彧鎺ュ彈杩欎簺琛屼笂鐨?issue锛岄伩鍏嶆ā鍨嬬寽鏈彂閫佽锛?---------
         const allowedLinesByFile = new Map<string, Set<number>>();
         const addAllowedLine = (filePath: string, line: number): void => {
             const normalizedPath = path.normalize(filePath);
@@ -412,15 +327,15 @@ export class AIReviewer {
             }
         }
 
-        // ---------- 加载文件内容、预览模式短路、构建审查单元与批次 ----------
+        // ---------- 鍔犺浇鏂囦欢鍐呭銆侀瑙堟ā寮忕煭璺€佹瀯寤哄鏌ュ崟鍏冧笌鎵规 ----------
         try {
             const previewOnly = astConfig?.preview_only === true;
             if (previewOnly) {
-                this.logger.info('[ast.preview_only=true] 仅预览切片，不请求大模型');
+                this.logger.info('[ast.preview_only=true] 浠呴瑙堝垏鐗囷紝涓嶈姹傚ぇ妯″瀷');
             }
             const validFiles = await this.loadFilesWithContent(filesToLoad, previewOnly);
             if (validFiles.length === 0) {
-                this.logger.warn('没有可审查的文件');
+                this.logger.warn('娌℃湁鍙鏌ョ殑鏂囦欢');
                 return [];
             }
 
@@ -434,8 +349,8 @@ export class AIReviewer {
                 return [];
             }
 
-            // 将「带内容的文件」打成审查单元（按 batching_mode 可能按文件或按 AST snippet 拆分）
-            const reviewUnits = this.buildReviewUnits(validFiles, {
+            // 灏嗐€屽甫鍐呭鐨勬枃浠躲€嶆墦鎴愬鏌ュ崟鍏冿紙鎸?batching_mode 鍙兘鎸夋枃浠舵垨鎸?AST snippet 鎷嗗垎锛?
+            const reviewUnits = buildReviewUnits(this.config, validFiles, {
                 useAstSnippets,
                 astSnippetsByFile,
                 useDiffMode: !!useDiffMode,
@@ -446,15 +361,15 @@ export class AIReviewer {
                 return [];
             }
 
-            // 按配置选择批次策略：ast_snippet 按片段预算切批，否则按文件数量切批
+            // 鎸夐厤缃€夋嫨鎵规绛栫暐锛歛st_snippet 鎸夌墖娈甸绠楀垏鎵癸紝鍚﹀垯鎸夋枃浠舵暟閲忓垏鎵?
             const useAstSnippetBatching = useAstSnippets && this.config?.batching_mode === 'ast_snippet';
             const batches = useAstSnippetBatching
-                ? this.splitUnitsBySnippetBudget(reviewUnits, this.getAstSnippetBudget())
-                : this.splitIntoBatches(reviewUnits, DEFAULT_BATCH_SIZE);
+                ? splitUnitsBySnippetBudget(reviewUnits, getAstSnippetBudget(this.config))
+                : splitIntoBatches(reviewUnits, DEFAULT_BATCH_SIZE);
 
-            // 打点：本次审查的文件数、单元数、批次数、并发与预算，便于排查与调优
-            const totalAstSnippetCount = this.countAstSnippetMap(astSnippetsByFile);
-            const totalSnippetCount = this.countUnitSnippets(reviewUnits);
+            // 鎵撶偣锛氭湰娆″鏌ョ殑鏂囦欢鏁般€佸崟鍏冩暟銆佹壒娆℃暟銆佸苟鍙戜笌棰勭畻锛屼究浜庢帓鏌ヤ笌璋冧紭
+            const totalAstSnippetCount = countAstSnippetMap(astSnippetsByFile);
+            const totalSnippetCount = countUnitSnippets(reviewUnits);
             this.runtimeTraceLogger.logEvent({
                 session: traceSession,
                 component: 'AIReviewer',
@@ -468,8 +383,8 @@ export class AIReviewer {
                     astSnippets: totalAstSnippetCount,
                     snippets: totalSnippetCount,
                     batchingMode: useAstSnippetBatching ? 'ast_snippet' : 'file_count',
-                    concurrency: this.getBatchConcurrency(),
-                    budget: useAstSnippetBatching ? this.getAstSnippetBudget() : DEFAULT_BATCH_SIZE,
+                    concurrency: getBatchConcurrency(this.config),
+                    budget: useAstSnippetBatching ? getAstSnippetBudget(this.config) : DEFAULT_BATCH_SIZE,
                 },
             });
 
@@ -508,59 +423,100 @@ export class AIReviewer {
     }
 
     /**
-     * 验证输入请求
+     * 楠岃瘉杈撳叆璇锋眰
      * 
-     * @param request - 待验证的请求
-     * @returns 验证后的请求
-     * @throws 如果验证失败
+     * @param request - 寰呴獙璇佺殑璇锋眰
+     * @returns 楠岃瘉鍚庣殑璇锋眰
+     * @throws 濡傛灉楠岃瘉澶辫触
      */
+    private buildFileHeaderReferenceContext = async (filePath: string): Promise<string> => {
+        try {
+            const content = await this.fileScanner.readFile(filePath);
+            if (!content.trim()) {
+                return '';
+            }
+            const lines = content.split(/\r?\n/);
+            const maxScanLines = Math.min(lines.length, 200);
+            const selected: string[] = [];
+            const headerPattern = /^(?:import\s.+from\s+['\"].+['\"];?|import\s+['\"].+['\"];?|(?:export\s+)?(?:type|interface|enum)\s+\w+|const\s+\w+\s*=\s*require\(|(?:export\s+)?(?:const|let|var)\s+\w+\s*=|(?:export\s+)?(?:async\s+)?function\s+\w+|(?:export\s+)?class\s+\w+)/;
+
+            for (let i = 0; i < maxScanLines; i++) {
+                const rawLine = lines[i];
+                const trimmed = rawLine.trim();
+                if (!trimmed) {
+                    continue;
+                }
+                if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*') || trimmed.startsWith('*/')) {
+                    continue;
+                }
+                if (headerPattern.test(trimmed)) {
+                    selected.push(`# 行${i + 1}`);
+                    selected.push(rawLine);
+                }
+                if (selected.length >= 80) {
+                    break;
+                }
+            }
+
+            if (selected.length === 0) {
+                return '';
+            }
+            const joined = selected.join('\n');
+            const clipped = joined.length > 4000 ? `${joined.slice(0, 4000)}\n...（已截断）` : joined;
+            return `## 文件头依赖上下文\n${clipped}`;
+        } catch {
+            return '';
+        }
+    };
     private validateRequest(request: AIReviewRequest): AIReviewRequest {
         try {
             return AIReviewRequestSchema.parse(request);
         } catch (error) {
-            handleZodError(error, this.logger, 'AI审查请求');
+            handleZodError(error, this.logger, 'AI瀹℃煡璇锋眰');
         }
     }
 
     /**
-     * 确保配置已初始化
-     * 每次审查前重新加载配置，以便读取最新的 .env 和 VSCode 设置
+     * 纭繚閰嶇疆宸插垵濮嬪寲
+     * 姣忔瀹℃煡鍓嶉噸鏂板姞杞介厤缃紝浠ヤ究璇诲彇鏈€鏂扮殑 .env 鍜?VSCode 璁剧疆
      */
     private async ensureInitialized(): Promise<void> {
         await this.configManager.loadConfig();
         await this.initialize();
     }
 
-    /**
-     * 检查配置是否有效
-     * 
-     * @returns 如果配置有效返回 true，否则返回 false
-     */
+    /** 妫€鏌?AI 閰嶇疆鏄惁鏈夋晥锛堝瓨鍦ㄣ€佸惎鐢ㄣ€佺鐐?妯″瀷鍙В鏋愩€丄PI Key 宸叉彁绀猴級 */
     private isConfigValid(): boolean {
         if (!this.config) {
-            this.logger.warn('AI审查配置不存在，跳过AI审查');
+            this.logger.warn('AI瀹℃煡閰嶇疆涓嶅瓨鍦紝璺宠繃AI瀹℃煡');
             return false;
         }
-        
         if (!this.config.enabled) {
             this.logger.info('AI审查未启用');
             return false;
         }
-
         const ep = (this.config.apiEndpoint || '').trim();
         if (!ep || ep.includes('${')) {
-            this.logger.warn(ep.includes('${') ? 'AI API端点环境变量未解析，请检查 .env 或系统环境变量' : 'AI API端点未配置');
+            this.logger.warn(
+                ep.includes('${')
+                    ? 'AI API端点环境变量未解析，请检查 .env 或系统环境变量'
+                    : 'AI API端点未配置'
+            );
             return false;
         }
         try {
             new URL(ep);
         } catch {
-            this.logger.warn('AI API端点URL格式无效');
+            this.logger.warn('AI API绔偣URL鏍煎紡鏃犳晥');
             return false;
         }
         const model = (this.config.model || '').trim();
         if (!model || model.includes('${')) {
-            this.logger.warn(model.includes('${') ? 'AI 模型环境变量未解析' : 'AI 模型未配置，请在设置或 .env 中配置 model');
+            this.logger.warn(
+                model.includes('${')
+                    ? 'AI 模型环境变量未解析'
+                    : 'AI 模型未配置，请在设置或 .env 中配置 model'
+            );
             return false;
         }
         this.validateApiKey();
@@ -568,7 +524,7 @@ export class AIReviewer {
     }
 
     /**
-     * 验证 API 密钥
+     * 楠岃瘉 API 瀵嗛挜
      */
     private validateApiKey(): void {
         const { apiKey } = this.config!;
@@ -585,7 +541,7 @@ export class AIReviewer {
     }
 
     /**
-     * 检查是否有有效的 API 密钥
+     * 妫€鏌ユ槸鍚︽湁鏈夋晥鐨?API 瀵嗛挜
      */
     private hasValidApiKey(): boolean {
         const { apiKey } = this.config!;
@@ -597,79 +553,32 @@ export class AIReviewer {
     }
 
     /**
-     * 根据 FileDiff 构建带行号标注的变更片段，供 AI 审查使用
-     * 返回格式含 "# 行 N"，便于 AI 返回正确的新文件行号
+     * 鏍规嵁 FileDiff 鏋勫缓甯﹁鍙锋爣娉ㄧ殑鍙樻洿鐗囨锛屼緵 AI 瀹℃煡浣跨敤
+     * 杩斿洖鏍煎紡鍚?"# 琛?N"锛屼究浜?AI 杩斿洖姝ｇ‘鐨勬柊鏂囦欢琛屽彿
      */
-    private buildDiffSnippetForFile(filePath: string, fileDiff: FileDiff): string {
-        const lines: string[] = [`文件: ${filePath}`, '以下为变更片段，行号为新文件中的行号。', ''];
-        for (const hunk of fileDiff.hunks) {
-            for (let i = 0; i < hunk.lines.length; i++) {
-                const lineNum = hunk.newStart + i;
-                lines.push(`# 行 ${lineNum}`);
-                lines.push(hunk.lines[i]);
-            }
-            lines.push('');
-        }
-        return lines.join('\n');
-    }
-
     /**
-     * 根据 AST 片段构建带行号标注的内容，供 AI 审查使用
-     */
-    private buildAstSnippetForFile(filePath: string, result: AffectedScopeResult): string {
-        return this.buildAstSnippetForSnippets(filePath, result.snippets);
-    }
-
-    private buildAstSnippetForSnippets(
-        filePath: string,
-        snippets: AffectedScopeResult['snippets']
-    ): string {
-        const lines: string[] = [`文件: ${filePath}`, '以下为变更相关的 AST 片段，行号为新文件中的行号。', ''];
-        for (const snippet of snippets) {
-            lines.push(`# 行 ${snippet.startLine}`);
-            lines.push(snippet.source);
-            lines.push('');
-        }
-        return lines.join('\n');
-    }
-
+     * 鏋勯€犵粨鏋勫寲瀹℃煡鍐呭锛氭樉寮忓尯鍒嗗綋鍓嶅鏌ョ墖娈典笌澶栭儴鍙傝€冧笂涓嬫枃銆?     *
+     * 杩欐牱鍙互鍦ㄦ彁绀鸿瘝灞傞潰闄嶄綆鈥滃閮ㄧ鍙锋湭瀹氫箟鈥濈被璇姤銆?     */
     /**
-     * 构造结构化审查内容：显式区分当前审查片段与外部参考上下文。
+     * 鍔犺浇鏂囦欢鍐呭
      *
-     * 这样可以在提示词层面降低“外部符号未定义”类误报。
-     */
-    private buildStructuredReviewContent = (currentContent: string, referenceContext: string): string => {
-        return [
-            '【当前审查代码】',
-            currentContent,
-            '',
-            '【外部引用上下文（仅供参考）】',
-            referenceContext,
-        ].join('\n');
-    };
-
-    /**
-     * 加载文件内容
-     *
-     * @param files - 文件列表（可能只有路径或已带 content 的 diff 片段）
-     * @returns 包含内容的文件列表
-     */
+     * @param files - 鏂囦欢鍒楄〃锛堝彲鑳藉彧鏈夎矾寰勬垨宸插甫 content 鐨?diff 鐗囨锛?     * @returns 鍖呭惈鍐呭鐨勬枃浠跺垪琛?     */
     private async loadFilesWithContent(
         files: Array<{ path: string; content?: string }>,
         previewOnly = false
     ): Promise<Array<{ path: string; content: string }>> {
         const filesWithContent = await Promise.all(
             files.map(async (file) => {
-                // 如果文件已有内容且不为空，直接使用（diff/AST 模式下为变更片段）
-                // 注意：如果 content 是空字符串，也需要读取文件
+                // 濡傛灉鏂囦欢宸叉湁鍐呭涓斾笉涓虹┖锛岀洿鎺ヤ娇鐢紙diff/AST 妯″紡涓嬩负鍙樻洿鐗囨锛?
+                // 娉ㄦ剰锛氬鏋?content 鏄┖瀛楃涓诧紝涔熼渶瑕佽鍙栨枃浠?
                 if (file.content !== undefined && file.content.trim().length > 0) {
                     return { path: file.path, content: file.content };
                 }
-                // 否则读取整文件（diff 模式下不应走到这里，若走到说明该文件未匹配到 diff）
+                // 鍚﹀垯璇诲彇鏁存枃浠讹紙diff 妯″紡涓嬩笉搴旇蛋鍒拌繖閲岋紝鑻ヨ蛋鍒拌鏄庤鏂囦欢鏈尮閰嶅埌 diff锛?
                 try {
                     const content = await this.fileScanner.readFile(file.path);
                     if (!previewOnly && content.length === 0) {
-                        this.logger.warn(`文件为空: ${file.path}`);
+                        this.logger.warn(`鏂囦欢涓虹┖: ${file.path}`);
                     }
                     return { path: file.path, content };
                 } catch (error) {
@@ -682,171 +591,7 @@ export class AIReviewer {
         return filesWithContent.filter((f): f is { path: string; content: string } => f !== null);
     }
 
-    /**
-     * 将文件列表拆分为多个批次
-     *
-     * @param files - 文件列表
-     * @param batchSize - 批次大小
-     * @returns 批次数组
-     */
-    private splitIntoBatches = <T>(files: T[], batchSize: number): T[][] => {
-        const batches: T[][] = [];
-        for (let i = 0; i < files.length; i += batchSize) {
-            batches.push(files.slice(i, i + batchSize));
-        }
-        return batches;
-    };
-
-    /** 从配置读取 AST 片段预算（每批最多多少个 snippet），非法时回退默认值 */
-    private getAstSnippetBudget = (): number => {
-        const raw = this.config?.ast_snippet_budget ?? DEFAULT_AST_SNIPPET_BUDGET;
-        if (!Number.isFinite(raw) || raw <= 0) {
-            return DEFAULT_AST_SNIPPET_BUDGET;
-        }
-        return Math.max(1, Math.floor(raw));
-    };
-
-    /** 从配置读取批处理并发数，限制在 1～8，非法时回退默认值 */
-    private getBatchConcurrency = (): number => {
-        const raw = this.config?.batch_concurrency ?? DEFAULT_BATCH_CONCURRENCY;
-        if (!Number.isFinite(raw) || raw <= 0) {
-            return DEFAULT_BATCH_CONCURRENCY;
-        }
-        return Math.max(1, Math.min(8, Math.floor(raw)));
-    };
-
-    /** 从配置读取单次请求最大字符数，用于超长时自动二分批次；非法时回退默认值，最小 1000 */
-    private getMaxRequestChars = (): number => {
-        const raw = this.config?.max_request_chars ?? DEFAULT_MAX_REQUEST_CHARS;
-        if (!Number.isFinite(raw) || raw <= 0) {
-            return DEFAULT_MAX_REQUEST_CHARS;
-        }
-        return Math.max(1000, Math.floor(raw));
-    };
-
-    /** 将「带内容的文件」列表打成 ReviewUnit 数组：ast_snippet 模式下按 chunk 拆成多单元，否则每文件一单元 */
-    private buildReviewUnits = (
-        validFiles: Array<{ path: string; content: string }>,
-        options: {
-            useAstSnippets: boolean;
-            astSnippetsByFile?: Map<string, AffectedScopeResult>;
-            useDiffMode: boolean;
-            diffByFile?: Map<string, FileDiff>;
-        }
-    ): ReviewUnit[] => {
-        const units: ReviewUnit[] = [];
-        const useAstSnippetBatching = options.useAstSnippets && this.config?.batching_mode === 'ast_snippet';
-        const astSnippetBudget = this.getAstSnippetBudget();
-        const astChunkStrategy = this.config?.ast_chunk_strategy ?? DEFAULT_AST_CHUNK_STRATEGY;
-        let unitCounter = 0;
-
-        for (const file of validFiles) {
-            const normalizedPath = path.normalize(file.path);
-            const astResult = options.astSnippetsByFile?.get(normalizedPath) ?? options.astSnippetsByFile?.get(file.path);
-
-            // ast_snippet 模式且该文件有 AST 片段：按预算和策略切成多块，每块一个单元
-            if (useAstSnippetBatching && astResult?.snippets?.length) {
-                const chunks = this.chunkAstSnippets(astResult.snippets, astSnippetBudget, astChunkStrategy);
-                for (let i = 0; i < chunks.length; i++) {
-                    const chunk = chunks[i];
-                    unitCounter++;
-                    units.push({
-                        unitId: `${file.path}#ast#${i + 1}#${unitCounter}`,
-                        path: file.path,
-                        content: this.buildAstSnippetForSnippets(file.path, chunk),
-                        snippetCount: Math.max(1, chunk.length),
-                        sourceType: 'ast',
-                    });
-                }
-                continue;
-            }
-
-            // 非 ast_snippet 拆分：该文件一个单元，统计 snippet 数以供后续按权重切批
-            let snippetCount = 1;
-            let sourceType: ReviewUnitSourceType = 'full';
-            if (astResult?.snippets?.length) {
-                snippetCount = astResult.snippets.length;
-                sourceType = 'ast';
-            } else if (options.useDiffMode && options.diffByFile) {
-                const fileDiff = options.diffByFile.get(normalizedPath) ?? options.diffByFile.get(file.path);
-                if (fileDiff?.hunks?.length) {
-                    snippetCount = fileDiff.hunks.length;
-                    sourceType = 'diff';
-                }
-            }
-
-            unitCounter++;
-            units.push({
-                unitId: `${file.path}#unit#${unitCounter}`,
-                path: file.path,
-                content: file.content,
-                snippetCount: Math.max(1, snippetCount),
-                sourceType,
-            });
-        }
-
-        return units;
-    };
-
-    /** 将 AST 片段按 budget 切块：contiguous=顺序每 budget 个一块；even=尽量均分到多块 */
-    private chunkAstSnippets = (
-        snippets: AffectedScopeResult['snippets'],
-        budget: number,
-        strategy: NonNullable<AIReviewConfig['ast_chunk_strategy']>
-    ): Array<AffectedScopeResult['snippets']> => {
-        if (snippets.length <= budget) {
-            return [snippets];
-        }
-
-        // 顺序切块：第 1～budget、budget+1～2*budget ...
-        if (strategy === 'contiguous') {
-            const chunks: Array<AffectedScopeResult['snippets']> = [];
-            for (let i = 0; i < snippets.length; i += budget) {
-                chunks.push(snippets.slice(i, i + budget));
-            }
-            return chunks;
-        }
-
-        // 均分：把 N 个 snippet 尽量平均分到 groupCount 组（余数往前几组多分 1 个）
-        const chunks: Array<AffectedScopeResult['snippets']> = [];
-        const groupCount = Math.ceil(snippets.length / budget);
-        const baseSize = Math.floor(snippets.length / groupCount);
-        const remainder = snippets.length % groupCount;
-        let cursor = 0;
-        for (let i = 0; i < groupCount; i++) {
-            const size = baseSize + (i < remainder ? 1 : 0);
-            const nextCursor = Math.min(snippets.length, cursor + size);
-            chunks.push(snippets.slice(cursor, nextCursor));
-            cursor = nextCursor;
-        }
-        return chunks.filter(chunk => chunk.length > 0);
-    };
-
-    /** 按 snippet 权重将单元分组：当前组权重+新单元超过 budget 时开新批，保证每批权重不超过 budget */
-    private splitUnitsBySnippetBudget = (units: ReviewUnit[], snippetBudget: number): ReviewUnit[][] => {
-        const budget = Math.max(1, snippetBudget);
-        const batches: ReviewUnit[][] = [];
-        let current: ReviewUnit[] = [];
-        let currentWeight = 0;
-
-        for (const unit of units) {
-            const weight = Math.max(1, unit.snippetCount);
-            if (current.length > 0 && currentWeight + weight > budget) {
-                batches.push(current);
-                current = [];
-                currentWeight = 0;
-            }
-            current.push(unit);
-            currentWeight += weight;
-        }
-
-        if (current.length > 0) {
-            batches.push(current);
-        }
-        return batches;
-    };
-
-    /** 并发执行多批审查：用固定数量的 worker 轮流取批次下标，各自调用 processSingleReviewBatch，最后合并结果 */
+    /** 骞跺彂鎵ц澶氭壒瀹℃煡锛氱敤鍥哄畾鏁伴噺鐨?worker 杞祦鍙栨壒娆′笅鏍囷紝鍚勮嚜璋冪敤 processSingleReviewBatch锛屾渶鍚庡悎骞剁粨鏋?*/
     private processReviewUnitBatches = async (
         batches: ReviewUnit[][],
         options: {
@@ -862,12 +607,12 @@ export class AIReviewer {
         }
 
         const poolStartAt = Date.now();
-        const maxConcurrency = Math.min(this.getBatchConcurrency(), batches.length);
+        const maxConcurrency = Math.min(getBatchConcurrency(this.config), batches.length);
         const results: ReviewIssue[][] = new Array(batches.length);
         const processedUnitIds = new Set<string>();
         let nextBatchIndex = 0;
 
-        // 多个 worker 并发：每个循环取一个 batch 下标，执行完再取下一个，直到没有更多批次
+        // 澶氫釜 worker 骞跺彂锛氭瘡涓惊鐜彇涓€涓?batch 涓嬫爣锛屾墽琛屽畬鍐嶅彇涓嬩竴涓紝鐩村埌娌℃湁鏇村鎵规
         const workers = Array.from({ length: maxConcurrency }, async () => {
             while (true) {
                 const currentIndex = nextBatchIndex;
@@ -888,7 +633,7 @@ export class AIReviewer {
 
         await Promise.all(workers);
         const flattened = results.flat();
-        // 打点：整个并发池耗时、批次数、并发数
+        // 鎵撶偣锛氭暣涓苟鍙戞睜鑰楁椂銆佹壒娆℃暟銆佸苟鍙戞暟
         this.runtimeTraceLogger.logEvent({
             session: traceSession,
             component: 'AIReviewer',
@@ -920,7 +665,7 @@ export class AIReviewer {
         const batchStartAt = Date.now();
         const batchUnits = batch.filter(unit => {
             if (processedUnitIds.has(unit.unitId)) {
-                this.logger.warn(`批处理重复审查单元已跳过: ${unit.unitId}`);
+                this.logger.warn(`鎵瑰鐞嗛噸澶嶅鏌ュ崟鍏冨凡璺宠繃: ${unit.unitId}`);
                 return false;
             }
             processedUnitIds.add(unit.unitId);
@@ -932,8 +677,8 @@ export class AIReviewer {
             return [];
         }
 
-        const batchSnippetCount = this.countUnitSnippets(batchUnits);
-        const batchEstimatedChars = this.estimateRequestChars(
+        const batchSnippetCount = countUnitSnippets(batchUnits);
+        const batchEstimatedChars = estimateRequestChars(
             batchUnits.map(unit => ({ path: unit.path, content: unit.content }))
         );
         this.runtimeTraceLogger.logEvent({
@@ -999,11 +744,11 @@ export class AIReviewer {
             content: unit.content,
         }));
 
-        const estimatedChars = this.estimateRequestChars(batchFiles);
-        const maxRequestChars = this.getMaxRequestChars();
+        const estimatedChars = estimateRequestChars(batchFiles);
+        const maxRequestChars = getMaxRequestChars(this.config);
         if (allowSplit && batchFiles.length > 1 && estimatedChars > maxRequestChars) {
-            this.logger.warn(`[batch_guard] 批次估算长度 ${estimatedChars} 超过上限 ${maxRequestChars}，将二分降载`);
-            const [leftUnits, rightUnits] = this.splitUnitsInHalf(batchUnits);
+            this.logger.warn(`[batch_guard] 鎵规浼扮畻闀垮害 ${estimatedChars} 瓒呰繃涓婇檺 ${maxRequestChars}锛屽皢浜屽垎闄嶈浇`);
+            const [leftUnits, rightUnits] = splitUnitsInHalf(batchUnits);
             this.runtimeTraceLogger.logEvent({
                 session: traceSession,
                 component: 'AIReviewer',
@@ -1022,7 +767,7 @@ export class AIReviewer {
         }
 
         try {
-            const diagnosticsForBatch = this.pickDiagnosticsForFiles(
+            const diagnosticsForBatch = pickDiagnosticsForFiles(
                 options.diagnosticsByFile,
                 batchFiles.map(file => file.path)
             );
@@ -1034,18 +779,27 @@ export class AIReviewer {
                 },
                 traceSession
             );
-            const batchIssues = this.transformToReviewIssues(
-                response,
-                batchFiles,
-                { useDiffLineNumbers: options.useDiffContent }
-            );
-            const issuesInScope = this.filterIssuesByAllowedLines(batchIssues, options);
-            this.attachAstRangesForBatch(issuesInScope, options.astSnippetsByFile);
-            return this.filterIssuesByDiagnostics(issuesInScope, diagnosticsForBatch);
+            const batchIssues = this.config
+                ? transformToReviewIssues(this.config, response, batchFiles, { useDiffLineNumbers: options.useDiffContent })
+                : [];
+            const issuesInScope = filterIssuesByAllowedLines(batchIssues, options, this.logger);
+            attachAstRangesForBatch(issuesInScope, options.astSnippetsByFile);
+            return filterIssuesByDiagnostics(issuesInScope, diagnosticsForBatch, {
+                logger: this.logger,
+                onOverdropFallback: (data) =>
+                    this.runtimeTraceLogger.logEvent({
+                        session: traceSession,
+                        component: 'AIReviewer',
+                        event: 'diagnostics_filter_overdrop_fallback',
+                        phase: 'ai',
+                        level: 'warn',
+                        data: { issuesBefore: data.issuesBefore, diagnosticsFiles: data.diagnosticsFiles },
+                    }),
+            });
         } catch (error) {
             if (allowSplit && batchFiles.length > 1 && this.isContextTooLongError(error)) {
                 this.logger.warn('[batch_guard] 检测到上下文超限错误，批次将二分后重试一次');
-                const [leftUnits, rightUnits] = this.splitUnitsInHalf(batchUnits);
+                const [leftUnits, rightUnits] = splitUnitsInHalf(batchUnits);
                 this.runtimeTraceLogger.logEvent({
                     session: traceSession,
                     component: 'AIReviewer',
@@ -1066,185 +820,7 @@ export class AIReviewer {
         }
     };
 
-    /** 为批次内 issue 补充 astRange（与 reviewEngine.attachAstRanges 逻辑一致），供与 diagnostic range 重叠过滤使用 */
-    private attachAstRangesForBatch = (
-        issues: ReviewIssue[],
-        astSnippetsByFile?: Map<string, AffectedScopeResult>
-    ): void => {
-        if (!astSnippetsByFile || issues.length === 0) return;
-        let selectedSingleLineCount = 0;
-        let selectedMultiLineCount = 0;
-        let noAstResultCount = 0;
-        let noCandidatesCount = 0;
-        const samples: string[] = [];
-        for (const issue of issues) {
-            if (issue.astRange) continue;
-            const astResult = astSnippetsByFile.get(path.normalize(issue.file)) ?? astSnippetsByFile.get(issue.file);
-            if (!astResult?.snippets?.length) {
-                noAstResultCount++;
-                continue;
-            }
-            const candidates = astResult.snippets.filter(
-                s => issue.line >= s.startLine && issue.line <= s.endLine
-            );
-            if (candidates.length === 0) {
-                noCandidatesCount++;
-                continue;
-            }
-            const best = candidates.reduce((a, b) =>
-                (a.endLine - a.startLine) <= (b.endLine - b.startLine) ? a : b
-            );
-            issue.astRange = { startLine: best.startLine, endLine: best.endLine };
-            const span = best.endLine - best.startLine + 1;
-            if (span <= 1) {
-                selectedSingleLineCount++;
-            } else {
-                selectedMultiLineCount++;
-            }
-            if (samples.length < 3) {
-                const candidateSample = candidates
-                    .slice(0, 3)
-                    .map(item => `${item.startLine}-${item.endLine}`)
-                    .join(',');
-                samples.push(`${issue.file}@${issue.line}|best=${best.startLine}-${best.endLine}|candidates=${candidateSample}`);
-            }
-        }
-        // #region agent log
-        fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-2',hypothesisId:'N2',location:'aiReviewer.ts:1088',message:'attach_ast_ranges_for_batch_summary',data:{issues:issues.length,selectedSingleLineCount,selectedMultiLineCount,noAstResultCount,noCandidatesCount,samples},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-    };
-
-    private filterIssuesByAllowedLines = (
-        issues: ReviewIssue[],
-        options: {
-            useDiffContent: boolean;
-            allowedLinesByFile: Map<string, Set<number>>;
-            diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>;
-        }
-    ): ReviewIssue[] => {
-        if (!options.useDiffContent || options.allowedLinesByFile.size === 0) {
-            return issues;
-        }
-
-        const before = issues.length;
-        const filtered = issues.filter(issue => {
-            const allowed = options.allowedLinesByFile.get(path.normalize(issue.file));
-            if (!allowed) {
-                return false;
-            }
-            return allowed.has(issue.line);
-        });
-        if (before > filtered.length) {
-            this.logger.debug('[diff_only] 已过滤非变更行问题');
-        }
-        return filtered;
-    };
-
-    /**
-     * 标准化 diagnostics 映射，统一路径格式，便于后续比对。保留 range 供重叠与相似度过滤使用。
-     */
-    private normalizeDiagnosticsMap = (
-        diagnosticsByFile?: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>
-    ): Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>> => {
-        const normalized = new Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>();
-        if (!diagnosticsByFile || diagnosticsByFile.size === 0) {
-            return normalized;
-        }
-        for (const [filePath, diagnostics] of diagnosticsByFile.entries()) {
-            normalized.set(path.normalize(filePath), diagnostics);
-        }
-        return normalized;
-    };
-
-    /**
-     * 从全量 diagnostics 中挑出当前批次涉及文件，减少提示词体积。保留 range 供与 astRange 重叠过滤。
-     */
-    private pickDiagnosticsForFiles = (
-        diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>,
-        filePaths: string[]
-    ): Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>> => {
-        if (diagnosticsByFile.size === 0) {
-            return diagnosticsByFile;
-        }
-        const picked = new Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>();
-        for (const filePath of filePaths) {
-            const normalizedPath = path.normalize(filePath);
-            const diagnostics = diagnosticsByFile.get(normalizedPath);
-            if (diagnostics?.length) {
-                picked.set(normalizedPath, diagnostics);
-            }
-        }
-        return picked;
-    };
-
-    /** 简单分词：小写、去标点、按空白拆词，用于消息相似度 */
-    private tokenizeMessage = (msg: string): Set<string> => {
-        const normalized = msg.toLowerCase().replace(/[^\w\s\u4e00-\u9fff]/g, ' ').trim();
-        return new Set(normalized.split(/\s+/).filter(Boolean));
-    };
-
-    /**
-     * 后置过滤：移除与本地 diagnostics 同行、或 astRange 与 diagnostic range 相交、或消息相似度超阈值的 AI 问题。
-     */
-    private filterIssuesByDiagnostics = (
-        issues: ReviewIssue[],
-        diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>
-    ): ReviewIssue[] => {
-        if (diagnosticsByFile.size === 0) {
-            return issues;
-        }
-        const MESSAGE_SIMILARITY_THRESHOLD = 0.3;
-        const before = issues.length;
-        const filtered = issues.filter(issue => {
-            const diagnostics = diagnosticsByFile.get(path.normalize(issue.file));
-            if (!diagnostics || diagnostics.length === 0) return true;
-            return !diagnostics.some(d => {
-                if (d.line === issue.line) return true;
-                const range = d.range;
-                const ast = issue.astRange;
-                if (ast && range && issue.file) {
-                    const overlap = ast.endLine >= range.startLine && ast.startLine <= range.endLine;
-                    if (overlap) return true;
-                }
-                const issueTokens = this.tokenizeMessage(issue.message);
-                const diagTokens = this.tokenizeMessage(d.message);
-                if (issueTokens.size === 0) return false;
-                const intersection = [...issueTokens].filter(t => diagTokens.has(t)).length;
-                if (intersection / issueTokens.size >= MESSAGE_SIMILARITY_THRESHOLD) return true;
-                return false;
-            });
-        });
-        if (before > filtered.length) {
-            this.logger.debug('[diagnostics] 已过滤与本地诊断同行/重叠/语义相近的 AI 重复问题');
-        }
-        return filtered;
-    };
-
-    private countAstSnippetMap = (astSnippetsByFile?: Map<string, AffectedScopeResult>): number => {
-        if (!astSnippetsByFile || astSnippetsByFile.size === 0) {
-            return 0;
-        }
-        let total = 0;
-        for (const result of astSnippetsByFile.values()) {
-            total += result.snippets.length;
-        }
-        return total;
-    };
-
-    private countUnitSnippets = (units: ReviewUnit[]): number => {
-        return units.reduce((sum, unit) => sum + Math.max(1, unit.snippetCount), 0);
-    };
-
-    private estimateRequestChars = (files: Array<{ path: string; content: string }>): number => {
-        return files.reduce((sum, file) => sum + file.path.length + file.content.length + 32, 0);
-    };
-
-    private splitUnitsInHalf = (units: ReviewUnit[]): [ReviewUnit[], ReviewUnit[]] => {
-        const mid = Math.ceil(units.length / 2);
-        return [units.slice(0, mid), units.slice(mid)];
-    };
-
-    /** 判断是否为上下文超长类错误（413 或 400+相关消息） */
+    /** 鍒ゆ柇鏄惁涓轰笂涓嬫枃瓒呴暱绫婚敊璇紙413 鎴?400+鐩稿叧娑堟伅锛?*/
     private isContextTooLongError = (error: unknown): boolean => {
         if (!axios.isAxiosError(error)) return false;
         const status = error.response?.status;
@@ -1256,44 +832,33 @@ export class AIReviewer {
         return status === 400 && tooLongPattern.test(`${error.message} ${responseText}`.toLowerCase());
     };
 
-    /** 将 action 映射为 severity；block_commit→error，log→info，warning→warning */
-    private actionToSeverity(action: 'block_commit' | 'warning' | 'log'): 'error' | 'warning' | 'info' {
-        if (action === 'block_commit') return 'error';
-        if (action === 'log') return 'info';
-        return 'warning';
-    }
-
-    /** 处理审查错误：block_commit 时抛出，否则返回单条 issue */
+    /** 澶勭悊瀹℃煡閿欒锛歜lock_commit 鏃舵姏鍑猴紝鍚﹀垯杩斿洖鍗曟潯 issue */
     private handleReviewError(error: unknown): ReviewIssue[] {
-        this.logger.error('AI审查失败', error);
+        this.logger.error('AI瀹℃煡澶辫触', error);
         const action = this.config?.action ?? 'warning';
         const message = error instanceof Error ? error.message : String(error);
         const isTimeout = axios.isAxiosError(error) && (error.code === 'ECONNABORTED' || /timeout/i.test(error.message));
         const userMessage = isTimeout
             ? `AI审查超时（${this.config?.timeout ?? DEFAULT_TIMEOUT}ms），请稍后重试`
-            : `AI审查失败: ${message}`;
+            : `AI瀹℃煡澶辫触: ${message}`;
         const rule = isTimeout ? 'ai_review_timeout' : 'ai_review_error';
 
         if (action === 'block_commit') throw new Error(userMessage);
-        return [{ file: '', line: 1, column: 1, message: userMessage, rule, severity: this.actionToSeverity(action) }];
+        return [{ file: '', line: 1, column: 1, message: userMessage, rule, severity: actionToSeverity(action) }];
     }
 
     /**
-     * 重置审查缓存
-     * 
-     * 只在单次审查生命周期内复用缓存，避免跨审查污染结果
-     */
+     * 閲嶇疆瀹℃煡缂撳瓨
+     * 鍙湪鍗曟瀹℃煡鐢熷懡鍛ㄦ湡鍐呭鐢ㄧ紦瀛橈紝閬垮厤璺ㄥ鏌ユ薄鏌撶粨鏋?     */
     private resetReviewCache = (): void => {
-        this.responseCache.clear();
         this.baseMessageCache.clear();
     };
 
     /**
-     * 调用AI API
+     * 璋冪敤AI API
      *
-     * @param request - 审查请求（文件必须包含 content）
-     * @param options - isDiffContent 为 true 时提示词中说明仅审查变更且 line 为新文件行号
-     * @returns API响应
+     * @param request - 瀹℃煡璇锋眰锛堟枃浠跺繀椤诲寘鍚?content锛?     * @param options - isDiffContent 涓?true 鏃舵彁绀鸿瘝涓鏄庝粎瀹℃煡鍙樻洿涓?line 涓烘柊鏂囦欢琛屽彿
+     * @returns API鍝嶅簲
      */
     private async callAPI(
         request: { files: Array<{ path: string; content: string }> },
@@ -1304,27 +869,32 @@ export class AIReviewer {
         traceSession?: RuntimeTraceSession | null
     ): Promise<AIReviewResponse> {
         if (!this.config) {
-            throw new Error('AI审查配置未初始化');
+            throw new Error('AI瀹℃煡閰嶇疆鏈垵濮嬪寲');
         }
         const url = (this.config.apiEndpoint || '').trim();
         if (!url || url.includes('${')) {
-            throw new Error('AI API端点未配置或环境变量未解析，请在 .env 中设置 AGENTREVIEW_AI_API_ENDPOINT 或在设置中填写完整 URL');
+            throw new Error('AI API绔偣鏈厤缃垨鐜鍙橀噺鏈В鏋愶紝璇峰湪 .env 涓缃?AGENTREVIEW_AI_API_ENDPOINT 鎴栧湪璁剧疆涓～鍐欏畬鏁?URL');
         }
         try {
             new URL(url);
         } catch {
-            throw new Error(`AI API端点URL无效: ${url.substring(0, 60)}${url.length > 60 ? '...' : ''}`);
+            throw new Error(`AI API绔偣URL鏃犳晥: ${url.substring(0, 60)}${url.length > 60 ? '...' : ''}`);
         }
 
         const requestHash = this.calculateRequestHash(request);
         const projectRulesSummary = await this.configManager.getProjectRulesSummary();
 
         const requestBody = this.config.api_format === 'custom'
-            ? this.buildCustomRequest(request)
-            : this.buildOpenAIRequest(request, options?.isDiffContent, options?.diagnosticsByFile, projectRulesSummary);
+            ? buildCustomRequest(request)
+            : buildOpenAIRequest(this.config, request, {
+                isDiffContent: options?.isDiffContent,
+                diagnosticsByFile: options?.diagnosticsByFile,
+                projectRulesSummary,
+                logger: this.logger,
+            });
 
         const userMsgForLog = (requestBody as { messages?: Array<{ role: string; content: string }> }).messages?.find(m => m.role === 'user');
-        const inputLen = userMsgForLog?.content?.length ?? this.estimateRequestChars(request.files);
+        const inputLen = userMsgForLog?.content?.length ?? estimateRequestChars(request.files);
         const mode = options?.isDiffContent ? 'diff_or_ast' : 'full';
         const callStartAt = Date.now();
         this.runtimeTraceLogger.logEvent({
@@ -1360,7 +930,7 @@ export class AIReviewer {
             this.baseMessageCache.set(requestHash, baseMessages);
         }
 
-        // 实现重试机制（指数退避）
+        // 瀹炵幇閲嶈瘯鏈哄埗锛堟寚鏁伴€€閬匡級
         const maxRetries = this.config.retry_count ?? DEFAULT_MAX_RETRIES;
         const baseDelay = this.config.retry_delay ?? DEFAULT_RETRY_DELAY;
         let lastError: Error | null = null;
@@ -1375,15 +945,15 @@ export class AIReviewer {
                     { timeout: this.config.timeout }
                 );
 
-                // 根据API格式解析响应
+                // 鏍规嵁API鏍煎紡瑙ｆ瀽鍝嶅簲
                 if (this.config.api_format === 'custom') {
-                    const parsedResponse = this.parseCustomResponse(response.data);
+                    const parsedResponse = parseCustomResponse(response.data, this.logger);
                     const mergedResponse = this.mergeCachedIssues(requestHash, parsedResponse, false);
                     logCallSummary(attempt + 1, false);
                     return mergedResponse;
                 }
 
-                const parsedResult = this.parseOpenAIResponse(response.data);
+                const parsedResult = parseOpenAIResponse(response.data, this.logger, this.config.max_tokens ?? DEFAULT_MAX_TOKENS);
                 const mergedResponse = this.mergeCachedIssues(requestHash, parsedResult.response, parsedResult.isPartial);
 
                 if (!parsedResult.isPartial) {
@@ -1391,39 +961,39 @@ export class AIReviewer {
                     return mergedResponse;
                 }
 
-                this.logger.warn('AI响应疑似被截断，尝试续写补全');
+                this.logger.warn('AI鍝嶅簲鐤戜技琚埅鏂紝灏濊瘯缁啓琛ュ叏');
 
                 if (attempt === maxRetries) {
-                    this.logger.warn('续写重试次数已用尽，返回已解析的部分结果');
+                    this.logger.warn('缁啓閲嶈瘯娆℃暟宸茬敤灏斤紝杩斿洖宸茶В鏋愮殑閮ㄥ垎缁撴灉');
                     logCallSummary(attempt + 1, true);
                     return mergedResponse;
                 }
 
                 const baseMessages = this.baseMessageCache.get(requestHash);
                 if (!baseMessages) {
-                    this.logger.warn('续写失败：未找到基础提示词，返回已解析的部分结果');
+                    this.logger.warn('缁啓澶辫触锛氭湭鎵惧埌鍩虹鎻愮ず璇嶏紝杩斿洖宸茶В鏋愮殑閮ㄥ垎缁撴灉');
                     logCallSummary(attempt + 1, true);
                     return mergedResponse;
                 }
 
-                continuationRequestBody = this.buildContinuationOpenAIRequest({
+                continuationRequestBody = buildContinuationOpenAIRequest(this.config, {
                     baseMessages,
                     partialContent: parsedResult.cleanedContent,
-                    cachedIssues: mergedResponse.issues
+                    cachedIssues: mergedResponse.issues,
                 });
                 continue;
             } catch (error) {
                 lastError = error as Error;
                 
-                // 如果是最后一次尝试，直接抛出错误
+                // 濡傛灉鏄渶鍚庝竴娆″皾璇曪紝鐩存帴鎶涘嚭閿欒
                 if (attempt === maxRetries) {
                     break;
                 }
 
-                // 判断是否应该重试
+                // 鍒ゆ柇鏄惁搴旇閲嶈瘯
                 if (this.shouldRetry(error as AxiosError)) {
                     const delay = baseDelay * Math.pow(2, attempt);
-                    this.logger.warn(`AI API调用失败，${delay}ms后重试 (${attempt + 1}/${maxRetries})`);
+                    this.logger.warn(`AI API璋冪敤澶辫触锛?{delay}ms鍚庨噸璇?(${attempt + 1}/${maxRetries})`);
                     this.runtimeTraceLogger.logEvent({
                         session: traceSession,
                         component: 'AIReviewer',
@@ -1455,13 +1025,13 @@ export class AIReviewer {
                             errorClass: error instanceof Error ? error.name : 'UnknownError',
                         },
                     });
-                    // 不应该重试的错误（如401认证失败），直接抛出
+                    // 涓嶅簲璇ラ噸璇曠殑閿欒锛堝401璁よ瘉澶辫触锛夛紝鐩存帴鎶涘嚭
                     throw error;
                 }
             }
         }
 
-        // 所有重试都失败，抛出最后一个错误
+        // 鎵€鏈夐噸璇曢兘澶辫触锛屾姏鍑烘渶鍚庝竴涓敊璇?
         this.runtimeTraceLogger.logEvent({
             session: traceSession,
             component: 'AIReviewer',
@@ -1477,199 +1047,14 @@ export class AIReviewer {
                 errorClass: lastError?.name ?? 'UnknownError',
             },
         });
-        throw new Error(`AI API调用失败（已重试${maxRetries}次）: ${lastError?.message || '未知错误'}`);
+        throw new Error(`AI API璋冪敤澶辫触锛堝凡閲嶈瘯${maxRetries}娆★級: ${lastError?.message || '鏈煡閿欒'}`);
     }
 
-    /**
-     * 构建OpenAI兼容格式的请求（Moonshot API 兼容）
-     *
-     * @param request - 审查请求（文件必须包含 content）
-     * @param isDiffContent - 若为 true，内容为变更相关片段，提示词中说明 line 为新文件行号
-     * @returns OpenAI/Moonshot 兼容格式的请求体
-     */
-    private buildOpenAIRequest(
-        request: { files: Array<{ path: string; content: string }> },
-        isDiffContent?: boolean,
-        diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>,
-        projectRulesSummary?: string
-    ): {
-        model: string;
-        messages: Array<{ role: string; content: string }>;
-        temperature: number;
-        max_tokens: number;
-    } {
-        if (!this.config) {
-            throw new Error('AI审查配置未初始化');
-        }
-        const baseSystem = this.config.system_prompt || DEFAULT_SYSTEM_PROMPT;
-        const systemContent = projectRulesSummary?.trim()
-            ? `${baseSystem}\n\n**项目约定（请遵守，勿建议与之冲突的修改）：**\n${projectRulesSummary.trim()}`
-            : baseSystem;
-
-        const filesContent = request.files.map(file => {
-            const ext = file.path.split('.').pop() || '';
-            const language = this.getLanguageFromExtension(ext);
-            const content = file.content;
-            if (content.length === 0) {
-                this.logger.warn(`警告: 文件内容为空: ${file.path}`);
-            }
-            return `文件: ${file.path}\n\`\`\`${language}\n${content}\n\`\`\``;
-        }).join('\n\n');
-
-        const intro = isDiffContent
-            ? '请仅针对以下**变更相关片段（diff/AST）**进行代码审查（非整文件）。片段中已用「# 行 N」标注新文件行号。'
-            : '请仔细审查以下代码文件，进行全面的代码审查分析。';
-        const lineHint = isDiffContent
-            ? '返回的 **line** 必须使用上述「# 行 N」中标注的新文件行号（从 1 开始）。'
-            : '';
-        const knownIssuesPrompt = this.buildKnownDiagnosticsPrompt(diagnosticsByFile);
-
-        const userPrompt = `${intro}
-
-${filesContent}
-
-${knownIssuesPrompt}
-
-**审查要求：**
-1. 逐行分析代码，查找所有潜在问题
-2. 检查bug、性能问题、安全问题、代码质量问题
-3. 即使代码能正常运行，也要提供改进建议和最佳实践
-4. 对于每个问题，提供详细的问题描述和具体的修复建议
-5. 返回 snippet 字段（问题所在的原始代码片段，1-3行，必须来自原文件，保持原样）
-6. 若输入中包含「外部引用上下文（仅供参考）」，请不要对该上下文已定义的符号重复报“未定义”
-7. 确保问题描述清晰、具体，包含：
-   - 问题是什么
-   - 为什么这是问题
-   - 如何修复（提供具体的代码建议）
-${lineHint ? `\n**行号说明：**\n${lineHint}\n` : ''}
-
-**重要提示：**
-- 请务必返回**完整的、格式正确的JSON**，确保JSON字符串以闭合的大括号 } 结尾
-- 如果发现的问题很多，请优先返回最重要的错误和警告，确保JSON完整
-- 问题描述要简洁但具体，避免过于冗长导致JSON被截断
-- 请务必进行深入分析，不要只返回空数组。即使代码看起来没有问题，也要提供代码改进建议、最佳实践或潜在优化点
-
-请严格按照以下JSON格式返回审查结果（只返回JSON，不要包含其他文字说明）：
-{
-  "issues": [
-    {
-      "file": "文件路径（完整路径）",
-      "line": 行号（从1开始）,
-      "column": 列号（从1开始）,
-      "snippet": "问题所在的原始代码片段（1-3行，保持原样）",
-      "message": "详细的问题描述和修复建议（要具体、可操作，但保持简洁）",
-      "severity": "error|warning|info"
-    }
-  ]
-}
-
-**严重程度说明：**
-- **error**：会导致运行时错误、功能失效、安全漏洞的严重问题（如：未定义变量、空指针、SQL注入等）
-- **warning**：可能导致问题但不影响基本功能（如：性能问题、潜在的bug、不安全的实践等）
-- **info**：代码改进建议、最佳实践、可读性改进、代码风格优化等
-
-**最后提醒：** 请确保返回的JSON格式正确、完整，以闭合的大括号 } 结尾，并且issues数组包含所有发现的问题和改进建议。`;
-
-        // Moonshot API 请求格式（OpenAI 兼容）
-        return {
-            model: this.config.model || '',
-            messages: [
-                {
-                    role: 'system',
-                    content: systemContent
-                },
-                {
-                    role: 'user',
-                    content: userPrompt
-                }
-            ],
-            temperature: this.config.temperature ?? DEFAULT_TEMPERATURE,
-            max_tokens: this.config.max_tokens || DEFAULT_MAX_TOKENS
-        };
-    }
 
     /**
-     * 生成「已知问题白名单」提示词，告知模型不要重复报告已被 Linter/TS 捕获的问题。
-     */
-    private buildKnownDiagnosticsPrompt = (
-        diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>
-    ): string => {
-        if (!diagnosticsByFile || diagnosticsByFile.size === 0) {
-            return '';
-        }
-        const rows: string[] = [];
-        for (const [filePath, diagnostics] of diagnosticsByFile.entries()) {
-            for (const item of diagnostics.slice(0, 10)) {
-                rows.push(`- ${filePath} 行 ${item.line}: ${item.message}`);
-            }
-        }
-        if (rows.length === 0) {
-            return '';
-        }
-        return [
-            '**已知问题白名单（Linter/TS 已发现，AI 请勿重复报告）：**',
-            ...rows,
-            '',
-        ].join('\n');
-    };
-
-    /**
-     * 构建续写请求
+     * 鐢熸垚璇锋眰鍝堝笇锛岀敤浜庣紦瀛樹笌缁啓鍏宠仈
      * 
-     * 通过保留原始提示词和已截断的响应，要求模型继续输出剩余issues
-     */
-    private buildContinuationOpenAIRequest = (params: {
-        baseMessages: Array<{ role: string; content: string }>;
-        partialContent: string;
-        cachedIssues: AIReviewResponse['issues'];
-    }): {
-        model: string;
-        messages: Array<{ role: string; content: string }>;
-        temperature: number;
-        max_tokens: number;
-    } => {
-        if (!this.config) {
-            throw new Error('AI审查配置未初始化');
-        }
-
-        const lastIssue = params.cachedIssues[params.cachedIssues.length - 1];
-        const lastIssueHint = lastIssue
-            ? `最后一个问题: file=${lastIssue.file}, line=${lastIssue.line}, message=${lastIssue.message}`
-            : '尚无完整问题被解析';
-
-        const continuationPrompt = `上一次响应被截断，请继续输出剩余的issues。
-
-已解析问题数量: ${params.cachedIssues.length}
-${lastIssueHint}
-
-**续写要求：**
-1. 只返回新增问题，避免重复之前已输出的问题
-2. 仍然严格返回完整JSON格式（只包含issues数组）
-3. 如果没有更多问题，请返回 {"issues": []}
-`;
-
-        return {
-            model: this.config.model || '',
-            messages: [
-                ...params.baseMessages,
-                {
-                    role: 'assistant',
-                    content: params.partialContent
-                },
-                {
-                    role: 'user',
-                    content: continuationPrompt
-                }
-            ],
-            temperature: this.config.temperature ?? DEFAULT_TEMPERATURE,
-            max_tokens: this.config.max_tokens || DEFAULT_MAX_TOKENS
-        };
-    };
-
-    /**
-     * 生成请求哈希，用于缓存与续写关联
-     * 
-     * 通过文件路径与内容生成稳定哈希，确保同批次请求可复用缓存
+     * 閫氳繃鏂囦欢璺緞涓庡唴瀹圭敓鎴愮ǔ瀹氬搱甯岋紝纭繚鍚屾壒娆¤姹傚彲澶嶇敤缂撳瓨
      */
     private calculateRequestHash = (request: { files: Array<{ path: string; content: string }> }): string => {
         const raw = request.files
@@ -1679,10 +1064,9 @@ ${lastIssueHint}
     };
 
     /**
-     * 简单字符串哈希
+     * 绠€鍗曞瓧绗︿覆鍝堝笇
      * 
-     * 避免引入额外依赖，满足缓存键的稳定性需求
-     */
+     * 閬垮厤寮曞叆棰濆渚濊禆锛屾弧瓒崇紦瀛橀敭鐨勭ǔ瀹氭€ч渶姹?     */
     private simpleHash = (input: string): string => {
         let hash = 0;
         for (let i = 0; i < input.length; i++) {
@@ -1693,10 +1077,8 @@ ${lastIssueHint}
     };
 
     /**
-     * 合并并去重缓存问题
-     * 
-     * 用于续写场景，将已解析的问题与续写结果合并
-     */
+     * 鍚堝苟骞跺幓閲嶇紦瀛橀棶棰?     * 
+     * 鐢ㄤ簬缁啓鍦烘櫙锛屽皢宸茶В鏋愮殑闂涓庣画鍐欑粨鏋滃悎骞?     */
     private mergeCachedIssues = (requestHash: string, response: AIReviewResponse, isPartial: boolean): AIReviewResponse => {
         const existing = this.responseCache.get(requestHash);
         const mergedIssues = existing
@@ -1711,7 +1093,7 @@ ${lastIssueHint}
     };
 
     /**
-     * 去重 issues，避免续写带来的重复结果
+     * 鍘婚噸 issues锛岄伩鍏嶇画鍐欏甫鏉ョ殑閲嶅缁撴灉
      */
     private dedupeIssues = (issues: AIReviewResponse['issues']): AIReviewResponse['issues'] => {
         const seen = new Set<string>();
@@ -1725,613 +1107,7 @@ ${lastIssueHint}
         });
     };
 
-    /**
-     * 根据文件扩展名获取编程语言名称
-     * 用于代码块的语言标识
-     * 
-     * @param ext - 文件扩展名
-     * @returns 语言名称
-     */
-    private getLanguageFromExtension(ext: string): string {
-        const languageMap: { [key: string]: string } = {
-            'js': 'javascript',
-            'ts': 'typescript',
-            'jsx': 'javascript',
-            'tsx': 'typescript',
-            'py': 'python',
-            'java': 'java',
-            'cpp': 'cpp',
-            'c': 'c',
-            'cs': 'csharp',
-            'go': 'go',
-            'rs': 'rust',
-            'php': 'php',
-            'rb': 'ruby',
-            'swift': 'swift',
-            'kt': 'kotlin',
-            'scala': 'scala',
-            'sh': 'bash',
-            'yaml': 'yaml',
-            'yml': 'yaml',
-            'json': 'json',
-            'xml': 'xml',
-            'html': 'html',
-            'css': 'css',
-            'scss': 'scss',
-            'vue': 'vue',
-            'sql': 'sql'
-        };
-        return languageMap[ext.toLowerCase()] || ext.toLowerCase();
-    }
-
-    /**
-     * 构建自定义格式的请求
-     * 
-     * @param request - 审查请求（文件必须包含content）
-     * @returns 自定义格式的请求体
-     */
-    private buildCustomRequest(request: { files: Array<{ path: string; content: string }> }): { files: Array<{ path: string; content: string }> } {
-        return {
-            files: request.files.map(({ path, content }) => ({ path, content }))
-        };
-    }
-
-    /**
-     * 解析OpenAI格式的响应
-     * 
-     * 使用 Zod Schema 验证和解析 AI API 返回的数据，确保数据格式正确
-     * 
-     * @param responseData - API响应数据
-     * @returns 标准化的审查响应与解析状态
-     */
-    private parseOpenAIResponse(responseData: unknown): {
-        response: AIReviewResponse;
-        isPartial: boolean;
-        cleanedContent: string;
-    } {
-        try {
-            // 验证 OpenAI API 响应格式
-            const openAIResponse = OpenAIResponseSchema.parse(responseData);
-            const content = openAIResponse.choices[0].message.content;
-
-            this.logger.debug(`AI返回内容长度: ${content.length} 字符`);
-
-            // 清理内容并提取 JSON
-            const cleanedContent = this.cleanJsonContent(content);
-            
-            // 检查内容是否可能被截断
-            if (this.isContentTruncated(cleanedContent)) {
-                this.logger.warn('检测到响应内容可能被截断（可能达到max_tokens限制）');
-                this.logger.warn(`当前max_tokens设置: ${this.config?.max_tokens || DEFAULT_MAX_TOKENS}`);
-                this.logger.warn('建议：1) 增加max_tokens配置值；2) 减少审查的文件数量；3) 缩短问题描述');
-            }
-            
-            const parseResult = this.parseJsonContent(cleanedContent);
-
-            // 验证解析后的数据
-            const validatedResponse = AIReviewResponseSchema.parse(parseResult.parsed);
-            
-            this.logger.debug('AI响应解析与结构校验通过');
-            return {
-                response: validatedResponse,
-                isPartial: parseResult.isPartial,
-                cleanedContent
-            };
-            
-        } catch (error) {
-            if (error instanceof z.ZodError) {
-                handleZodError(error, this.logger, 'AI响应');
-            }
-            
-            // 检查是否是截断相关的错误
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            if (errorMessage.includes('截断') || errorMessage.includes('truncated')) {
-                this.logger.error('JSON响应被截断', {
-                    maxTokens: this.config?.max_tokens || DEFAULT_MAX_TOKENS,
-                    suggestion: '请增加max_tokens配置值或减少审查的文件数量'
-                });
-            }
-            
-            this.logger.error('解析OpenAI响应失败', error);
-            throw new Error(`解析OpenAI响应失败: ${errorMessage}`);
-        }
-    }
-
-    /**
-     * 清理 JSON 内容，移除 Markdown 代码块标记
-     * 
-     * @param content - 原始内容
-     * @returns 清理后的内容
-     */
-    private cleanJsonContent(content: string): string {
-        let cleaned = content.trim();
-        
-        // 如果内容被包裹在 ```json ... ``` 或 ``` ... ``` 中，提取出来
-        const jsonBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (jsonBlockMatch) {
-            cleaned = jsonBlockMatch[1].trim();
-            this.logger.debug('从代码块中提取JSON内容');
-        }
-        
-        return cleaned;
-    }
-
-    /**
-     * 检查内容是否可能被截断
-     * 
-     * @param content - JSON内容
-     * @returns 如果可能被截断返回 true
-     */
-    private isContentTruncated(content: string): boolean {
-        const trimmed = content.trim();
-        
-        // 检查是否以未完成的JSON结构结尾
-        if (trimmed.endsWith('}')) {
-            // 检查大括号是否匹配
-            const openBraces = (trimmed.match(/\{/g) || []).length;
-            const closeBraces = (trimmed.match(/\}/g) || []).length;
-            if (openBraces !== closeBraces) {
-                return true;
-            }
-        } else {
-            // 不以 } 结尾，可能被截断
-            return true;
-        }
-        
-        // 检查是否有未完成的字符串
-        const lastQuoteIndex = trimmed.lastIndexOf('"');
-        if (lastQuoteIndex > 0) {
-            const afterLastQuote = trimmed.substring(lastQuoteIndex + 1);
-            // 如果最后一个引号后面没有闭合的结构，可能被截断
-            if (!afterLastQuote.match(/^\s*[,}\]]/)) {
-                const openQuotes = (trimmed.match(/"/g) || []).length;
-                if (openQuotes % 2 !== 0) {
-                    return true; // 奇数个引号，字符串未闭合
-                }
-            }
-        }
-        
-        return false;
-    }
-
-    /**
-     * 解析 JSON 内容
-     * 
-     * @param content - JSON 字符串内容
-     * @returns 解析后的对象与是否部分解析
-     * @throws 如果解析失败
-     */
-    private parseJsonContent(content: string): { parsed: unknown; isPartial: boolean } {
-        try {
-            return {
-                parsed: JSON.parse(content),
-                isPartial: false
-            };
-        } catch (jsonError) {
-            const errorMessage = jsonError instanceof Error ? jsonError.message : String(jsonError);
-            this.logger.debug(`直接JSON解析失败: ${errorMessage}`);
-            
-            // 检查是否是截断错误
-            if (this.isTruncatedJsonError(errorMessage, content)) {
-                this.logger.warn('检测到JSON可能被截断（达到max_tokens限制），尝试提取已解析的部分');
-                return {
-                    parsed: this.extractPartialJson(content),
-                    isPartial: true
-                };
-            }
-            
-            // 尝试提取完整的JSON对象
-            const extractedJson = this.extractJsonFromText(content);
-            if (!extractedJson) {
-                throw new Error(`无法从响应中提取有效的JSON对象。错误: ${errorMessage}`);
-            }
-            
-            return {
-                parsed: extractedJson,
-                isPartial: false
-            };
-        }
-    }
-
-    /**
-     * 检查是否是JSON截断错误
-     * 
-     * @param errorMessage - JSON解析错误消息
-     * @param content - JSON内容
-     * @returns 如果可能是截断错误返回 true
-     */
-    private isTruncatedJsonError(errorMessage: string, content: string): boolean {
-        // 检查常见的截断错误模式
-        const truncationPatterns = [
-            /unterminated string/i,
-            /unexpected end of json/i,
-            /unexpected end of data/i,
-            /position \d+.*end/i
-        ];
-        
-        const hasTruncationPattern = truncationPatterns.some(pattern => pattern.test(errorMessage));
-        
-        // 检查内容是否以未完成的JSON结构结尾
-        const trimmedContent = content.trim();
-        const endsWithIncomplete = 
-            trimmedContent.endsWith(',') ||
-            trimmedContent.endsWith('"') ||
-            trimmedContent.endsWith('\\') ||
-            (trimmedContent.includes('"issues"') && !trimmedContent.endsWith('}'));
-        
-        return hasTruncationPattern || endsWithIncomplete;
-    }
-
-    /**
-     * 提取部分JSON（当JSON被截断时）
-     * 
-     * 尝试从截断的JSON中提取已完成的issues项
-     * 
-     * @param content - 可能被截断的JSON内容
-     * @returns 包含已解析issues的对象
-     * @throws 如果无法提取任何有效内容
-     */
-    private extractPartialJson(content: string): unknown {
-        // 尝试找到最后一个完整的issue对象
-        const issuesMatch = content.match(/"issues"\s*:\s*\[([\s\S]*)/);
-        if (!issuesMatch) {
-            throw new Error('JSON被截断且无法提取issues数组');
-        }
-
-        const issuesContent = issuesMatch[1];
-        const issues: unknown[] = [];
-        
-        // 尝试提取所有完整的issue对象
-        let currentPos = 0;
-        let braceCount = 0;
-        let inString = false;
-        let escapeNext = false;
-        let issueStart = -1;
-        
-        for (let i = 0; i < issuesContent.length; i++) {
-            const char = issuesContent[i];
-            
-            if (escapeNext) {
-                escapeNext = false;
-                continue;
-            }
-            
-            if (char === '\\') {
-                escapeNext = true;
-                continue;
-            }
-            
-            if (char === '"' && !escapeNext) {
-                inString = !inString;
-                continue;
-            }
-            
-            if (!inString) {
-                if (char === '{') {
-                    if (braceCount === 0) {
-                        issueStart = i;
-                    }
-                    braceCount++;
-                } else if (char === '}') {
-                    braceCount--;
-                    if (braceCount === 0 && issueStart !== -1) {
-                        // 找到一个完整的issue对象
-                        try {
-                            const issueStr = '{' + issuesContent.substring(issueStart, i + 1);
-                            const issue = JSON.parse(issueStr);
-                            issues.push(issue);
-                            issueStart = -1;
-                        } catch (e) {
-                            // 忽略解析失败的issue
-                            this.logger.debug(`跳过无效的issue对象: ${e instanceof Error ? e.message : String(e)}`);
-                        }
-                    }
-                }
-            }
-        }
-        
-        if (issues.length === 0) {
-            throw new Error('JSON被截断且无法提取任何有效的issue对象');
-        }
-        
-        this.logger.warn('JSON被截断，已提取部分可解析内容');
-        
-        return { issues };
-    }
-
-    /**
-     * 从文本中提取第一个完整的 JSON 对象
-     * 
-     * 这个方法会智能地找到文本中的第一个 JSON 对象，考虑字符串中的大括号
-     * 
-     * @param text - 包含 JSON 的文本
-     * @returns 解析后的 JSON 对象，如果提取失败则返回 null
-     */
-    private extractJsonFromText(text: string): unknown | null {
-        const firstBrace = text.indexOf('{');
-        if (firstBrace === -1) {
-            return null;
-        }
-
-        let braceCount = 0;
-        let lastBrace = -1;
-        let inString = false;
-        let escapeNext = false;
-        
-        // 智能匹配大括号，考虑字符串中的大括号和转义字符
-        for (let i = firstBrace; i < text.length; i++) {
-            const char = text[i];
-            
-            if (escapeNext) {
-                escapeNext = false;
-                continue;
-            }
-            
-            if (char === '\\') {
-                escapeNext = true;
-                continue;
-            }
-            
-            if (char === '"' && !escapeNext) {
-                inString = !inString;
-                continue;
-            }
-            
-            if (!inString) {
-                if (char === '{') {
-                    braceCount++;
-                } else if (char === '}') {
-                    braceCount--;
-                    if (braceCount === 0) {
-                        lastBrace = i;
-                        break;
-                    }
-                }
-            }
-        }
-        
-        if (lastBrace === -1) {
-            return null;
-        }
-
-        try {
-            const jsonStr = text.substring(firstBrace, lastBrace + 1);
-            this.logger.debug(`提取的JSON字符串长度: ${jsonStr.length}`);
-            
-            // 优先尝试原始 JSON，避免不必要的修改
-            try {
-                return JSON.parse(jsonStr);
-            } catch (parseError) {
-                this.logger.debug(`原始JSON解析失败，尝试修复转义字符: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
-            }
-
-            // 尝试修复常见的JSON转义问题（如Windows路径中的反斜杠）
-            const repairedJsonStr = this.fixJsonEscapeChars(jsonStr);
-            return JSON.parse(repairedJsonStr);
-        } catch (parseError) {
-            this.logger.debug(`提取的JSON对象解析失败: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
-            return null;
-        }
-    }
-
-    /**
-     * 修复JSON字符串中的转义字符问题
-     * 
-     * 这个方法尝试修复AI返回的JSON中可能存在的转义字符问题，特别是Windows路径中的反斜杠。
-     * 注意：这个方法只修复字符串值中的转义问题，不会破坏JSON结构。
-     * 
-     * 修复策略：
-     * 1. 在字符串值中，查找未转义的反斜杠（后面不是有效转义字符的）
-     * 2. 将这些反斜杠转义为双反斜杠
-     * 
-     * @param jsonStr - 需要修复的JSON字符串
-     * @returns 修复后的JSON字符串
-     */
-    private fixJsonEscapeChars(jsonStr: string): string {
-        // 修复JSON字符串中的转义字符问题
-        // 策略：逐字符处理，只在字符串值内部修复未转义的反斜杠
-        // 有效转义字符：", \, /, b, f, n, r, t, u (用于Unicode)
-        
-        let result = '';
-        let inString = false;
-        let escapeNext = false;
-        
-        for (let i = 0; i < jsonStr.length; i++) {
-            const char = jsonStr[i];
-            const nextChar = i + 1 < jsonStr.length ? jsonStr[i + 1] : null;
-            
-            if (escapeNext) {
-                // 当前字符是转义序列的一部分，直接添加
-                result += char;
-                escapeNext = false;
-                continue;
-            }
-            
-            if (char === '\\') {
-                if (inString) {
-                    // 在字符串值中
-                    if (nextChar && /["\\/bfnrtu]/.test(nextChar)) {
-                        // 有效的转义序列（如 \", \\, \/, \b, \f, \n, \r, \t, \u）
-                        result += char;
-                        escapeNext = true; // 下一个字符是转义序列的一部分
-                    } else {
-                        // 无效的转义序列（如 \x, \后面跟其他字符）
-                        // 可能是未转义的反斜杠，需要转义为双反斜杠
-                        result += '\\\\';
-                        // 下一个字符（如果存在）会在下一次循环中正常处理
-                    }
-                } else {
-                    // 不在字符串中，可能是JSON结构的一部分，保留原样
-                    result += char;
-                }
-                continue;
-            }
-            
-            if (char === '"') {
-                // 遇到双引号，切换字符串状态
-                // 注意：转义的双引号 \" 不会触发这个分支，因为会被 escapeNext 处理
-                inString = !inString;
-                result += char;
-                continue;
-            }
-            
-            // 其他字符直接添加
-            result += char;
-        }
-        
-        return result;
-    }
-
-    /**
-     * 解析自定义格式的响应
-     * 
-     * 使用 Zod Schema 验证自定义 API 返回的数据格式
-     * 
-     * @param responseData - API响应数据
-     * @returns 标准化的审查响应（已通过 Zod 验证）
-     */
-    private parseCustomResponse(responseData: unknown): AIReviewResponse {
-        try {
-            const validatedResponse = AIReviewResponseSchema.parse(responseData);
-            this.logger.debug('自定义API响应结构校验通过');
-            return validatedResponse;
-        } catch (error) {
-            if (error instanceof z.ZodError) {
-                handleZodError(error, this.logger, '自定义API响应');
-            }
-            
-            this.logger.error('解析自定义API响应失败', error);
-            const message = error instanceof Error ? error.message : String(error);
-            throw new Error(`解析自定义API响应失败: ${message}`);
-        }
-    }
-
-    /**
-     * 将API响应转换为ReviewIssue格式
-     *
-     * @param response - API响应
-     * @param filesWithContent - 带内容的文件列表，用于 snippet 反查（diff 模式下可为片段）
-     * @param options - useDiffLineNumbers 为 true 时直接使用响应中的 line/column（新文件行号）
-     * @returns ReviewIssue列表
-     */
-    private transformToReviewIssues(
-        response: AIReviewResponse,
-        filesWithContent: Array<{ path: string; content: string }>,
-        options?: { useDiffLineNumbers?: boolean }
-    ): ReviewIssue[] {
-        const config = this.config;
-        if (!config) {
-            return [];
-        }
-
-        const contentMap = new Map<string, string>(
-            filesWithContent.map(file => [file.path, file.content])
-        );
-        const action = config.action;
-        const useDiffLineNumbers = options?.useDiffLineNumbers === true;
-
-        return response.issues.map(({ file, line = 1, column = 1, snippet, message, severity }) => {
-            const resolvedPosition = useDiffLineNumbers
-                ? { line, column }
-                : (() => {
-                    const content = contentMap.get(file);
-                    return content
-                        ? this.resolveIssuePositionFromSnippet(content, snippet, line, column)
-                        : { line, column };
-                })();
-
-            return {
-                file,
-                line: resolvedPosition.line,
-                column: resolvedPosition.column,
-                message,
-                rule: 'ai_review',
-                severity: this.mapSeverity(severity, action)
-            };
-        });
-    }
-
-    /**
-     * 通过 snippet 反查问题的真实行列号
-     * 
-     * 这是为了解决 AI 行号偏移问题：
-     * - 优先使用 snippet 在文件内容中定位
-     * - 定位失败时回退到 AI 返回的行列号
-     * 
-     * @param content - 文件原始内容
-     * @param snippet - AI 返回的代码片段
-     * @param fallbackLine - AI 返回的行号
-     * @param fallbackColumn - AI 返回的列号
-     * @returns 校正后的行列号（1-based）
-     */
-    private resolveIssuePositionFromSnippet = (
-        content: string,
-        snippet: string | undefined,
-        fallbackLine: number,
-        fallbackColumn: number
-    ): { line: number; column: number } => {
-        if (!snippet) {
-            return { line: fallbackLine, column: fallbackColumn };
-        }
-
-        const normalizedContent = this.normalizeLineEndings(content);
-        const normalizedSnippet = this.normalizeLineEndings(snippet);
-        const snippetCandidates = [normalizedSnippet, normalizedSnippet.trim()].filter(value => value.length > 0);
-
-        let matchIndex = -1;
-        for (const candidate of snippetCandidates) {
-            matchIndex = normalizedContent.indexOf(candidate);
-            if (matchIndex >= 0) {
-                break;
-            }
-        }
-
-        if (matchIndex < 0) {
-            return { line: fallbackLine, column: fallbackColumn };
-        }
-
-        const contentBefore = normalizedContent.slice(0, matchIndex);
-        const line = contentBefore.split('\n').length;
-        const lastNewlineIndex = contentBefore.lastIndexOf('\n');
-        const column = lastNewlineIndex === -1
-            ? matchIndex + 1
-            : matchIndex - lastNewlineIndex;
-
-        return { line, column };
-    };
-
-    /**
-     * 统一换行符，避免 Windows 与 Unix 的行号偏差
-     * 
-     * @param text - 原始文本
-     * @returns 统一为 \\n 的文本
-     */
-    private normalizeLineEndings = (text: string): string => {
-        return text.replace(/\r\n/g, '\n');
-    };
-
-    /**
-     * 映射严重程度
-     * 根据配置的action调整severity
-     * 
-     * @param severity - API返回的严重程度
-     * @param action - 配置的行为
-     * @returns 映射后的严重程度
-     */
-    private mapSeverity(severity: 'error' | 'warning' | 'info', action: 'block_commit' | 'warning' | 'log'): 'error' | 'warning' | 'info' {
-        // 如果配置为block_commit，所有问题都视为error
-        if (action === 'block_commit') {
-            return severity === 'info' ? 'warning' : severity;
-        }
-        // 如果配置为warning，error降级为warning
-        if (action === 'warning') {
-            return severity === 'error' ? 'warning' : severity;
-        }
-        // 如果配置为log，所有问题都视为info
-        return 'info';
-    }
-
-    /** 是否应重试：无响应(网络/超时)、5xx、429 可重试；其余(401/400等)不重试 */
+    /** 鏄惁搴旈噸璇曪細鏃犲搷搴?缃戠粶/瓒呮椂)銆?xx銆?29 鍙噸璇曪紱鍏朵綑(401/400绛?涓嶉噸璇?*/
     private shouldRetry(error: AxiosError): boolean {
         if (!error.response) return true;
         const status = error.response.status;
@@ -2339,7 +1115,7 @@ ${lastIssueHint}
     }
 
     /**
-     * 将重试原因归一化为可分析字段，便于后续统计调用失败分布
+     * 灏嗛噸璇曞師鍥犲綊涓€鍖栦负鍙垎鏋愬瓧娈碉紝渚夸簬鍚庣画缁熻璋冪敤澶辫触鍒嗗竷
      */
     private getRetryReason = (error: unknown): string => {
         if (!axios.isAxiosError(error)) {
@@ -2362,11 +1138,11 @@ ${lastIssueHint}
     };
 
     /**
-     * 延迟函数
+     * 寤惰繜鍑芥暟
      * 
-     * @param ms - 延迟毫秒数
-     */
+     * @param ms - 寤惰繜姣鏁?     */
     private sleep(ms: number): Promise<void> {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 }
+

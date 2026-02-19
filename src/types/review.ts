@@ -22,6 +22,7 @@ export interface ReviewIssue {
     incremental?: boolean;      // 是否属于“本次增量问题”（true=增量，false/undefined=存量）
     ignored?: boolean;          // 是否被 @ai-ignore 覆盖（仅用于当前面板展示态）
     ignoreReason?: string;      // 放行原因（从 @ai-ignore 注释中提取，可选）
+    stale?: boolean;            // 位置已同步但语义待复审（编辑期本地重映射后标记）
 }
 
 /**

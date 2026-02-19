@@ -38,6 +38,8 @@ export class StatusBar {
     private statusBarItem: vscode.StatusBarItem;
     /** 日志记录器 */
     private logger: Logger;
+    /** 最近一次的子状态文案（例如“排队中/限频中/已丢弃过期结果”） */
+    private subStatusMessage = '';
 
     /**
      * 构造函数
@@ -83,7 +85,12 @@ export class StatusBar {
      *   - 有警告：显示 "⚠ AgentReview: N个警告"，提示详细统计
      *   - 无问题：显示 "✓ AgentReview: 通过"，提示"审查通过"
      */
-    updateStatus(status: 'ready' | 'reviewing' | 'error' | 'warning', result?: ReviewResult): void {
+    updateStatus(
+        status: 'ready' | 'reviewing' | 'error' | 'warning',
+        result?: ReviewResult,
+        subStatus?: string
+    ): void {
+        this.subStatusMessage = subStatus ?? '';
         switch (status) {
             case 'ready':
                 // 就绪状态：显示检查图标
@@ -130,42 +137,25 @@ export class StatusBar {
                 }
                 break;
         }
+
+        if (this.subStatusMessage) {
+            this.statusBarItem.tooltip = `${this.statusBarItem.tooltip}\n${this.subStatusMessage}`;
+        }
         
         // 显示状态栏项
         this.statusBarItem.show();
     }
 
     /**
-     * 根据审查结果更新状态栏
-     * 
-     * 这个方法会根据审查结果自动判断应该显示什么状态
-     * 
-     * 判断逻辑：
-     * 1. 如果审查通过（result.passed === true）：
-     *    - 有错误但审查通过（可能是 warning 级别）：显示 warning 状态
-     *    - 有警告或信息：显示 warning 状态
-     *    - 完全通过，无任何问题：显示 ready 状态
-     * 2. 如果审查未通过（result.passed === false）：
-     *    - 显示 warning 状态，并显示问题统计
-     * 
-     * @param result - 审查结果对象，包含是否通过和问题列表
+     * 根据审查结果更新状态栏：通过且无任何问题显示 ready，否则显示 warning（含问题统计）。
      */
-    updateWithResult(result: ReviewResult): void {
-        if (result.passed) {
-            // 审查通过
-            if (result.errors.length > 0) {
-                // 有错误但审查通过（可能是warning级别，不会阻止提交）
-                this.updateStatus('warning', result);
-            } else if (result.warnings.length > 0 || result.info.length > 0) {
-                // 有警告或信息，但审查通过
-                this.updateStatus('warning', result);
-            } else {
-                // 完全通过，无任何问题
-                this.updateStatus('ready');
-            }
+    updateWithResult(result: ReviewResult, subStatus?: string): void {
+        const hasAnyIssues =
+            result.errors.length > 0 || result.warnings.length > 0 || result.info.length > 0;
+        if (result.passed && !hasAnyIssues) {
+            this.updateStatus('ready', undefined, subStatus);
         } else {
-            // 审查未通过，显示问题统计
-            this.updateStatus('warning', result);
+            this.updateStatus('warning', result, subStatus);
         }
     }
 

@@ -29,6 +29,7 @@ import type { FileDiff } from './diffTypes';
 
 // 将 exec 转换为 Promise 形式，方便使用 async/await
 const execAsync = promisify(exec);
+const EMPTY_TREE_HASH = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 /**
  * 文件扫描器类
@@ -145,6 +146,14 @@ export class FileScanner {
     }
 
     /**
+     * 获取「待提交增量」的 diff（基于 HEAD..WorkingTree）。
+     * 用于默认审查入口：同时覆盖 staged + unstaged + untracked。
+     */
+    async getPendingDiff(files?: string[]): Promise<Map<string, FileDiff>> {
+        return this.getDiffByMode('pending', files);
+    }
+
+    /**
      * 按模式获取 diff：
      * - staged: git diff --cached
      * - working: git diff
@@ -152,7 +161,7 @@ export class FileScanner {
      * 两种模式都会执行“原始 diff + 语义 diff（忽略空白）”双通道比较，
      * 产出 formatOnly 标记，供 ReviewEngine 在发 AI 前做降噪过滤。
      */
-    private async getDiffByMode(mode: 'staged' | 'working', files?: string[]): Promise<Map<string, FileDiff>> {
+    private async getDiffByMode(mode: 'staged' | 'working' | 'pending', files?: string[]): Promise<Map<string, FileDiff>> {
         if (!this.workspaceRoot) {
             this.logger.warn(`未找到工作区，无法获取 ${mode} diff`);
             return new Map();
@@ -173,7 +182,14 @@ export class FileScanner {
             };
 
             const fileArgs = buildFileArgs();
-            const diffBase = mode === 'staged' ? 'git diff --cached' : 'git diff';
+            const pendingBaseRef = mode === 'pending'
+                ? await this.resolvePendingDiffBaseRef()
+                : null;
+            const diffBase = mode === 'staged'
+                ? 'git diff --cached'
+                : mode === 'working'
+                    ? 'git diff'
+                    : `git diff ${pendingBaseRef}`;
             const rawDiffCmd = `${diffBase} -U3 --no-color${fileArgs}`;
             const rawDiffResult = await execAsync(rawDiffCmd, {
                 cwd: this.workspaceRoot,
@@ -216,6 +232,38 @@ export class FileScanner {
                 });
             }
 
+            // working diff 不包含 untracked 文件；保存触发审查时需要把“新建但未 git add”的文件也纳入增量范围
+            if (mode === 'working' || mode === 'pending') {
+                const untrackedFiles = await this.getUntrackedFiles(fileArgs);
+                for (const filePath of untrackedFiles) {
+                    const normalizedPath = path.normalize(filePath);
+                    if (map.has(normalizedPath)) {
+                        continue;
+                    }
+
+                    let hunks: FileDiff['hunks'] = [];
+                    try {
+                        const content = await fs.promises.readFile(normalizedPath, 'utf-8');
+                        const lines = content.length > 0 ? content.split(/\r?\n/) : [];
+                        hunks = lines.length > 0
+                            ? [{
+                                newStart: 1,
+                                newCount: lines.length,
+                                lines,
+                            }]
+                            : [];
+                    } catch {
+                        // 文件读不到时保守回退为“无 hunk”，上层会自动按整文件路径继续审查
+                    }
+
+                    map.set(normalizedPath, {
+                        path: normalizedPath,
+                        hunks,
+                        formatOnly: false,
+                    });
+                }
+            }
+
             if (map.size > 0) {
                 this.logger.info(`解析到 ${map.size} 个文件的 ${mode} diff`);
             }
@@ -231,14 +279,53 @@ export class FileScanner {
         }
     }
 
+    private async resolvePendingDiffBaseRef(): Promise<string> {
+        if (!this.workspaceRoot) {
+            return 'HEAD';
+        }
+        try {
+            await execAsync('git rev-parse --verify HEAD', {
+                cwd: this.workspaceRoot,
+                encoding: 'utf-8',
+            });
+            return 'HEAD';
+        } catch {
+            return EMPTY_TREE_HASH;
+        }
+    }
+
+    private async getUntrackedFiles(fileArgs: string): Promise<string[]> {
+        if (!this.workspaceRoot) {
+            return [];
+        }
+        const command = `git ls-files --others --exclude-standard${fileArgs}`;
+        try {
+            const { stdout, stderr } = await execAsync(command, {
+                cwd: this.workspaceRoot,
+                encoding: 'utf-8',
+                maxBuffer: 10 * 1024 * 1024,
+            });
+            if (stderr && !stdout) {
+                return [];
+            }
+            return stdout
+                .split('\n')
+                .map(line => line.trim())
+                .filter(line => line.length > 0)
+                .map(file => path.isAbsolute(file) ? file : path.join(this.workspaceRoot!, file));
+        } catch {
+            return [];
+        }
+    }
+
     async getChangedFiles(): Promise<string[]> {
         // TODO: 获取变更文件列表
         this.logger.info('获取变更文件');
         return [];
     }
 
+    /** 读取文件内容，UTF-8；失败时抛出错误由调用方处理 */
     async readFile(filePath: string): Promise<string> {
-        // TODO: 读取文件内容
         try {
             const content = await fs.promises.readFile(filePath, 'utf-8');
             return content;

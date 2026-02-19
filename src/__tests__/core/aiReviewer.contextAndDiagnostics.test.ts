@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+﻿import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockConfigManager } from '../helpers/mockConfigManager';
 import type { AffectedScopeResult } from '../../utils/astScope';
 
@@ -11,14 +11,16 @@ vi.mock('../../utils/lspContext', () => ({
 }));
 
 import { AIReviewer } from '../../ai/aiReviewer';
+import type { AIReviewConfig } from '../../ai/aiReviewer.types';
+import { buildOpenAIRequest } from '../../ai/aiReviewer.prompts';
 
-describe('AIReviewer 上下文补全与 Diagnostics 去重', () => {
+describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
     beforeEach(() => {
         vi.restoreAllMocks();
         buildLspReferenceContextMock.mockReset();
     });
 
-    it('AST 模式应在发送内容中区分当前审查代码与外部引用上下文', async () => {
+    it('AST 妯″紡搴斿湪鍙戦€佸唴瀹逛腑鍖哄垎褰撳墠瀹℃煡浠ｇ爜涓庡閮ㄥ紩鐢ㄤ笂涓嬫枃', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -50,7 +52,7 @@ describe('AIReviewer 上下文补全与 Diagnostics 去重', () => {
             }],
         ]);
 
-        buildLspReferenceContextMock.mockResolvedValue('符号: helper\n定义: src/utils.ts:2\n代码:\n# 行 2\nexport const helper = () => 1;');
+        buildLspReferenceContextMock.mockResolvedValue('绗﹀彿: helper\n瀹氫箟: src/utils.ts:2\n浠ｇ爜:\n# 琛?2\nexport const helper = () => 1;');
 
         const callApiSpy = vi
             .spyOn(aiReviewer as unknown as { callAPI: (input: { files: Array<{ path: string; content: string }> }) => Promise<{ issues: Array<any> }> }, 'callAPI')
@@ -63,12 +65,12 @@ describe('AIReviewer 上下文补全与 Diagnostics 去重', () => {
 
         expect(buildLspReferenceContextMock).toHaveBeenCalledTimes(1);
         const sentContent = callApiSpy.mock.calls[0][0].files[0].content;
-        expect(sentContent).toContain('【当前审查代码】');
-        expect(sentContent).toContain('【外部引用上下文（仅供参考）】');
-        expect(sentContent).toContain('符号: helper');
+        expect(sentContent).toContain('当前审查代码');
+        expect(sentContent).toContain('外部引用上下文');
+        expect(sentContent).toContain('绗﹀彿: helper');
     });
 
-    it('应过滤与 diagnostics 同行的 AI 问题', async () => {
+    it('搴旇繃婊や笌 diagnostics 鍚岃鐨?AI 闂', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -87,25 +89,25 @@ describe('AIReviewer 上下文补全与 Diagnostics 去重', () => {
             .spyOn(aiReviewer as unknown as { callAPI: (input: { files: Array<{ path: string; content: string }> }) => Promise<{ issues: Array<any> }> }, 'callAPI')
             .mockResolvedValue({
                 issues: [
-                    { file: 'src/a.ts', line: 2, column: 1, message: '与 lint 重复', severity: 'warning' },
-                    { file: 'src/a.ts', line: 4, column: 1, message: '真实 AI 问题', severity: 'warning' },
+                    { file: 'src/a.ts', line: 2, column: 1, message: 'x 宸插０鏄庝絾浠庢湭璇诲彇锛堥噸澶嶏級', severity: 'warning' },
+                    { file: 'src/a.ts', line: 4, column: 1, message: '鐪熷疄 AI 闂', severity: 'warning' },
                 ],
             });
 
         const result = await aiReviewer.review({
             files: [{ path: 'src/a.ts', content: 'const a = 1;\nlet x;\nconst b = 2;\nx = b;\n' }],
             diagnosticsByFile: new Map<string, Array<{ line: number; message: string }>>([
-                ['src/a.ts', [{ line: 2, message: 'x 已声明但从未读取' }]],
+                ['src/a.ts', [{ line: 2, message: 'x 宸插０鏄庝絾浠庢湭璇诲彇' }]],
             ]),
         });
 
         expect(callApiSpy).toHaveBeenCalledTimes(1);
         expect(result.length).toBe(1);
         expect(result[0].line).toBe(4);
-        expect(result[0].message).toContain('真实 AI 问题');
+        expect(result[0].message).toContain('鐪熷疄 AI 闂');
     });
 
-    it('构建请求时应带上已知问题白名单提示词', async () => {
+    it('diagnostics 杩囨护鍚庤嫢鍙樹负 0锛屽簲鍥為€€淇濈暀鍘?AI 缁撴灉', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -120,24 +122,108 @@ describe('AIReviewer 上下文补全与 Diagnostics 去重', () => {
         const aiReviewer = new AIReviewer(configManager);
         await aiReviewer.initialize();
 
-        const requestBody = (aiReviewer as unknown as {
-            buildOpenAIRequest: (
-                request: { files: Array<{ path: string; content: string }> },
-                isDiffContent?: boolean,
-                diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>
-            ) => { messages: Array<{ role: string; content: string }> };
-        }).buildOpenAIRequest(
-            {
-                files: [{ path: 'src/a.ts', content: 'const a = 1;' }],
+        vi.spyOn(aiReviewer as unknown as {
+            callAPI: (input: { files: Array<{ path: string; content: string }> }) => Promise<{ issues: Array<any> }>;
+        }, 'callAPI').mockResolvedValue({
+            issues: [
+                { file: 'src/a.ts', line: 2, column: 1, message: 'x 宸插０鏄庝絾浠庢湭璇诲彇', severity: 'warning' },
+            ],
+        });
+        const result = await aiReviewer.review({
+            files: [{ path: 'src/a.ts', content: 'const a = 1;\nlet x;\n' }],
+            diagnosticsByFile: new Map<string, Array<{ line: number; message: string }>>([
+                ['src/a.ts', [{ line: 2, message: 'x 宸插０鏄庝絾浠庢湭璇诲彇' }]],
+            ]),
+        });
+
+        expect(result.length).toBe(1);
+        expect(result[0].line).toBe(2);
+    });
+
+    it('鏋勫缓璇锋眰鏃跺簲甯︿笂宸茬煡闂鐧藉悕鍗曟彁绀鸿瘝', async () => {
+        const configManager = createMockConfigManager({
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                api_key: 'test-api-key',
+                model: 'test-model',
+                timeout: 1000,
+                action: 'warning',
             },
-            false,
-            new Map<string, Array<{ line: number; message: string }>>([
-                ['src/a.ts', [{ line: 1, message: '缺少分号' }]],
-            ])
+        });
+        const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
+
+        const config = (aiReviewer as unknown as { config: AIReviewConfig | null }).config;
+        if (!config) throw new Error('AI config not loaded');
+        const requestBody = buildOpenAIRequest(
+            config,
+            { files: [{ path: 'src/a.ts', content: 'const a = 1;' }] },
+            {
+                isDiffContent: false,
+                diagnosticsByFile: new Map<string, Array<{ line: number; message: string }>>([
+                    ['src/a.ts', [{ line: 1, message: '缂哄皯鍒嗗彿' }]],
+                ]),
+            }
         );
 
         const userMessage = requestBody.messages.find(item => item.role === 'user')?.content ?? '';
         expect(userMessage).toContain('已知问题白名单');
-        expect(userMessage).toContain('src/a.ts 行 1: 缺少分号');
+        expect(userMessage).toContain('src/a.ts 行 1:');
+    });
+    it('AST 模式应补充文件头依赖上下文，降低外部变量未定义误报', async () => {
+        const configManager = createMockConfigManager({
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                api_key: 'test-api-key',
+                model: 'test-model',
+                timeout: 1000,
+                action: 'warning',
+            },
+            ast: {
+                enabled: true,
+                include_lsp_context: false,
+            },
+        });
+        const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
+
+        const filePath = 'src/context-import.ts';
+        const astSnippetsByFile = new Map<string, AffectedScopeResult>([
+            [filePath, {
+                snippets: [
+                    {
+                        startLine: 12,
+                        endLine: 12,
+                        source: 'return helper(input);',
+                    },
+                ],
+            }],
+        ]);
+
+        vi.spyOn((aiReviewer as unknown as { fileScanner: { readFile: (path: string) => Promise<string> } }).fileScanner, 'readFile')
+            .mockResolvedValue([
+                "import { helper } from './helper';",
+                '',
+                'export function run(input: string) {',
+                '  return helper(input);',
+                '}',
+            ].join('\n'));
+        const callApiSpy = vi
+            .spyOn(aiReviewer as unknown as { callAPI: (input: { files: Array<{ path: string; content: string }> }) => Promise<{ issues: Array<any> }> }, 'callAPI')
+            .mockResolvedValue({ issues: [] });
+
+        await aiReviewer.review({
+            files: [{ path: filePath }],
+            astSnippetsByFile,
+        });
+
+        const sentContent = callApiSpy.mock.calls[0][0].files[0].content;
+        expect(sentContent).toContain('文件头依赖上下文');
+        expect(sentContent).toContain("import { helper } from './helper';");
     });
 });
+

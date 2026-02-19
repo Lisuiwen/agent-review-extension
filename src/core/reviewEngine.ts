@@ -45,6 +45,36 @@ import { loadIgnoredFingerprints } from '../config/ignoreStore';
 // 为保持向后兼容，从 reviewEngine 继续 export 类型（实际定义在 types/review）
 export type { ReviewIssue, ReviewResult } from '../types/review';
 
+type ReviewScopeHint = {
+    startLine: number;
+    endLine: number;
+    source: 'ast' | 'line';
+};
+
+type ReviewRunOptions = {
+    diffByFile?: Map<string, FileDiff>;
+    traceSession?: RuntimeTraceSession | null;
+    astSnippetsByFileOverride?: Map<string, AffectedScopeResult>;
+};
+
+type PendingReviewContext = {
+    result: ReviewResult;
+    pendingFiles: string[];
+    reason: 'no_pending_changes' | 'reviewed';
+};
+
+type ReviewedRange = {
+    startLine: number;
+    endLine: number;
+};
+
+type SavedFileReviewContext = {
+    result: ReviewResult;
+    reviewedRanges: ReviewedRange[];
+    mode: 'diff' | 'full';
+    reason: 'reviewed' | 'fallback_full' | 'no_target_diff';
+};
+
 /**
  * 审查引擎类
  * 
@@ -113,7 +143,7 @@ export class ReviewEngine {
      */
     async review(
         files: string[],
-        options?: { diffByFile?: Map<string, FileDiff>; traceSession?: RuntimeTraceSession | null }
+        options?: ReviewRunOptions
     ): Promise<ReviewResult> {
         this.logger.show();
         const reviewStartAt = Date.now();
@@ -220,10 +250,15 @@ export class ReviewEngine {
 
             const useRuleDiff = config.rules.diff_only !== false && options?.diffByFile;
             const useAiDiff = config.ai_review?.diff_only !== false && options?.diffByFile;
-            const useAstScope = config.ast?.enabled === true && options?.diffByFile;
-            let astSnippetsByFile: Map<string, AffectedScopeResult> | undefined;
+            const hasAstOverride = !!options?.astSnippetsByFileOverride && options.astSnippetsByFileOverride.size > 0;
+            const useAstScope = hasAstOverride || (config.ast?.enabled === true && options?.diffByFile);
+            let astSnippetsByFile: Map<string, AffectedScopeResult> | undefined =
+                options?.astSnippetsByFileOverride;
 
             const buildAstSnippetsByFile = async (): Promise<Map<string, AffectedScopeResult> | undefined> => {
+                if (hasAstOverride) {
+                    return options?.astSnippetsByFileOverride;
+                }
                 if (!useAstScope || !options?.diffByFile) {
                     return undefined;
                 }
@@ -362,32 +397,32 @@ export class ReviewEngine {
             const skipOnBlocking = config.ai_review?.skip_on_blocking_errors !== false;
             const aiEnabled = config.ai_review?.enabled ?? false;
 
-            const runRuleEngine = () => this.ruleEngine.checkFiles(
-                filteredFiles,
-                useRuleDiff ? options?.diffByFile : undefined,
-                traceSession
-            );
+            const runRuleEngine = (): Promise<ReviewIssue[]> =>
+                this.ruleEngine.checkFiles(
+                    filteredFiles,
+                    useRuleDiff ? options?.diffByFile : undefined,
+                    traceSession
+                );
 
-            if (aiEnabled) {
-                if (skipOnBlocking && builtinRulesEnabled) {
-                    ruleIssues = await runRuleEngine();
-                    if (this.hasBlockingErrors(ruleIssues, ruleActionMap)) {
-                        this.logger.warn('检测到阻止提交错误，已跳过AI审查');
-                    } else {
-                        aiIssues = await runAiReview();
-                    }
-                } else if (skipOnBlocking) {
+            // 规则引擎与 AI 审查执行顺序：若启用「遇阻止提交错误则跳过 AI」，则先跑规则再决定是否跑 AI；否则并行
+            if (!aiEnabled) {
+                if (builtinRulesEnabled) ruleIssues = await runRuleEngine();
+            } else if (skipOnBlocking && builtinRulesEnabled) {
+                ruleIssues = await runRuleEngine();
+                if (!this.hasBlockingErrors(ruleIssues, ruleActionMap)) {
                     aiIssues = await runAiReview();
                 } else {
-                    const [ruleResult, aiResult] = await Promise.all([
-                        builtinRulesEnabled ? runRuleEngine() : Promise.resolve([]),
-                        runAiReview(),
-                    ]);
-                    ruleIssues = ruleResult;
-                    aiIssues = aiResult;
+                    this.logger.warn('检测到阻止提交错误，已跳过AI审查');
                 }
-            } else if (builtinRulesEnabled) {
-                ruleIssues = await runRuleEngine();
+            } else if (skipOnBlocking) {
+                aiIssues = await runAiReview();
+            } else {
+                const [ruleResult, aiResult] = await Promise.all([
+                    builtinRulesEnabled ? runRuleEngine() : Promise.resolve([]),
+                    runAiReview(),
+                ]);
+                ruleIssues = ruleResult;
+                aiIssues = aiResult;
             }
 
             const deduplicatedIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
@@ -410,17 +445,9 @@ export class ReviewEngine {
             this.attachAstRanges(allIssues, astSnippetsByFile);
             this.markIncrementalIssues(allIssues, options?.diffByFile);
             for (const issue of allIssues) {
-                switch (issue.severity) {
-                    case 'error':
-                        result.errors.push(issue);
-                        break;
-                    case 'warning':
-                        result.warnings.push(issue);
-                        break;
-                    case 'info':
-                        result.info.push(issue);
-                        break;
-                }
+                if (issue.severity === 'error') result.errors.push(issue);
+                else if (issue.severity === 'warning') result.warnings.push(issue);
+                else result.info.push(issue);
             }
 
             const hasBlockingErrors = this.hasBlockingErrors(result.errors, ruleActionMap);
@@ -476,11 +503,13 @@ export class ReviewEngine {
         ruleActionMap: Map<string, 'block_commit' | 'warning' | 'log' | undefined>
     ): boolean => issues.some(issue => ruleActionMap.get(issue.rule) === 'block_commit');
 
-    /** 将 action 配置映射为 issue 的 severity */
+    /** 将规则 action 配置映射为 ReviewIssue 的 severity */
     private actionToSeverity = (action: 'block_commit' | 'warning' | 'log'): 'error' | 'warning' | 'info' => {
-        if (action === 'block_commit') return 'error';
-        if (action === 'log') return 'info';
-        return 'warning';
+        switch (action) {
+            case 'block_commit': return 'error';
+            case 'log': return 'info';
+            default: return 'warning';
+        }
     };
 
     /**
@@ -595,9 +624,7 @@ export class ReviewEngine {
         }
     };
 
-    /**
-     * 将 VSCode DiagnosticSeverity 统一成字符串，便于日志与配置判断。
-     */
+    /** 将 VSCode DiagnosticSeverity 转为 'error' | 'warning' | 'info' | 'hint'，供 AI 白名单与去重使用 */
     private toDiagnosticSeverity = (
         severity: vscode.DiagnosticSeverity | undefined
     ): 'error' | 'warning' | 'info' | 'hint' => {
@@ -803,6 +830,236 @@ export class ReviewEngine {
         }
     };
 
+    private normalizeScopeHints = (scopes: ReviewScopeHint[]): ReviewScopeHint[] => {
+        const normalized = scopes
+            .map(scope => {
+                if (!Number.isFinite(scope.startLine) || !Number.isFinite(scope.endLine)) {
+                    return null;
+                }
+                const startLine = Math.max(1, Math.floor(scope.startLine));
+                const endLine = Math.max(1, Math.floor(scope.endLine));
+                if (startLine > endLine) {
+                    return null;
+                }
+                const source: ReviewScopeHint['source'] = scope.source === 'ast' ? 'ast' : 'line';
+                return { startLine, endLine, source };
+            })
+            .filter((scope): scope is ReviewScopeHint => scope !== null);
+
+        if (normalized.length === 0) {
+            return [];
+        }
+
+        const sorted = [...normalized].sort((a, b) =>
+            a.startLine === b.startLine
+                ? a.endLine - b.endLine
+                : a.startLine - b.startLine
+        );
+        const merged: ReviewScopeHint[] = [];
+        for (const scope of sorted) {
+            const last = merged[merged.length - 1];
+            if (!last || scope.startLine > last.endLine + 1) {
+                merged.push({ ...scope });
+                continue;
+            }
+            last.endLine = Math.max(last.endLine, scope.endLine);
+            if (scope.source === 'ast') {
+                last.source = 'ast';
+            }
+        }
+        return merged;
+    };
+
+    private buildReviewArtifactsFromScopeHints = (
+        filePath: string,
+        content: string,
+        scopes: ReviewScopeHint[]
+    ): { diffByFile?: Map<string, FileDiff>; astSnippetsByFile?: Map<string, AffectedScopeResult> } => {
+        const lines = content.split(/\r?\n/);
+        if (lines.length === 0) {
+            return {};
+        }
+
+        const hunks: FileDiff['hunks'] = [];
+        const snippets: AffectedScopeResult['snippets'] = [];
+        for (const scope of scopes) {
+            const boundedStart = Math.min(Math.max(1, scope.startLine), lines.length);
+            const boundedEnd = Math.min(Math.max(boundedStart, scope.endLine), lines.length);
+            const snippetLines = lines.slice(boundedStart - 1, boundedEnd);
+            if (snippetLines.length === 0) {
+                continue;
+            }
+            hunks.push({
+                newStart: boundedStart,
+                newCount: snippetLines.length,
+                lines: snippetLines,
+            });
+            snippets.push({
+                startLine: boundedStart,
+                endLine: boundedEnd,
+                source: snippetLines.join('\n'),
+            });
+        }
+
+        if (hunks.length === 0 || snippets.length === 0) {
+            return {};
+        }
+
+        return {
+            diffByFile: new Map<string, FileDiff>([
+                [filePath, { path: filePath, hunks, formatOnly: false }],
+            ]),
+            astSnippetsByFile: new Map<string, AffectedScopeResult>([
+                [filePath, { snippets }],
+            ]),
+        };
+    };
+
+    private createEmptyReviewResult = (): ReviewResult => ({
+        passed: true,
+        errors: [],
+        warnings: [],
+        info: [],
+    });
+
+    private countReviewIssues = (result: ReviewResult): number =>
+        result.errors.length + result.warnings.length + result.info.length;
+
+    private normalizeReviewedRanges = (ranges: ReviewedRange[]): ReviewedRange[] => {
+        if (ranges.length === 0) {
+            return [];
+        }
+        const normalized = ranges
+            .map(range => {
+                const startLine = Math.max(1, Math.floor(range.startLine));
+                const endLine = Math.max(startLine, Math.floor(range.endLine));
+                return { startLine, endLine };
+            })
+            .sort((a, b) => (
+                a.startLine === b.startLine
+                    ? a.endLine - b.endLine
+                    : a.startLine - b.startLine
+            ));
+        const merged: ReviewedRange[] = [];
+        for (const range of normalized) {
+            const last = merged[merged.length - 1];
+            if (!last || range.startLine > last.endLine + 1) {
+                merged.push({ ...range });
+                continue;
+            }
+            last.endLine = Math.max(last.endLine, range.endLine);
+        }
+        return merged;
+    };
+
+    private extractReviewedRangesFromDiff = (fileDiff: FileDiff): ReviewedRange[] => {
+        const ranges = fileDiff.hunks
+            .filter(hunk => Number.isFinite(hunk.newCount) && hunk.newCount > 0)
+            .map(hunk => ({
+                startLine: hunk.newStart,
+                endLine: hunk.newStart + hunk.newCount - 1,
+            }));
+        return this.normalizeReviewedRanges(ranges);
+    };
+
+    private fallbackToFullFileReview = async (
+        filePath: string,
+        traceSession: RuntimeTraceSession | null,
+        reason: string
+    ): Promise<ReviewResult> => {
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'ReviewEngine',
+            event: 'diff_fetch_summary',
+            phase: 'manual',
+            data: {
+                filePath,
+                reason,
+            },
+        });
+        return await this.review([filePath], { traceSession });
+    };
+
+    /**
+     * 保存触发的单文件复审入口：
+     * - 优先使用 stale issue 提供的 scope hints 做“切片复审”
+     * - scope hints 不可用时回退为该文件整文件复审
+     */
+    async reviewSavedFileWithScopeHints(
+        filePath: string,
+        scopes: Array<{ startLine: number; endLine: number; source: 'ast' | 'line' }>
+    ): Promise<ReviewResult> {
+        const config = this.configManager.getConfig();
+        this.applyRuntimeTraceConfig(config);
+        const traceSession = this.runtimeTraceLogger.startRunSession('manual');
+        const normalizedFilePath = path.normalize(filePath);
+        const normalizedScopes = this.normalizeScopeHints(scopes);
+
+        try {
+            if (!normalizedFilePath) {
+                return this.createEmptyReviewResult();
+            }
+            if (normalizedScopes.length === 0) {
+                return await this.fallbackToFullFileReview(
+                    normalizedFilePath,
+                    traceSession,
+                    'scope_hint_fallback_empty_or_invalid_scopes'
+                );
+            }
+
+            try {
+                const content = await this.fileScanner.readFile(normalizedFilePath);
+                const artifacts = this.buildReviewArtifactsFromScopeHints(
+                    normalizedFilePath,
+                    content,
+                    normalizedScopes
+                );
+                if (!artifacts.diffByFile || !artifacts.astSnippetsByFile) {
+                    return await this.fallbackToFullFileReview(
+                        normalizedFilePath,
+                        traceSession,
+                        'scope_hint_fallback_empty_snippets_after_bounding'
+                    );
+                }
+                this.runtimeTraceLogger.logEvent({
+                    session: traceSession,
+                    component: 'ReviewEngine',
+                    event: 'diff_fetch_summary',
+                    phase: 'manual',
+                    data: {
+                        filePath: normalizedFilePath,
+                        reason: 'scope_hint_review_start',
+                        scopeCount: normalizedScopes.length,
+                        hunkCount: artifacts.diffByFile.get(normalizedFilePath)?.hunks.length ?? 0,
+                    },
+                });
+                const scopeResult = await this.review([normalizedFilePath], {
+                    diffByFile: artifacts.diffByFile,
+                    astSnippetsByFileOverride: artifacts.astSnippetsByFile,
+                    traceSession,
+                });
+                if (this.countReviewIssues(scopeResult) > 0) {
+                    return scopeResult;
+                }
+
+                // 切片复审未命中问题时，回退整文件复审，避免误清空旧问题。
+                return await this.fallbackToFullFileReview(
+                    normalizedFilePath,
+                    traceSession,
+                    'scope_hint_empty_result_fallback_full_file'
+                );
+            } catch {
+                return await this.fallbackToFullFileReview(
+                    normalizedFilePath,
+                    traceSession,
+                    'scope_hint_fallback_read_file_failed'
+                );
+            }
+        } finally {
+            this.runtimeTraceLogger.endRunSession(traceSession);
+        }
+    }
+
     /**
      * 审查 Git staged 文件
      * 
@@ -813,6 +1070,159 @@ export class ReviewEngine {
      * 
      * @returns 审查结果对象
      */
+    async reviewPendingChangesWithContext(): Promise<PendingReviewContext> {
+        this.logger.show();
+        const config = this.configManager.getConfig();
+        this.applyRuntimeTraceConfig(config);
+        const traceSession = this.runtimeTraceLogger.startRunSession('manual');
+
+        try {
+            const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
+            const diffStartAt = Date.now();
+            const pendingDiffByFile = await this.fileScanner.getPendingDiff();
+            const pendingFiles = Array.from(pendingDiffByFile.keys()).map(filePath => path.normalize(filePath));
+            const diffByFile = useDiff ? pendingDiffByFile : undefined;
+
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'ReviewEngine',
+                event: 'diff_fetch_summary',
+                phase: 'manual',
+                durationMs: Date.now() - diffStartAt,
+                data: {
+                    pendingFiles: pendingFiles.length,
+                    useDiff,
+                    diffFiles: pendingDiffByFile.size,
+                },
+            });
+
+            if (pendingFiles.length === 0) {
+                this.runtimeTraceLogger.logEvent({
+                    session: traceSession,
+                    component: 'ReviewEngine',
+                    event: 'run_start',
+                    phase: 'manual',
+                    data: { inputFiles: 0, trigger: 'manual' },
+                });
+                this.runtimeTraceLogger.logEvent({
+                    session: traceSession,
+                    component: 'ReviewEngine',
+                    event: 'run_end',
+                    phase: 'manual',
+                    durationMs: 0,
+                    data: { status: 'success' },
+                });
+                await this.generateRuntimeSummaryIfEnabled(traceSession, config);
+                return {
+                    result: this.createEmptyReviewResult(),
+                    pendingFiles: [],
+                    reason: 'no_pending_changes',
+                };
+            }
+
+            return {
+                result: await this.review(pendingFiles, { diffByFile, traceSession }),
+                pendingFiles,
+                reason: 'reviewed',
+            };
+        } finally {
+            this.runtimeTraceLogger.endRunSession(traceSession);
+        }
+    }
+
+    async reviewPendingChanges(): Promise<ReviewResult> {
+        const context = await this.reviewPendingChangesWithContext();
+        return context.result;
+    }
+
+    async reviewSavedFileWithPendingDiffContext(filePath: string): Promise<SavedFileReviewContext> {
+        const config = this.configManager.getConfig();
+        this.applyRuntimeTraceConfig(config);
+        const traceSession = this.runtimeTraceLogger.startRunSession('manual');
+        const normalizedFilePath = path.normalize(filePath);
+
+        try {
+            if (!normalizedFilePath) {
+                return {
+                    result: this.createEmptyReviewResult(),
+                    reviewedRanges: [],
+                    mode: 'full',
+                    reason: 'no_target_diff',
+                };
+            }
+
+            try {
+                const pendingDiffByFile = await this.fileScanner.getPendingDiff([normalizedFilePath]);
+                const matchedDiffEntry = Array.from(pendingDiffByFile.entries()).find(
+                    ([key]) => path.normalize(key) === normalizedFilePath
+                );
+                const matchedDiff = matchedDiffEntry?.[1];
+                if (!matchedDiff || matchedDiff.hunks.length === 0) {
+                    return {
+                        result: await this.fallbackToFullFileReview(
+                            normalizedFilePath,
+                            traceSession,
+                            'pending_diff_fallback_empty_or_invalid_diff'
+                        ),
+                        reviewedRanges: [],
+                        mode: 'full',
+                        reason: 'no_target_diff',
+                    };
+                }
+
+                const diffByFile = new Map<string, FileDiff>([
+                    [
+                        normalizedFilePath,
+                        {
+                            ...matchedDiff,
+                            path: normalizedFilePath,
+                        },
+                    ],
+                ]);
+                this.runtimeTraceLogger.logEvent({
+                    session: traceSession,
+                    component: 'ReviewEngine',
+                    event: 'diff_fetch_summary',
+                    phase: 'manual',
+                    data: {
+                        filePath: normalizedFilePath,
+                        reason: 'pending_diff_review_start',
+                        diffFiles: pendingDiffByFile.size,
+                        hunkCount: matchedDiff.hunks.length,
+                    },
+                });
+
+                return {
+                    result: await this.review([normalizedFilePath], {
+                        diffByFile,
+                        traceSession,
+                    }),
+                    reviewedRanges: this.extractReviewedRangesFromDiff(matchedDiff),
+                    mode: 'diff',
+                    reason: 'reviewed',
+                };
+            } catch {
+                return {
+                    result: await this.fallbackToFullFileReview(
+                        normalizedFilePath,
+                        traceSession,
+                        'pending_diff_fallback_fetch_failed'
+                    ),
+                    reviewedRanges: [],
+                    mode: 'full',
+                    reason: 'fallback_full',
+                };
+            }
+        } finally {
+            this.runtimeTraceLogger.endRunSession(traceSession);
+        }
+    }
+
+    async reviewSavedFileWithPendingDiff(filePath: string): Promise<ReviewResult> {
+        const context = await this.reviewSavedFileWithPendingDiffContext(filePath);
+        return context.result;
+    }
+
     async reviewStagedFiles(): Promise<ReviewResult> {
         this.logger.show();
         const config = this.configManager.getConfig();

@@ -50,6 +50,14 @@ export interface AgentReviewConfig {
         batch_concurrency?: number;         // 批次并发数
         max_request_chars?: number;         // 单次请求字符数上限
         run_on_save?: boolean;              // 保存文件时自动触发审查（默认 false）
+        run_on_save_debounce_ms?: number;   // 保存自动审查防抖时间（默认 800ms）
+        run_on_save_max_runs_per_minute?: number; // 保存自动审查每分钟最大执行次数（默认 6）
+        enable_local_rebase?: boolean;      // 编辑期本地行号重映射（默认 true）
+        large_change_line_threshold?: number; // 大改动阈值，超出仅标记 stale（默认 40）
+        idle_recheck_enabled?: boolean;     // 编辑停顿后自动复审（默认 false）
+        idle_recheck_ms?: number;           // 编辑停顿复审延迟（默认 2500ms）
+        auto_review_max_parallel_files?: number; // 自动复审文件并发上限（默认 1）
+        review_current_file_now_bypass_rate_limit?: boolean; // 立即复审命令是否绕过限频（默认 false）
         funnel_lint?: boolean;              // 漏斗模式：先看 diagnostics，再决定是否发 AI（默认 false）
         funnel_lint_severity?: 'error' | 'warning'; // 漏斗阈值：error=仅错误拦截，warning=警告及以上拦截
         ignore_format_only_diff?: boolean;  // 忽略仅格式/空白变更的 diff（默认 true）
