@@ -10,8 +10,9 @@
  * 
  * TreeView 结构：
  * - 根节点：显示审查状态和统计
- *   - 文件节点：按文件分组显示问题
- *     - 问题节点：具体的问题项，点击可跳转到代码位置
+ *   - 分组节点：你的增量 / 项目存量
+ *     - 文件节点：按文件分组显示问题
+ *       - 问题节点：具体的问题项，点击可跳转到代码位置
  * 
  * 使用方式：
  * ```typescript
@@ -38,7 +39,8 @@ export class ReviewTreeItem extends vscode.TreeItem {
         public readonly label: string,
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
         public readonly issue?: ReviewIssue,
-        public readonly filePath?: string
+        public readonly filePath?: string,
+        public readonly groupKey?: 'incremental' | 'existing'
     ) {
         super(label, collapsibleState);
 
@@ -85,6 +87,9 @@ export class ReviewTreeItem extends vscode.TreeItem {
             this.iconPath = vscode.ThemeIcon.File;
             this.resourceUri = vscode.Uri.file(filePath);
             this.contextValue = 'reviewFile';
+        } else if (groupKey) {
+            // 分组项：增量 / 存量
+            this.contextValue = 'reviewGroup';
         }
     }
 }
@@ -143,7 +148,8 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
      * 树形结构：
      * - 根节点（element === undefined）：
      *   - 状态节点：显示审查是否通过
-     *   - 文件节点：每个有问题的文件一个节点
+     *   - 分组节点：你的增量 / 项目存量
+     *     - 文件节点：每个有问题的文件一个节点
      * - 文件节点（element.filePath 存在）：
      *   - 问题节点：该文件的所有问题
      */
@@ -185,48 +191,53 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                 : `✗ 审查未通过 (${this.reviewResult.errors.length}个错误, ${this.reviewResult.warnings.length}个警告)`;
             items.push(new ReviewTreeItem(statusText, vscode.TreeItemCollapsibleState.None));
 
-            // 按文件分组显示问题
-            const fileMap = new Map<string, ReviewIssue[]>();
-            
-            [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info].forEach(issue => {
-                if (!fileMap.has(issue.file)) {
-                    fileMap.set(issue.file, []);
-                }
-                fileMap.get(issue.file)!.push(issue);
-            });
+            // 根节点分两类：你的增量（默认展开）与项目存量（默认折叠）
+            const allIssues = [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info];
+            const incrementalIssues = allIssues.filter(issue => issue.incremental === true);
+            const existingIssues = allIssues.filter(issue => issue.incremental !== true);
 
-            // 为每个文件创建节点
-            for (const [filePath, issues] of fileMap.entries()) {
-                const fileName = path.basename(filePath);
-                const errorCount = issues.filter(i => i.severity === 'error').length;
-                const warningCount = issues.filter(i => i.severity === 'warning').length;
-                const infoCount = issues.filter(i => i.severity === 'info').length;
-                
-                const countText = [
-                    errorCount > 0 ? `${errorCount}个错误` : '',
-                    warningCount > 0 ? `${warningCount}个警告` : '',
-                    infoCount > 0 ? `${infoCount}个信息` : ''
-                ].filter(Boolean).join(', ');
-
-                const fileItem = new ReviewTreeItem(
-                    `${fileName} (${countText})`,
+            if (incrementalIssues.length > 0) {
+                items.push(new ReviewTreeItem(
+                    `你的增量 (${incrementalIssues.length})`,
+                    vscode.TreeItemCollapsibleState.Expanded,
+                    undefined,
+                    undefined,
+                    'incremental'
+                ));
+            }
+            if (existingIssues.length > 0) {
+                items.push(new ReviewTreeItem(
+                    `项目存量 (${existingIssues.length})`,
                     vscode.TreeItemCollapsibleState.Collapsed,
                     undefined,
-                    filePath
-                );
-                items.push(fileItem);
+                    undefined,
+                    'existing'
+                ));
+            }
+
+            // 向后兼容：若没有打标数据，则按旧逻辑退化为单层文件分组
+            if (incrementalIssues.length === 0 && existingIssues.length === 0 && allIssues.length > 0) {
+                const fallbackFileItems = this.buildFileItems(allIssues);
+                items.push(...fallbackFileItems);
             }
 
             return items;
         }
 
+        // 分组节点：展示该分组下的文件列表
+        if (element.groupKey && !element.filePath) {
+            const groupIssues = this.getIssuesByGroup(element.groupKey);
+            return this.buildFileItems(groupIssues, element.groupKey);
+        }
+
         // 文件节点：显示该文件的所有问题
         if (element.filePath) {
-            const fileIssues = [
+            const groupIssues = element.groupKey ? this.getIssuesByGroup(element.groupKey) : [
                 ...this.reviewResult.errors,
                 ...this.reviewResult.warnings,
                 ...this.reviewResult.info
-            ].filter(issue => issue.file === element.filePath);
+            ];
+            const fileIssues = groupIssues.filter(issue => issue.file === element.filePath);
 
             return fileIssues.map(issue => 
                 new ReviewTreeItem(
@@ -239,6 +250,60 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
 
         return [];
     }
+
+    /**
+     * 按分组类型获取问题列表：
+     * - incremental: 本次增量
+     * - existing: 项目存量
+     */
+    private getIssuesByGroup = (groupKey: 'incremental' | 'existing'): ReviewIssue[] => {
+        if (!this.reviewResult) {
+            return [];
+        }
+        const allIssues = [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info];
+        if (groupKey === 'incremental') {
+            return allIssues.filter(issue => issue.incremental === true);
+        }
+        return allIssues.filter(issue => issue.incremental !== true);
+    };
+
+    /**
+     * 将问题按文件聚合成 TreeItem。
+     */
+    private buildFileItems = (
+        issues: ReviewIssue[],
+        groupKey?: 'incremental' | 'existing'
+    ): ReviewTreeItem[] => {
+        const fileMap = new Map<string, ReviewIssue[]>();
+        for (const issue of issues) {
+            if (!fileMap.has(issue.file)) {
+                fileMap.set(issue.file, []);
+            }
+            fileMap.get(issue.file)!.push(issue);
+        }
+
+        const items: ReviewTreeItem[] = [];
+        for (const [filePath, fileIssues] of fileMap.entries()) {
+            const fileName = path.basename(filePath);
+            const errorCount = fileIssues.filter(i => i.severity === 'error').length;
+            const warningCount = fileIssues.filter(i => i.severity === 'warning').length;
+            const infoCount = fileIssues.filter(i => i.severity === 'info').length;
+            const countText = [
+                errorCount > 0 ? `${errorCount}个错误` : '',
+                warningCount > 0 ? `${warningCount}个警告` : '',
+                infoCount > 0 ? `${infoCount}个信息` : ''
+            ].filter(Boolean).join(', ');
+
+            items.push(new ReviewTreeItem(
+                `${fileName} (${countText})`,
+                vscode.TreeItemCollapsibleState.Collapsed,
+                undefined,
+                filePath,
+                groupKey
+            ));
+        }
+        return items;
+    };
 }
 
 export class ReviewPanel {

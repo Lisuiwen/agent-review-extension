@@ -55,6 +55,7 @@ export interface AgentReviewConfig {
         enabled?: boolean;          // 是否启用 AST 片段模式（默认 false）
         max_node_lines?: number;   // 单个 AST 节点的最大行数
         max_file_lines?: number;   // 文件总行数超过阈值则回退
+        include_lsp_context?: boolean; // 是否通过 LSP 补充外部定义上下文（默认 true）
         preview_only?: boolean;     // 为 true 时不调用大模型，仅打印将发送的 AST/变更切片内容
     };
     git_hooks?: {

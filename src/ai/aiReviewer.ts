@@ -7,6 +7,7 @@ import type { ReviewIssue } from '../types/review';
 import { FileScanner } from '../utils/fileScanner';
 import type { FileDiff } from '../utils/diffTypes';
 import type { AffectedScopeResult } from '../utils/astScope';
+import { buildLspReferenceContext } from '../utils/lspContext';
 import { RuntimeTraceLogger, type RuntimeTraceSession } from '../utils/runtimeTraceLogger';
 
 /**
@@ -305,6 +306,7 @@ export class AIReviewer {
      *
      * 当 request.diffByFile 存在且配置 diff_only 启用时，仅发送变更片段；
      * 当 request.astSnippetsByFile 存在时，优先发送 AST 片段。返回的 line 均为新文件行号。
+     * 当 request.diagnosticsByFile 存在时，会将其作为「已知问题白名单」注入提示词，并在结果后置过滤重复问题。
      *
      * @param request - 审查请求；可含 diffByFile 用于增量审查
      * @returns 审查问题列表
@@ -313,6 +315,7 @@ export class AIReviewer {
         request: AIReviewRequest & {
             diffByFile?: Map<string, FileDiff>;
             astSnippetsByFile?: Map<string, AffectedScopeResult>;
+            diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>;
         },
         traceSession?: RuntimeTraceSession | null
     ): Promise<ReviewIssue[]> {
@@ -320,6 +323,7 @@ export class AIReviewer {
         const validatedRequest = this.validateRequest(request);
         const diffByFile = request.diffByFile;
         const astSnippetsByFile = request.astSnippetsByFile;
+        const diagnosticsByFile = this.normalizeDiagnosticsMap(request.diagnosticsByFile);
 
         await this.ensureInitialized();
         if (!this.isConfigValid()) {
@@ -331,14 +335,20 @@ export class AIReviewer {
         const useDiffMode = this.config?.diff_only !== false && diffByFile && diffByFile.size > 0;
         const useAstSnippets = !!astSnippetsByFile && astSnippetsByFile.size > 0;
         const useDiffContent = useDiffMode || useAstSnippets;
+        const astConfig = this.configManager.getConfig().ast;
+        const enableLspContext = astConfig?.include_lsp_context !== false;
         const filesToLoad = useDiffContent
-            ? validatedRequest.files.map(f => {
+            ? await Promise.all(validatedRequest.files.map(async (f) => {
                 const normalizedPath = path.normalize(f.path);
                 let content: string | undefined;
+                let referenceContext = '';
                 if (useAstSnippets) {
                     const astSnippets = astSnippetsByFile!.get(normalizedPath) ?? astSnippetsByFile!.get(f.path);
                     if (astSnippets?.snippets?.length) {
                         content = this.buildAstSnippetForFile(f.path, astSnippets);
+                        if (enableLspContext) {
+                            referenceContext = await buildLspReferenceContext(f.path, astSnippets.snippets);
+                        }
                     }
                 }
                 if (!content && useDiffMode) {
@@ -353,8 +363,11 @@ export class AIReviewer {
                 if (!content && useAstSnippets) {
                     this.logger.debug(`[ast_only] 文件 ${f.path} 未取得 AST 片段，回退整文件发送`);
                 }
+                if (content && referenceContext) {
+                    content = this.buildStructuredReviewContent(content, referenceContext);
+                }
                 return { path: f.path, content };
-            })
+            }))
             : validatedRequest.files;
 
         // diff/AST 模式下：仅保留「变更相关行」上的 AI 问题，过滤掉模型对未发送行的推断
@@ -385,7 +398,6 @@ export class AIReviewer {
         }
 
         try {
-            const astConfig = this.configManager.getConfig().ast;
             const previewOnly = astConfig?.preview_only === true;
             if (previewOnly) {
                 this.logger.info('[ast.preview_only=true] 仅预览切片，不请求大模型');
@@ -445,6 +457,7 @@ export class AIReviewer {
             const issues = await this.processReviewUnitBatches(batches, {
                 useDiffContent,
                 allowedLinesByFile,
+                diagnosticsByFile,
             }, traceSession);
             this.runtimeTraceLogger.logEvent({
                 session: traceSession,
@@ -599,6 +612,21 @@ export class AIReviewer {
         }
         return lines.join('\n');
     }
+
+    /**
+     * 构造结构化审查内容：显式区分当前审查片段与外部参考上下文。
+     *
+     * 这样可以在提示词层面降低“外部符号未定义”类误报。
+     */
+    private buildStructuredReviewContent = (currentContent: string, referenceContext: string): string => {
+        return [
+            '【当前审查代码】',
+            currentContent,
+            '',
+            '【外部引用上下文（仅供参考）】',
+            referenceContext,
+        ].join('\n');
+    };
 
     /**
      * 加载文件内容
@@ -793,6 +821,7 @@ export class AIReviewer {
         options: {
             useDiffContent: boolean;
             allowedLinesByFile: Map<string, Set<number>>;
+            diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>;
         },
         traceSession?: RuntimeTraceSession | null
     ): Promise<ReviewIssue[]> => {
@@ -849,6 +878,7 @@ export class AIReviewer {
         options: {
             useDiffContent: boolean;
             allowedLinesByFile: Map<string, Set<number>>;
+            diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>;
         },
         traceSession?: RuntimeTraceSession | null
     ): Promise<ReviewIssue[]> => {
@@ -923,6 +953,7 @@ export class AIReviewer {
         options: {
             useDiffContent: boolean;
             allowedLinesByFile: Map<string, Set<number>>;
+            diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>;
         },
         allowSplit: boolean,
         traceSession?: RuntimeTraceSession | null
@@ -955,9 +986,16 @@ export class AIReviewer {
         }
 
         try {
+            const diagnosticsForBatch = this.pickDiagnosticsForFiles(
+                options.diagnosticsByFile,
+                batchFiles.map(file => file.path)
+            );
             const response = await this.callAPI(
                 { files: batchFiles },
-                { isDiffContent: options.useDiffContent },
+                {
+                    isDiffContent: options.useDiffContent,
+                    diagnosticsByFile: diagnosticsForBatch,
+                },
                 traceSession
             );
             const batchIssues = this.transformToReviewIssues(
@@ -965,7 +1003,8 @@ export class AIReviewer {
                 batchFiles,
                 { useDiffLineNumbers: options.useDiffContent }
             );
-            return this.filterIssuesByAllowedLines(batchIssues, options);
+            const issuesInScope = this.filterIssuesByAllowedLines(batchIssues, options);
+            return this.filterIssuesByDiagnostics(issuesInScope, diagnosticsForBatch);
         } catch (error) {
             if (allowSplit && batchFiles.length > 1 && this.isContextTooLongError(error)) {
                 this.logger.warn('[batch_guard] 检测到上下文超限错误，批次将二分后重试一次');
@@ -995,6 +1034,7 @@ export class AIReviewer {
         options: {
             useDiffContent: boolean;
             allowedLinesByFile: Map<string, Set<number>>;
+            diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>;
         }
     ): ReviewIssue[] => {
         if (!options.useDiffContent || options.allowedLinesByFile.size === 0) {
@@ -1011,6 +1051,67 @@ export class AIReviewer {
         });
         if (before > filtered.length) {
             this.logger.debug('[diff_only] 已过滤非变更行问题');
+        }
+        return filtered;
+    };
+
+    /**
+     * 标准化 diagnostics 映射，统一路径格式，便于后续比对。
+     */
+    private normalizeDiagnosticsMap = (
+        diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>
+    ): Map<string, Array<{ line: number; message: string }>> => {
+        const normalized = new Map<string, Array<{ line: number; message: string }>>();
+        if (!diagnosticsByFile || diagnosticsByFile.size === 0) {
+            return normalized;
+        }
+        for (const [filePath, diagnostics] of diagnosticsByFile.entries()) {
+            normalized.set(path.normalize(filePath), diagnostics);
+        }
+        return normalized;
+    };
+
+    /**
+     * 从全量 diagnostics 中挑出当前批次涉及文件，减少提示词体积。
+     */
+    private pickDiagnosticsForFiles = (
+        diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>,
+        filePaths: string[]
+    ): Map<string, Array<{ line: number; message: string }>> => {
+        if (diagnosticsByFile.size === 0) {
+            return diagnosticsByFile;
+        }
+        const picked = new Map<string, Array<{ line: number; message: string }>>();
+        for (const filePath of filePaths) {
+            const normalizedPath = path.normalize(filePath);
+            const diagnostics = diagnosticsByFile.get(normalizedPath);
+            if (diagnostics?.length) {
+                picked.set(normalizedPath, diagnostics);
+            }
+        }
+        return picked;
+    };
+
+    /**
+     * 后置过滤：移除与本地 diagnostics 同行的 AI 问题，避免重复报告。
+     */
+    private filterIssuesByDiagnostics = (
+        issues: ReviewIssue[],
+        diagnosticsByFile: Map<string, Array<{ line: number; message: string }>>
+    ): ReviewIssue[] => {
+        if (diagnosticsByFile.size === 0) {
+            return issues;
+        }
+        const before = issues.length;
+        const filtered = issues.filter(issue => {
+            const diagnostics = diagnosticsByFile.get(path.normalize(issue.file));
+            if (!diagnostics || diagnostics.length === 0) {
+                return true;
+            }
+            return !diagnostics.some(item => item.line === issue.line);
+        });
+        if (before > filtered.length) {
+            this.logger.debug('[diagnostics] 已过滤与本地诊断同行的 AI 重复问题');
         }
         return filtered;
     };
@@ -1092,7 +1193,10 @@ export class AIReviewer {
      */
     private async callAPI(
         request: { files: Array<{ path: string; content: string }> },
-        options?: { isDiffContent?: boolean },
+        options?: {
+            isDiffContent?: boolean;
+            diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>;
+        },
         traceSession?: RuntimeTraceSession | null
     ): Promise<AIReviewResponse> {
         if (!this.config) {
@@ -1112,7 +1216,7 @@ export class AIReviewer {
 
         const requestBody = this.config.api_format === 'custom'
             ? this.buildCustomRequest(request)
-            : this.buildOpenAIRequest(request, options?.isDiffContent);
+            : this.buildOpenAIRequest(request, options?.isDiffContent, options?.diagnosticsByFile);
 
         const userMsgForLog = (requestBody as { messages?: Array<{ role: string; content: string }> }).messages?.find(m => m.role === 'user');
         const inputLen = userMsgForLog?.content?.length ?? this.estimateRequestChars(request.files);
@@ -1280,7 +1384,8 @@ export class AIReviewer {
      */
     private buildOpenAIRequest(
         request: { files: Array<{ path: string; content: string }> },
-        isDiffContent?: boolean
+        isDiffContent?: boolean,
+        diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>
     ): {
         model: string;
         messages: Array<{ role: string; content: string }>;
@@ -1307,10 +1412,13 @@ export class AIReviewer {
         const lineHint = isDiffContent
             ? '返回的 **line** 必须使用上述「# 行 N」中标注的新文件行号（从 1 开始）。'
             : '';
+        const knownIssuesPrompt = this.buildKnownDiagnosticsPrompt(diagnosticsByFile);
 
         const userPrompt = `${intro}
 
 ${filesContent}
+
+${knownIssuesPrompt}
 
 **审查要求：**
 1. 逐行分析代码，查找所有潜在问题
@@ -1318,7 +1426,8 @@ ${filesContent}
 3. 即使代码能正常运行，也要提供改进建议和最佳实践
 4. 对于每个问题，提供详细的问题描述和具体的修复建议
 5. 返回 snippet 字段（问题所在的原始代码片段，1-3行，必须来自原文件，保持原样）
-6. 确保问题描述清晰、具体，包含：
+6. 若输入中包含「外部引用上下文（仅供参考）」，请不要对该上下文已定义的符号重复报“未定义”
+7. 确保问题描述清晰、具体，包含：
    - 问题是什么
    - 为什么这是问题
    - 如何修复（提供具体的代码建议）
@@ -1368,6 +1477,31 @@ ${lineHint ? `\n**行号说明：**\n${lineHint}\n` : ''}
             max_tokens: this.config.max_tokens || DEFAULT_MAX_TOKENS
         };
     }
+
+    /**
+     * 生成「已知问题白名单」提示词，告知模型不要重复报告已被 Linter/TS 捕获的问题。
+     */
+    private buildKnownDiagnosticsPrompt = (
+        diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>
+    ): string => {
+        if (!diagnosticsByFile || diagnosticsByFile.size === 0) {
+            return '';
+        }
+        const rows: string[] = [];
+        for (const [filePath, diagnostics] of diagnosticsByFile.entries()) {
+            for (const item of diagnostics.slice(0, 10)) {
+                rows.push(`- ${filePath} 行 ${item.line}: ${item.message}`);
+            }
+        }
+        if (rows.length === 0) {
+            return '';
+        }
+        return [
+            '**已知问题白名单（Linter/TS 已发现，AI 请勿重复报告）：**',
+            ...rows,
+            '',
+        ].join('\n');
+    };
 
     /**
      * 构建续写请求

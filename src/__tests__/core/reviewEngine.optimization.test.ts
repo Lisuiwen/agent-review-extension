@@ -14,9 +14,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createMockConfigManager } from '../helpers/mockConfigManager';
 import { ReviewEngine, ReviewIssue } from '../../core/reviewEngine';
+import type { FileDiff } from '../../utils/diffTypes';
 
 const ruleEngineCheckFilesMock = vi.fn<() => Promise<ReviewIssue[]>>(async () => []);
-const aiReviewerReviewMock = vi.fn<() => Promise<ReviewIssue[]>>(async () => []);
+const aiReviewerReviewMock = vi.fn<(...args: unknown[]) => Promise<ReviewIssue[]>>(async () => []);
 
 vi.mock('../../core/ruleEngine', () => ({
     RuleEngine: class {
@@ -118,6 +119,9 @@ describe('ReviewEngine 优化逻辑', () => {
         aiReviewerReviewMock.mockImplementation(async () => []);
 
         const reviewEngine = new ReviewEngine(configManager);
+        vi.spyOn(reviewEngine as unknown as {
+            collectDiagnosticsByFile: () => Map<string, Array<{ line: number; message: string }>>;
+        }, 'collectDiagnosticsByFile').mockReturnValue(new Map());
         await reviewEngine.initialize();
 
         await reviewEngine.review(['test.ts']);
@@ -162,6 +166,9 @@ describe('ReviewEngine 优化逻辑', () => {
         aiReviewerReviewMock.mockImplementation(async () => [aiIssue]);
 
         const reviewEngine = new ReviewEngine(configManager);
+        vi.spyOn(reviewEngine as unknown as {
+            collectDiagnosticsByFile: () => Map<string, Array<{ line: number; message: string }>>;
+        }, 'collectDiagnosticsByFile').mockReturnValue(new Map());
         await reviewEngine.initialize();
 
         const result = await reviewEngine.review(['src/app.ts']);
@@ -206,5 +213,83 @@ describe('ReviewEngine 优化逻辑', () => {
 
         resolveRule([]);
         await reviewPromise;
+    });
+
+    it('AI 审查调用应携带 diagnosticsByFile，用于去重白名单', async () => {
+        const configManager = createMockConfigManager({
+            rules: {
+                enabled: false,
+                strict_mode: false,
+            },
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                timeout: 1000,
+                action: 'warning',
+            },
+        });
+        ruleEngineCheckFilesMock.mockResolvedValue([]);
+        aiReviewerReviewMock.mockResolvedValue([]);
+        const reviewEngine = new ReviewEngine(configManager);
+        const diagnosticsMap = new Map<string, Array<{ line: number; message: string }>>([
+            ['src/demo.ts', [{ line: 2, message: 'x is assigned a value but never used' }]],
+        ]);
+        vi.spyOn(reviewEngine as unknown as {
+            collectDiagnosticsByFile: () => Map<string, Array<{ line: number; message: string }>>;
+        }, 'collectDiagnosticsByFile').mockReturnValue(diagnosticsMap);
+        await reviewEngine.initialize();
+
+        await reviewEngine.review(['src/demo.ts']);
+
+        expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);
+        const request = aiReviewerReviewMock.mock.calls[0][0] as {
+            diagnosticsByFile?: Map<string, Array<{ line: number; message: string }>>;
+        };
+        const diagnostics = request.diagnosticsByFile?.get('src/demo.ts') ?? [];
+        expect(diagnostics.length).toBe(1);
+        expect(diagnostics[0].line).toBe(2);
+    });
+
+    it('应基于 diff 行号正确标记 incremental', async () => {
+        const configManager = createMockConfigManager();
+        const reviewEngine = new ReviewEngine(configManager);
+        const issues: ReviewIssue[] = [
+            {
+                file: 'src/demo.ts',
+                line: 5,
+                column: 1,
+                message: '增量行问题',
+                rule: 'ai_review',
+                severity: 'warning',
+            },
+            {
+                file: 'src/demo.ts',
+                line: 20,
+                column: 1,
+                message: '存量行问题',
+                rule: 'ai_review',
+                severity: 'warning',
+            },
+        ];
+        const diffByFile = new Map<string, FileDiff>([
+            ['src/demo.ts', {
+                path: 'src/demo.ts',
+                hunks: [
+                    {
+                        newStart: 5,
+                        newCount: 3,
+                        lines: ['const a = 1;', 'const b = 2;', 'console.log(a + b);'],
+                    },
+                ],
+            }],
+        ]);
+
+        (reviewEngine as unknown as {
+            markIncrementalIssues: (items: ReviewIssue[], diff?: Map<string, FileDiff>) => void;
+        }).markIncrementalIssues(issues, diffByFile);
+
+        expect(issues[0].incremental).toBe(true);
+        expect(issues[1].incremental).toBe(false);
     });
 });

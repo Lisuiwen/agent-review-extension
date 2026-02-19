@@ -7,8 +7,10 @@
  * 1. 接收文件列表，执行代码审查
  * 2. 根据配置决定是否调用内置规则引擎检查代码问题
  * 3. 调用AI审查器进行AI代码审查（如果启用）
- * 4. 根据配置决定是否阻止提交
- * 5. 返回结构化的审查结果
+ * 4. 读取编辑器 Diagnostics，供 AI 白名单与后置去重使用
+ * 5. 根据 diff 给问题打“增量/存量”标签，驱动侧边栏分栏展示
+ * 6. 根据配置决定是否阻止提交
+ * 7. 返回结构化的审查结果
  * 
  * 工作流程：
  * 1. 获取需要审查的文件列表（通常是 git staged 文件）
@@ -25,6 +27,7 @@
  */
 
 import * as path from 'path';
+import * as vscode from 'vscode';
 import { RuleEngine } from './ruleEngine';
 import { AIReviewer } from '../ai/aiReviewer';
 import { ConfigManager } from '../config/configManager';
@@ -304,10 +307,12 @@ export class ReviewEngine {
 
                 try {
                     const astSnippetsByFile = await ensureAstSnippetsByFile();
+                    const diagnosticsByFile = this.collectDiagnosticsByFile(filteredFiles);
                     const aiRequest = {
                         files: filteredFiles.map(file => ({ path: file })),
                         diffByFile: useAiDiff ? options!.diffByFile : undefined,
                         astSnippetsByFile,
+                        diagnosticsByFile,
                     };
                     return await this.aiReviewer.review(aiRequest, traceSession);
                 } catch (error) {
@@ -364,6 +369,7 @@ export class ReviewEngine {
 
             const allIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
             this.attachAstRanges(allIssues, astSnippetsByFile);
+            this.markIncrementalIssues(allIssues, options?.diffByFile);
             for (const issue of allIssues) {
                 switch (issue.severity) {
                     case 'error':
@@ -474,6 +480,76 @@ export class ReviewEngine {
                 startLine: bestSnippet.startLine,
                 endLine: bestSnippet.endLine,
             };
+        }
+    };
+
+    /**
+     * 读取当前文件的 VSCode diagnostics，并按文件归档。
+     *
+     * 说明：
+     * - 这里的数据用于 AI 去重白名单与后置过滤，不影响规则引擎本身。
+     * - 读取失败或 API 不可用时返回空映射，主流程不受影响。
+     */
+    private collectDiagnosticsByFile = (files: string[]): Map<string, Array<{ line: number; message: string }>> => {
+        const map = new Map<string, Array<{ line: number; message: string }>>();
+        try {
+            const diagnosticsGetter = (vscode as unknown as {
+                languages?: { getDiagnostics?: (uri?: vscode.Uri) => ReadonlyArray<vscode.Diagnostic> };
+            }).languages?.getDiagnostics;
+            if (!diagnosticsGetter) {
+                return map;
+            }
+            for (const filePath of files) {
+                try {
+                    const diagnostics = diagnosticsGetter(vscode.Uri.file(filePath));
+                    if (!diagnostics || diagnostics.length === 0) {
+                        continue;
+                    }
+                    map.set(
+                        path.normalize(filePath),
+                        diagnostics.map(item => ({
+                            line: item.range.start.line + 1,
+                            message: item.message,
+                        }))
+                    );
+                } catch {
+                    // diagnostics 读取失败时忽略，避免影响主流程
+                }
+            }
+            return map;
+        } catch {
+            return map;
+        }
+    };
+
+    /**
+     * 基于 diff 行集合给 issue 打「增量 / 存量」标签，用于侧边栏分栏显示。
+     */
+    private markIncrementalIssues = (issues: ReviewIssue[], diffByFile?: Map<string, FileDiff>): void => {
+        if (issues.length === 0) {
+            return;
+        }
+        // 无 diff 场景（如整文件手动审查）默认都视为本次增量，避免全部落入“存量”分栏。
+        if (!diffByFile || diffByFile.size === 0) {
+            issues.forEach(issue => {
+                issue.incremental = true;
+            });
+            return;
+        }
+        const changedLinesByFile = new Map<string, Set<number>>();
+        for (const [filePath, fileDiff] of diffByFile.entries()) {
+            const normalizedPath = path.normalize(filePath);
+            const lines = changedLinesByFile.get(normalizedPath) ?? new Set<number>();
+            for (const hunk of fileDiff.hunks) {
+                for (let i = 0; i < hunk.newCount; i++) {
+                    lines.add(hunk.newStart + i);
+                }
+            }
+            changedLinesByFile.set(normalizedPath, lines);
+        }
+        for (const issue of issues) {
+            const lines = changedLinesByFile.get(path.normalize(issue.file));
+            issue.incremental = !!lines?.has(issue.line);
         }
     };
 

@@ -437,6 +437,16 @@ export class ConfigManager implements vscode.Disposable {
             this.config = mergeConfigFn(defaultConfig, resolvedUserConfig, (s) =>
                 resolveEnvVariables(s, this.envVars, this.logger)
             );
+
+            // 自动退让：如果项目本身已存在 ESLint/TS/Prettier 规范，且用户未显式配置内置规则开关，则保持关闭内置规则
+            const hasUserBuiltinRulesSetting = !!(
+                resolvedUserConfig.rules
+                && Object.prototype.hasOwnProperty.call(resolvedUserConfig.rules, 'builtin_rules_enabled')
+            );
+            if (!hasUserBuiltinRulesSetting && this.detectProjectRuleConfig()) {
+                this.config.rules.builtin_rules_enabled = false;
+                this.logger.info('检测到项目已有规范配置，自动关闭内置规则以避免冲突');
+            }
             this.logger.info('配置文件加载成功');
             
             return this.config;
@@ -541,6 +551,41 @@ export class ConfigManager implements vscode.Disposable {
     };
 
     /**
+     * 检测项目是否已经存在外部工程规范配置（ESLint / TS / Prettier）。
+     *
+     * 用途：
+     * - 当用户未显式设置 builtin_rules_enabled 时，自动退让为 false，减少规则冲突。
+     */
+    private detectProjectRuleConfig = (): boolean => {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            return false;
+        }
+        const root = workspaceFolder.uri.fsPath;
+        const candidates = [
+            '.eslintrc',
+            '.eslintrc.js',
+            '.eslintrc.cjs',
+            '.eslintrc.json',
+            '.eslintrc.yaml',
+            '.eslintrc.yml',
+            'eslint.config.js',
+            'eslint.config.cjs',
+            'eslint.config.mjs',
+            'tsconfig.json',
+            '.prettierrc',
+            '.prettierrc.js',
+            '.prettierrc.cjs',
+            '.prettierrc.json',
+            '.prettierrc.yaml',
+            '.prettierrc.yml',
+            'prettier.config.js',
+            'prettier.config.cjs',
+        ];
+        return candidates.some(name => fs.existsSync(path.join(root, name)));
+    };
+
+    /**
      * 获取当前配置
      * 如果配置未加载，返回默认配置
      * 
@@ -585,6 +630,7 @@ export class ConfigManager implements vscode.Disposable {
                 enabled: true,
                 max_node_lines: 200,
                 max_file_lines: 2000,
+                include_lsp_context: true, // 默认启用：为 AST 片段补充一层外部定义上下文
                 preview_only: false,  // 默认 false：正常请求大模型；true 时仅打印切片不请求
             },
             git_hooks: {
