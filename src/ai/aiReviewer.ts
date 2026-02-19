@@ -32,6 +32,10 @@ export interface AIReviewConfig {
     ast_chunk_strategy?: 'even' | 'contiguous';
     batch_concurrency?: number;
     max_request_chars?: number;
+    run_on_save?: boolean;
+    funnel_lint?: boolean;
+    funnel_lint_severity?: 'error' | 'warning';
+    ignore_format_only_diff?: boolean;
     action: 'block_commit' | 'warning' | 'log';
 }
 

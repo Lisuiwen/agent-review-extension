@@ -132,31 +132,60 @@ export class FileScanner {
      * @returns Map：键为文件绝对路径，值为该文件的 FileDiff
      */
     async getStagedDiff(files?: string[]): Promise<Map<string, FileDiff>> {
+        return this.getDiffByMode('staged', files);
+    }
+
+    /**
+     * 获取工作区（未暂存）diff，解析为每文件的变更 hunks。
+     *
+     * 主要用于“保存触发审查”场景：文件还未 git add，也能识别是否仅格式变更。
+     */
+    async getWorkingDiff(files?: string[]): Promise<Map<string, FileDiff>> {
+        return this.getDiffByMode('working', files);
+    }
+
+    /**
+     * 按模式获取 diff：
+     * - staged: git diff --cached
+     * - working: git diff
+     *
+     * 两种模式都会执行“原始 diff + 语义 diff（忽略空白）”双通道比较，
+     * 产出 formatOnly 标记，供 ReviewEngine 在发 AI 前做降噪过滤。
+     */
+    private async getDiffByMode(mode: 'staged' | 'working', files?: string[]): Promise<Map<string, FileDiff>> {
         if (!this.workspaceRoot) {
-            this.logger.warn('未找到工作区，无法获取 staged diff');
+            this.logger.warn(`未找到工作区，无法获取 ${mode} diff`);
             return new Map();
         }
         try {
-            let cmd = 'git diff --cached -U3 --no-color';
-            if (files && files.length > 0) {
-                const relPaths = files.map(f =>
-                    path.isAbsolute(f) ? path.relative(this.workspaceRoot!, f) : f
-                ).filter(Boolean);
-                if (relPaths.length > 0) {
-                    const quoted = relPaths.map(p => (p.includes(' ') ? `"${p}"` : p));
-                    cmd += ' -- ' + quoted.join(' ');
+            const buildFileArgs = (): string => {
+                if (!files || files.length === 0) {
+                    return '';
                 }
-            }
-            const { stdout, stderr } = await execAsync(cmd, {
+                const relPaths = files
+                    .map(f => (path.isAbsolute(f) ? path.relative(this.workspaceRoot!, f) : f))
+                    .filter(Boolean);
+                if (relPaths.length === 0) {
+                    return '';
+                }
+                const quoted = relPaths.map(p => (p.includes(' ') ? `"${p}"` : p));
+                return ' -- ' + quoted.join(' ');
+            };
+
+            const fileArgs = buildFileArgs();
+            const diffBase = mode === 'staged' ? 'git diff --cached' : 'git diff';
+            const rawDiffCmd = `${diffBase} -U3 --no-color${fileArgs}`;
+            const rawDiffResult = await execAsync(rawDiffCmd, {
                 cwd: this.workspaceRoot,
                 encoding: 'utf-8',
                 maxBuffer: 10 * 1024 * 1024,
             });
-            if (stderr && !stdout) {
-                this.logger.debug(`git diff 输出: ${stderr}`);
+            if (rawDiffResult.stderr && !rawDiffResult.stdout) {
+                this.logger.debug(`git diff 输出: ${rawDiffResult.stderr}`);
                 return new Map();
             }
-            const parsed = parseUnifiedDiff(stdout || '');
+
+            const parsed = parseUnifiedDiff(rawDiffResult.stdout || '');
             const map = new Map<string, FileDiff>();
             for (const fd of parsed) {
                 const absPath = path.isAbsolute(fd.path)
@@ -164,17 +193,40 @@ export class FileScanner {
                     : path.join(this.workspaceRoot, fd.path);
                 map.set(absPath, { ...fd, path: absPath });
             }
+
+            // 第二次用 -w 取“忽略空白”的 diff：
+            // 若某文件在普通 diff 中存在、但在 -w diff 中消失，则可判定为“仅格式/空白变更”。
+            // -w：忽略空格/缩进等空白差异；--ignore-blank-lines：仅增删空行视为无变更；
+            // --ignore-cr-at-eol：行尾 CRLF/LF 差异视为无变更（常见于 Vue/跨平台格式整理）。
+            const whitespaceInsensitiveCmd = `${diffBase} -U3 --no-color -w --ignore-blank-lines --ignore-cr-at-eol${fileArgs}`;
+            const whitespaceInsensitiveResult = await execAsync(whitespaceInsensitiveCmd, {
+                cwd: this.workspaceRoot,
+                encoding: 'utf-8',
+                maxBuffer: 10 * 1024 * 1024,
+            });
+            const semanticDiffSet = new Set<string>(
+                parseUnifiedDiff(whitespaceInsensitiveResult.stdout || '')
+                    .map(item => path.isAbsolute(item.path) ? item.path : path.join(this.workspaceRoot!, item.path))
+                    .map(item => path.normalize(item))
+            );
+            for (const [filePath, fileDiff] of map.entries()) {
+                map.set(filePath, {
+                    ...fileDiff,
+                    formatOnly: !semanticDiffSet.has(path.normalize(filePath)),
+                });
+            }
+
             if (map.size > 0) {
-                this.logger.info(`解析到 ${map.size} 个文件的 diff`);
+                this.logger.info(`解析到 ${map.size} 个文件的 ${mode} diff`);
             }
             return map;
         } catch (error: unknown) {
             const code = (error as { code?: number })?.code;
             if (code === 1 || (error as Error)?.message?.includes('not a git repository')) {
-                this.logger.debug('无 staged diff 或非 git 仓库');
+                this.logger.debug(`无 ${mode} diff 或非 git 仓库`);
                 return new Map();
             }
-            this.logger.error('获取 staged diff 失败', error);
+            this.logger.error(`获取 ${mode} diff 失败`, error);
             return new Map();
         }
     }

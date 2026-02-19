@@ -8,7 +8,6 @@ import type { AgentReviewConfig } from '../types/config';
 const DEFAULT_GIT_HOOKS = {
     auto_install: true,
     pre_commit_enabled: true,
-    allow_commit_once: true,
 } as const;
 
 const DEFAULT_RUNTIME_LOG = {
@@ -55,7 +54,6 @@ export const mergeConfig = (
             ? {
                 auto_install: resolvedUserConfig.git_hooks.auto_install ?? defaultHooks.auto_install,
                 pre_commit_enabled: resolvedUserConfig.git_hooks.pre_commit_enabled ?? defaultHooks.pre_commit_enabled,
-                allow_commit_once: resolvedUserConfig.git_hooks.allow_commit_once ?? defaultHooks.allow_commit_once,
             }
             : defaultHooks,
         exclusions: {

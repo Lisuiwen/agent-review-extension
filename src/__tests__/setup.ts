@@ -77,6 +77,7 @@ vi.mock('vscode', () => {
             workspace: {
                 workspaceFolders: [],
                 openTextDocument: async (_target: string) => ({ uri: { fsPath: _target } }),
+                onDidSaveTextDocument: () => ({ dispose: () => {} }),
                 getConfiguration: () => ({
                     get: <T>(key: string, defaultValue?: T): T | undefined => {
                         return defaultValue;
@@ -127,6 +128,7 @@ vi.mock('vscode', () => {
         workspace: {
             workspaceFolders: [],
             openTextDocument: async (_target: string) => ({ uri: { fsPath: _target } }),
+            onDidSaveTextDocument: () => ({ dispose: () => {} }),
             getConfiguration: () => ({
                 get: <T>(key: string, defaultValue?: T): T | undefined => {
                     return defaultValue;

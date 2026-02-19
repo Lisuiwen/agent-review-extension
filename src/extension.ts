@@ -19,7 +19,7 @@ import { registerReviewCommand } from './commands/reviewCommand';
 import { registerShowReportCommand } from './commands/showReportCommand';
 import { registerInstallHooksCommand } from './commands/installHooksCommand';
 import { registerRefreshCommand } from './commands/refreshCommand';
-import { registerAllowCommitOnceCommand } from './commands/allowCommitOnceCommand';
+import { registerAllowIssueIgnoreCommand } from './commands/allowIssueIgnoreCommand';
 import { registerFixIssueCommand } from './commands/fixIssueCommand';
 import { registerExplainRuntimeLogCommand } from './commands/explainRuntimeLogCommand';
 import type { CommandContext } from './commands/commandContext';
@@ -32,7 +32,44 @@ let gitHookManager: GitHookManager | undefined;
 let reviewPanel: ReviewPanel | undefined;
 let statusBar: StatusBar | undefined;
 
-/** 从工作区向上查找 .git，用于一次性放行等 */
+/**
+ * 注册“保存即审查”监听器。
+ *
+ * 说明：
+ * - 仅在 ai_review.run_on_save=true 且 ai_review.enabled=true 时触发
+ * - 采用串行队列，避免频繁保存导致并发审查互相覆盖面板状态
+ */
+const registerAutoReviewOnSave = (deps: CommandContext): vscode.Disposable => {
+    let queue = Promise.resolve();
+    return vscode.workspace.onDidSaveTextDocument((document) => {
+        if (document.uri.scheme !== 'file') {
+            return;
+        }
+        const { reviewEngine, reviewPanel, statusBar, logger, configManager } = deps;
+        if (!reviewEngine || !reviewPanel || !statusBar || !configManager) {
+            return;
+        }
+        const config = configManager.getConfig();
+        if (!config.ai_review?.enabled || config.ai_review.run_on_save !== true) {
+            return;
+        }
+        queue = queue.then(async () => {
+            try {
+                statusBar.updateStatus('reviewing');
+                reviewPanel.setStatus('reviewing');
+                const result = await reviewEngine.reviewFilesWithWorkingDiff([document.uri.fsPath]);
+                reviewPanel.showReviewResult(result, 'completed');
+                statusBar.updateWithResult(result);
+            } catch (error) {
+                logger.error('保存触发的自动审查失败', error);
+                statusBar.updateStatus('error');
+                reviewPanel.setStatus('error');
+            }
+        });
+    });
+};
+
+/** 从工作区向上查找 .git，用于安装 Hooks 等 */
 const getGitRoot = (): string | null => {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceRoot) return null;
@@ -92,9 +129,10 @@ export const activate = async (context: vscode.ExtensionContext) => {
             registerShowReportCommand(commandDeps),
             registerInstallHooksCommand(commandDeps),
             registerRefreshCommand(),
-            registerAllowCommitOnceCommand(commandDeps),
+            registerAllowIssueIgnoreCommand(commandDeps),
             registerFixIssueCommand(commandDeps),
             registerExplainRuntimeLogCommand(commandDeps, context),
+            registerAutoReviewOnSave(commandDeps),
             reviewPanel,
             statusBar,
             configManager

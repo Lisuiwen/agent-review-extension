@@ -150,6 +150,10 @@ export class ReviewEngine {
                 ruleDiffOnly: config.rules.diff_only ?? true,
                 aiEnabled: config.ai_review?.enabled ?? false,
                 aiDiffOnly: config.ai_review?.diff_only ?? true,
+                aiRunOnSave: config.ai_review?.run_on_save ?? false,
+                aiFunnelLint: config.ai_review?.funnel_lint ?? false,
+                aiFunnelLintSeverity: config.ai_review?.funnel_lint_severity ?? 'error',
+                aiIgnoreFormatOnlyDiff: config.ai_review?.ignore_format_only_diff ?? true,
                 astEnabled: config.ast?.enabled ?? false,
                 astMaxNodeLines: config.ast?.max_node_lines ?? 0,
                 astMaxFileLines: config.ast?.max_file_lines ?? 0,
@@ -300,19 +304,29 @@ export class ReviewEngine {
             };
 
             const aiErrorIssues: ReviewIssue[] = [];
+            const diagnosticsByFile = this.collectDiagnosticsByFile(filteredFiles);
+            const aiInputFiles = this.filterFilesForAiReview({
+                files: filteredFiles,
+                diffByFile: options?.diffByFile,
+                diagnosticsByFile,
+                aiConfig: config.ai_review,
+            });
             const runAiReview = async (): Promise<ReviewIssue[]> => {
                 if (!config.ai_review?.enabled) {
+                    return [];
+                }
+                if (aiInputFiles.length === 0) {
+                    this.logger.info('AI 审查已跳过：当前没有满足条件的文件（可能被漏斗或格式化降噪过滤）');
                     return [];
                 }
 
                 try {
                     const astSnippetsByFile = await ensureAstSnippetsByFile();
-                    const diagnosticsByFile = this.collectDiagnosticsByFile(filteredFiles);
                     const aiRequest = {
-                        files: filteredFiles.map(file => ({ path: file })),
+                        files: aiInputFiles.map(file => ({ path: file })),
                         diffByFile: useAiDiff ? options!.diffByFile : undefined,
                         astSnippetsByFile,
-                        diagnosticsByFile,
+                        diagnosticsByFile: this.pickDiagnosticsForFiles(diagnosticsByFile, aiInputFiles),
                     };
                     return await this.aiReviewer.review(aiRequest, traceSession);
                 } catch (error) {
@@ -367,7 +381,8 @@ export class ReviewEngine {
                 ruleIssues = await runRuleEngine();
             }
 
-            const allIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
+            const deduplicatedIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
+            const allIssues = await this.filterIgnoredIssues(deduplicatedIssues);
             this.attachAstRanges(allIssues, astSnippetsByFile);
             this.markIncrementalIssues(allIssues, options?.diffByFile);
             for (const issue of allIssues) {
@@ -490,8 +505,10 @@ export class ReviewEngine {
      * - 这里的数据用于 AI 去重白名单与后置过滤，不影响规则引擎本身。
      * - 读取失败或 API 不可用时返回空映射，主流程不受影响。
      */
-    private collectDiagnosticsByFile = (files: string[]): Map<string, Array<{ line: number; message: string }>> => {
-        const map = new Map<string, Array<{ line: number; message: string }>>();
+    private collectDiagnosticsByFile = (
+        files: string[]
+    ): Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint' }>> => {
+        const map = new Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint' }>>();
         try {
             const diagnosticsGetter = (vscode as unknown as {
                 languages?: { getDiagnostics?: (uri?: vscode.Uri) => ReadonlyArray<vscode.Diagnostic> };
@@ -510,6 +527,7 @@ export class ReviewEngine {
                         diagnostics.map(item => ({
                             line: item.range.start.line + 1,
                             message: item.message,
+                            severity: this.toDiagnosticSeverity(item.severity),
                         }))
                     );
                 } catch {
@@ -520,6 +538,143 @@ export class ReviewEngine {
         } catch {
             return map;
         }
+    };
+
+    /**
+     * 将 VSCode DiagnosticSeverity 统一成字符串，便于日志与配置判断。
+     */
+    private toDiagnosticSeverity = (
+        severity: vscode.DiagnosticSeverity | undefined
+    ): 'error' | 'warning' | 'info' | 'hint' => {
+        if (severity === vscode.DiagnosticSeverity.Error) return 'error';
+        if (severity === vscode.DiagnosticSeverity.Warning) return 'warning';
+        if (severity === vscode.DiagnosticSeverity.Information) return 'info';
+        return 'hint';
+    };
+
+    private pickDiagnosticsForFiles = (
+        diagnosticsByFile: Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint' }>>,
+        filePaths: string[]
+    ): Map<string, Array<{ line: number; message: string }>> => {
+        const picked = new Map<string, Array<{ line: number; message: string }>>();
+        if (diagnosticsByFile.size === 0) {
+            return picked;
+        }
+        for (const filePath of filePaths) {
+            const diagnostics =
+                diagnosticsByFile.get(path.normalize(filePath))
+                ?? diagnosticsByFile.get(filePath);
+            if (!diagnostics?.length) {
+                continue;
+            }
+            picked.set(filePath, diagnostics.map(item => ({ line: item.line, message: item.message })));
+        }
+        return picked;
+    };
+
+    /**
+     * AI 审查前过滤：
+     * 1) 漏斗式检测：按 diagnostics 严重级别跳过文件
+     * 2) 格式化降噪：diff 模式下跳过仅格式/空白变更文件
+     */
+    private filterFilesForAiReview = (params: {
+        files: string[];
+        diffByFile?: Map<string, FileDiff>;
+        diagnosticsByFile: Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint' }>>;
+        aiConfig?: ReturnType<ConfigManager['getConfig']>['ai_review'];
+    }): string[] => {
+        const {
+            files,
+            diffByFile,
+            diagnosticsByFile,
+            aiConfig,
+        } = params;
+        const enableFunnel = aiConfig?.funnel_lint === true;
+        const funnelSeverity = aiConfig?.funnel_lint_severity ?? 'error';
+        const ignoreFormatOnlyDiff = aiConfig?.ignore_format_only_diff !== false;
+
+        return files.filter(filePath => {
+            const normalizedPath = path.normalize(filePath);
+
+            if (enableFunnel) {
+                const diagnostics = diagnosticsByFile.get(normalizedPath) ?? [];
+                const hasBlockingDiagnostic = diagnostics.some(item => {
+                    if (funnelSeverity === 'warning') {
+                        return item.severity === 'error' || item.severity === 'warning';
+                    }
+                    return item.severity === 'error';
+                });
+                if (hasBlockingDiagnostic) {
+                    return false;
+                }
+            }
+
+            if (ignoreFormatOnlyDiff && diffByFile) {
+                const fileDiff = diffByFile.get(normalizedPath) ?? diffByFile.get(filePath);
+                if (fileDiff?.formatOnly === true) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+    };
+
+    /**
+     * 识别并过滤「@ai-ignore」覆盖的问题。
+     *
+     * 规则：
+     * - 标记行本身忽略
+     * - 标记行后的首个非空行也忽略（覆盖常见“注释写在问题上方一行”的场景）
+     */
+    private filterIgnoredIssues = async (issues: ReviewIssue[]): Promise<ReviewIssue[]> => {
+        if (issues.length === 0) {
+            return issues;
+        }
+
+        const issueFiles = Array.from(new Set(issues.map(item => path.normalize(item.file))));
+        const ignoredLinesByFile = new Map<string, Set<number>>();
+
+        await Promise.all(issueFiles.map(async (filePath) => {
+            try {
+                const content = await this.fileScanner.readFile(filePath);
+                const lines = content.split(/\r?\n/);
+                const ignoredLines = new Set<number>();
+                for (let i = 0; i < lines.length; i++) {
+                    if (!/@ai-ignore\b/i.test(lines[i])) {
+                        continue;
+                    }
+                    const currentLine = i + 1;
+                    ignoredLines.add(currentLine);
+
+                    let next = i + 1;
+                    while (next < lines.length && lines[next].trim().length === 0) {
+                        next++;
+                    }
+                    if (next < lines.length) {
+                        ignoredLines.add(next + 1);
+                    }
+                }
+                if (ignoredLines.size > 0) {
+                    ignoredLinesByFile.set(filePath, ignoredLines);
+                }
+            } catch {
+                // 文件读取失败时不做忽略过滤，避免误吞问题
+            }
+        }));
+
+        if (ignoredLinesByFile.size === 0) {
+            return issues;
+        }
+
+        const filtered = issues.filter(issue => {
+            const ignoredLines = ignoredLinesByFile.get(path.normalize(issue.file));
+            return !ignoredLines?.has(issue.line);
+        });
+        if (filtered.length < issues.length) {
+            this.logger.info(`已过滤 ${issues.length - filtered.length} 条 @ai-ignore 标记的问题`);
+        }
+        return filtered;
     };
 
     /**
@@ -645,6 +800,71 @@ export class ReviewEngine {
 
         try {
             return await this.review(stagedFiles, { diffByFile, traceSession });
+        } finally {
+            this.runtimeTraceLogger.endRunSession(traceSession);
+        }
+    }
+
+    /**
+     * 审查指定文件，并使用 working diff（未暂存变更）作为增量范围。
+     *
+     * 主要用于“保存触发审查”：
+     * - 文件尚未 staged 时，也能命中 diff_only / formatOnly 降噪逻辑
+     * - 不触发新的 staged 扫描，避免保存场景拉入无关文件
+     */
+    async reviewFilesWithWorkingDiff(files: string[]): Promise<ReviewResult> {
+        const config = this.configManager.getConfig();
+        this.applyRuntimeTraceConfig(config);
+        const traceSession = this.runtimeTraceLogger.startRunSession('manual');
+        const normalizedFiles = files.map(file => path.normalize(file));
+
+        if (normalizedFiles.length === 0) {
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'ReviewEngine',
+                event: 'run_start',
+                phase: 'manual',
+                data: { inputFiles: 0, trigger: 'save' },
+            });
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'ReviewEngine',
+                event: 'run_end',
+                phase: 'manual',
+                durationMs: 0,
+                data: { status: 'success' },
+            });
+            await this.generateRuntimeSummaryIfEnabled(traceSession, config);
+            this.runtimeTraceLogger.endRunSession(traceSession);
+            return {
+                passed: true,
+                errors: [],
+                warnings: [],
+                info: [],
+            };
+        }
+
+        const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
+        let diffByFile: Map<string, FileDiff> | undefined;
+        const diffStartAt = Date.now();
+        if (useDiff) {
+            diffByFile = await this.fileScanner.getWorkingDiff(normalizedFiles);
+        }
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'ReviewEngine',
+            event: 'diff_fetch_summary',
+            phase: 'manual',
+            durationMs: Date.now() - diffStartAt,
+            data: {
+                workingFiles: normalizedFiles.length,
+                useDiff,
+                diffFiles: diffByFile?.size ?? 0,
+            },
+        });
+
+        try {
+            return await this.review(normalizedFiles, { diffByFile, traceSession });
         } finally {
             this.runtimeTraceLogger.endRunSession(traceSession);
         }

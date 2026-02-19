@@ -27,4 +27,6 @@ export interface FileDiff {
     path: string;
     /** 该文件的所有 hunks */
     hunks: DiffHunk[];
+    /** 是否仅包含格式/空白差异（通过 git diff -w --ignore-blank-lines --ignore-cr-at-eol 判定） */
+    formatOnly?: boolean;
 }

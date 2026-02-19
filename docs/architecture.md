@@ -56,7 +56,7 @@ AgentReview/
 │   │   ├── reviewCommand.ts     # agentreview.review
 │   │   ├── showReportCommand.ts  # 显示报告
 │   │   ├── installHooksCommand.ts
-│   │   ├── allowCommitOnceCommand.ts
+│   │   ├── allowIssueIgnoreCommand.ts
 │   │   ├── fixIssueCommand.ts
 │   │   ├── refreshCommand.ts
 │   │   └── explainRuntimeLogCommand.ts
@@ -147,7 +147,6 @@ AgentReview/
 2. pre-commit 由 GitHookManager 生成，设置 `WORKSPACE_ROOT`，用 Node 执行 `out/hooks/hookRunner.js`。
 3. hookRunner（无 VSCode）：
    - 用 `standaloneConfigLoader.loadStandaloneConfig(workspaceRoot)` 读 .agentreview.yaml（及默认）；
-   - 若开启 allow_commit_once 且存在 `.git/agentreview/allow-commit`，删标记并 exit(0) 放行；
    - `standaloneFileScanner.getStagedFiles(workspaceRoot)` 得到 staged 列表，按 exclusions 过滤；
    - 若 `builtin_rules_enabled` 且 rules.enabled，对每个文件读内容，调用 shared/ruleChecks（no_space_in_filename、no_todo），不读 diff（即全文件扫 no_todo）；
    - 按 severity 分 errors/warnings，若有 error 且对应 rule 的 action 为 block_commit（或 strict_mode），则打印错误并 exit(1)，否则 exit(0)。
@@ -214,11 +213,11 @@ AgentReview/
 
 - **安装**：installHooksCommand 或 激活时若 auto_install 且 pre_commit_enabled 且未安装则自动安装。
 - **脚本**：GitHookManager.generateHookScript() 生成 Windows 批处理或 Unix shell，设置 WORKSPACE_ROOT 并执行 `node out/hooks/hookRunner.js`。
-- **本次放行**：allowCommitOnceCommand 在 Git 根下创建 `.git/agentreview/allow-commit`；hookRunner 若发现该文件则删之并 exit(0)，实现「仅本次不审查」。
+- **放行**：仅支持永久放行（@ai-ignore 内联注释），由 allowIssueIgnoreCommand 插入，reviewEngine.filterIgnoredIssues 过滤；无“单次提交放行”。
 
 ### 5.6 UI
 
-- **ReviewPanel**：TreeView「审查结果」，根节点为状态与统计，子节点按文件分组，再子节点为问题；点击问题跳转编辑器；支持 refresh、allowCommitOnce 等菜单。
+- **ReviewPanel**：TreeView「审查结果」，根节点为状态与统计，子节点按文件分组，再子节点为问题；点击问题跳转编辑器；支持 refresh、放行此条（allowIssueIgnore）、修复等菜单。
 - **StatusBar**：显示 idle/reviewing/error 或通过/未通过简要统计。
 - **fixIssueCommand**：从 ReviewPanel 当前选中项取 ReviewIssue，可扩展为自动修复（当前主要为占位）。
 
@@ -227,7 +226,7 @@ AgentReview/
 - **agentreview.review**：与 run 类似，由 reviewCommand 注册（入口之一）。
 - **agentreview.showReport**：展示当前审查报告（ReviewPanel 已有结果时）。
 - **agentreview.installHooks**：显式安装 pre-commit hook。
-- **agentreview.allowCommitOnce**：写放行标记，下次 commit 放行一次。
+- **agentreview.allowIssueIgnore**：在问题行上方插入 @ai-ignore 注释，永久放行该条。
 - **agentreview.refresh**：刷新审查结果视图。
 - **agentreview.runtimeLog.explainLatest**：解释最新运行日志（基于 runtimeLogExplainer）。
 

@@ -38,13 +38,12 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "agentreview.allowCommitOnce",
-        "title": "AgentReview: 本次放行提交",
-        "icon": "$(shield)"
-      },
-      {
         "command": "agentreview.fixIssue",
         "title": "AgentReview: 修复当前问题"
+      },
+      {
+        "command": "agentreview.allowIssueIgnore",
+        "title": "AgentReview: 放行当前问题（插入@ai-ignore注释）"
       },
       {
         "command": "agentreview.runtimeLog.explainLatest",
@@ -66,14 +65,20 @@
           "command": "agentreview.refresh",
           "when": "view == agentReview.results",
           "group": "navigation"
-        },
-        {
-          "command": "agentreview.allowCommitOnce",
-          "when": "view == agentReview.results",
-          "group": "navigation"
         }
       ],
-      "view/item": []
+      "view/item": [
+        {
+          "command": "agentreview.allowIssueIgnore",
+          "when": "view == agentReview.results && viewItem == reviewIssue",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentreview.fixIssue",
+          "when": "view == agentReview.results && viewItem == reviewIssue",
+          "group": "inline@2"
+        }
+      ]
     },
     "viewsContainers": {
       "activitybar": [
@@ -208,6 +213,30 @@
           "default": 50000,
           "minimum": 1000,
           "description": "单次请求字符数上限，超限时自动二分降载"
+        },
+        "agentreview.ai.runOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "保存文件时自动触发审查（异步非阻塞）"
+        },
+        "agentreview.ai.funnelLint": {
+          "type": "boolean",
+          "default": false,
+          "description": "漏斗式检测：存在高优先级 diagnostics 时跳过对应文件的 AI 审查"
+        },
+        "agentreview.ai.funnelLintSeverity": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning"
+          ],
+          "default": "error",
+          "description": "漏斗阈值：error=仅错误拦截，warning=警告及以上拦截"
+        },
+        "agentreview.ai.ignoreFormatOnlyDiff": {
+          "type": "boolean",
+          "default": true,
+          "description": "忽略仅格式/空白变更的 diff，减少无效 AI 调用"
         },
         "agentreview.runtimeLog.enabled": {
           "type": "boolean",

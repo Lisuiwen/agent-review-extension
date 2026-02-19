@@ -220,6 +220,10 @@ export class ConfigManager implements vscode.Disposable {
             { key: 'ai.astChunkStrategy', configKey: 'ast_chunk_strategy' },
             { key: 'ai.batchConcurrency', configKey: 'batch_concurrency', explicit: true },
             { key: 'ai.maxRequestChars', configKey: 'max_request_chars', explicit: true },
+            { key: 'ai.runOnSave', configKey: 'run_on_save', explicit: true },
+            { key: 'ai.funnelLint', configKey: 'funnel_lint', explicit: true },
+            { key: 'ai.funnelLintSeverity', configKey: 'funnel_lint_severity' },
+            { key: 'ai.ignoreFormatOnlyDiff', configKey: 'ignore_format_only_diff', explicit: true },
         ];
         for (const { key, configKey, explicit } of mappings) {
             const val = settings.get(key);
@@ -395,6 +399,16 @@ export class ConfigManager implements vscode.Disposable {
                     ...(settingsAIConfig.retry_delay !== undefined && { retry_delay: settingsAIConfig.retry_delay }),
                     ...(existingAIConfig?.retry_delay !== undefined && settingsAIConfig.retry_delay === undefined && { retry_delay: existingAIConfig.retry_delay }),
                     diff_only: settingsAIConfig.diff_only ?? existingAIConfig?.diff_only ?? true,
+                    run_on_save: settingsAIConfig.run_on_save ?? existingAIConfig?.run_on_save ?? false,
+                    funnel_lint: settingsAIConfig.funnel_lint ?? existingAIConfig?.funnel_lint ?? false,
+                    funnel_lint_severity:
+                        settingsAIConfig.funnel_lint_severity
+                        ?? existingAIConfig?.funnel_lint_severity
+                        ?? 'error',
+                    ignore_format_only_diff:
+                        settingsAIConfig.ignore_format_only_diff
+                        ?? existingAIConfig?.ignore_format_only_diff
+                        ?? true,
                     batching_mode: settingsAIConfig.batching_mode ?? existingAIConfig?.batching_mode ?? 'file_count',
                     ast_snippet_budget: settingsAIConfig.ast_snippet_budget ?? existingAIConfig?.ast_snippet_budget ?? 25,
                     ast_chunk_strategy: settingsAIConfig.ast_chunk_strategy ?? existingAIConfig?.ast_chunk_strategy ?? 'even',
@@ -636,7 +650,6 @@ export class ConfigManager implements vscode.Disposable {
             git_hooks: {
                 auto_install: true,
                 pre_commit_enabled: true,
-                allow_commit_once: true,
             },
             exclusions: {
                 files: [],

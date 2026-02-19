@@ -54,18 +54,6 @@ async function main() {
 
     try {
         const config = await loadStandaloneConfig(workspaceRoot);
-        const allowCommitOnceEnabled = config.git_hooks?.allow_commit_once !== false;
-        const allowCommitTokenPath = path.join(workspaceRoot, '.git', 'agentreview', 'allow-commit');
-
-        if (allowCommitOnceEnabled && fs.existsSync(allowCommitTokenPath)) {
-            try {
-                await fs.promises.unlink(allowCommitTokenPath);
-            } catch (error) {
-                console.error('[WARN] 放行标记清理失败，仍将继续放行提交:', error);
-            }
-            console.error('✓ 检测到一次性放行标记，本次提交已放行');
-            process.exit(0);
-        }
 
         const stagedFiles = await getStagedFiles(workspaceRoot);
         if (stagedFiles.length === 0) {

@@ -25,6 +25,11 @@ import * as vscode from 'vscode';
 import type { ReviewResult, ReviewIssue } from '../types/review';
 import * as path from 'path';
 
+type IgnoreLineMeta = {
+    ignoredLines: Set<number>;
+    reasonByLine: Map<number, string>;
+};
+
 /**
  * TreeView 节点类
  * 
@@ -47,20 +52,28 @@ export class ReviewTreeItem extends vscode.TreeItem {
         if (issue) {
             // 问题项：显示详细信息并设置点击命令
             const reasonText = issue.reason ? `\n原因: ${issue.reason}` : '';
-            this.tooltip = `${issue.message}\n规则: ${issue.rule}${reasonText}`;
-            this.description = `行 ${issue.line}, 列 ${issue.column}`;
+            const ignoreText = issue.ignored ? '\n状态: 已放行（@ai-ignore）' : '';
+            const ignoreReasonText = issue.ignoreReason ? `\n放行原因: ${issue.ignoreReason}` : '';
+            this.tooltip = `${issue.message}\n规则: ${issue.rule}${reasonText}${ignoreText}${ignoreReasonText}`;
+            this.description = issue.ignored
+                ? `已放行 · 行 ${issue.line}, 列 ${issue.column}`
+                : `行 ${issue.line}, 列 ${issue.column}`;
             
             // 根据严重程度设置图标
-            switch (issue.severity) {
-                case 'error':
-                    this.iconPath = new vscode.ThemeIcon('error', new vscode.ThemeColor('errorForeground'));
-                    break;
-                case 'warning':
-                    this.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('editorWarning.foreground'));
-                    break;
-                case 'info':
-                    this.iconPath = new vscode.ThemeIcon('info', new vscode.ThemeColor('editorInfo.foreground'));
-                    break;
+            if (issue.ignored) {
+                this.iconPath = new vscode.ThemeIcon('pass', new vscode.ThemeColor('descriptionForeground'));
+            } else {
+                switch (issue.severity) {
+                    case 'error':
+                        this.iconPath = new vscode.ThemeIcon('error', new vscode.ThemeColor('errorForeground'));
+                        break;
+                    case 'warning':
+                        this.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('editorWarning.foreground'));
+                        break;
+                    case 'info':
+                        this.iconPath = new vscode.ThemeIcon('info', new vscode.ThemeColor('editorInfo.foreground'));
+                        break;
+                }
             }
 
             // 设置点击命令，跳转到文件位置
@@ -241,7 +254,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
 
             return fileIssues.map(issue => 
                 new ReviewTreeItem(
-                    `${issue.message} [${issue.rule}]`,
+                    `${issue.ignored ? '【已放行】 ' : ''}${issue.message} [${issue.rule}]`,
                     vscode.TreeItemCollapsibleState.None,
                     issue
                 )
@@ -404,6 +417,49 @@ export class ReviewPanel {
         return this.provider.getCurrentResult();
     }
 
+    /**
+     * 在“放行此条”插入 @ai-ignore 注释后，本地同步当前面板结果：
+     * 1) 同文件、插入行及其后续 issue 行号 +1（因为插入了一行注释）
+     * 2) 重新扫描文件中的 @ai-ignore 覆盖范围并给 issue 打 ignored 标记
+     * 3) 立即刷新 TreeView，并清理旧高亮，避免高亮停留在过期行号
+     *
+     * 说明：本方法不触发 AI，不会重新走审查引擎，仅做面板内状态同步。
+     */
+    async syncAfterIssueIgnore(params: { filePath: string; insertedLine: number }): Promise<void> {
+        const currentResult = this.provider.getCurrentResult();
+        if (!currentResult) {
+            return;
+        }
+        const normalizedTarget = path.normalize(params.filePath);
+        const ignoredMeta = await this.collectIgnoredLineMeta(params.filePath);
+
+        const mapIssues = (issues: ReviewIssue[]): ReviewIssue[] =>
+            issues.map(issue => {
+                const normalizedIssuePath = path.normalize(issue.file);
+                if (normalizedIssuePath !== normalizedTarget) {
+                    return issue;
+                }
+                const shiftedLine = issue.line >= params.insertedLine ? issue.line + 1 : issue.line;
+                const ignored = ignoredMeta.ignoredLines.has(shiftedLine);
+                return {
+                    ...issue,
+                    line: shiftedLine,
+                    ignored,
+                    ignoreReason: ignored ? ignoredMeta.reasonByLine.get(shiftedLine) : undefined,
+                };
+            });
+
+        const nextResult: ReviewResult = {
+            ...currentResult,
+            errors: mapIssues(currentResult.errors),
+            warnings: mapIssues(currentResult.warnings),
+            info: mapIssues(currentResult.info),
+        };
+
+        this.clearHighlight();
+        this.provider.updateResult(nextResult, this.provider.getStatus());
+    }
+
     reveal(): void {
         // TreeView 已经在侧边栏显示，无需额外操作
         // 刷新视图以显示最新内容
@@ -520,6 +576,12 @@ export class ReviewPanel {
         const severityLabel = issue.severity === 'error' ? '错误' : issue.severity === 'warning' ? '警告' : '信息';
         md.appendMarkdown(`${severityLabel}: `);
         md.appendText(issue.message);
+        if (issue.ignored) {
+            md.appendMarkdown('\n\n状态: 已放行（@ai-ignore）');
+            if (issue.ignoreReason) {
+                md.appendMarkdown(`\n放行原因: ${issue.ignoreReason}`);
+            }
+        }
         md.appendMarkdown('\n\n');
         md.appendMarkdown(`规则: ${issue.rule}`);
         if (issue.reason && issue.reason !== issue.message) {
@@ -530,7 +592,7 @@ export class ReviewPanel {
             md.appendMarkdown(`\nAST: 第 ${issue.astRange.startLine}-${issue.astRange.endLine} 行`);
         }
         md.appendMarkdown('\n\n');
-        md.appendMarkdown('[本次放行](command:agentreview.allowCommitOnce) · [修复](command:agentreview.fixIssue)');
+        md.appendMarkdown('[放行此条](command:agentreview.allowIssueIgnore) · [修复](command:agentreview.fixIssue)');
         return md;
     };
 
@@ -538,6 +600,62 @@ export class ReviewPanel {
     getActiveIssueForActions(): ReviewIssue | null {
         return this.activeIssueForActions;
     }
+
+    /**
+     * 收集当前文件中 @ai-ignore 的覆盖行与原因：
+     * - 注释所在行：忽略
+     * - 注释后的首个非空行：忽略（与 ReviewEngine.filterIgnoredIssues 保持一致）
+     */
+    private collectIgnoredLineMeta = async (filePath: string): Promise<IgnoreLineMeta> => {
+        const meta: IgnoreLineMeta = {
+            ignoredLines: new Set<number>(),
+            reasonByLine: new Map<number, string>(),
+        };
+        try {
+            const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+            for (let i = 0; i < document.lineCount; i++) {
+                const text = document.lineAt(i).text;
+                if (!/@ai-ignore\b/i.test(text)) {
+                    continue;
+                }
+                const line = i + 1;
+                const reason = this.extractIgnoreReason(text);
+                meta.ignoredLines.add(line);
+                if (reason) {
+                    meta.reasonByLine.set(line, reason);
+                }
+                let next = i + 1;
+                while (next < document.lineCount && document.lineAt(next).text.trim().length === 0) {
+                    next++;
+                }
+                if (next < document.lineCount) {
+                    const nextLine = next + 1;
+                    meta.ignoredLines.add(nextLine);
+                    if (reason) {
+                        meta.reasonByLine.set(nextLine, reason);
+                    }
+                }
+            }
+        } catch {
+            // 本地同步阶段若读取失败，回退为“不打 ignored 标记”，避免影响正常编辑流程。
+        }
+        return meta;
+    };
+
+    /**
+     * 从注释行提取 @ai-ignore 后的原因文本，兼容 //、#、<!-- -->、块注释等常见格式。
+     */
+    private extractIgnoreReason = (lineText: string): string | undefined => {
+        const match = lineText.match(/@ai-ignore(?:\s*:\s*|\s+)?(.*)$/i);
+        if (!match) {
+            return undefined;
+        }
+        const cleaned = match[1]
+            .replace(/-->\s*$/g, '')
+            .replace(/\*\/\s*$/g, '')
+            .trim();
+        return cleaned.length > 0 ? cleaned : undefined;
+    };
 
     dispose(): void {
         this.clearHighlight();

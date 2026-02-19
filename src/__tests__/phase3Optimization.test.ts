@@ -173,7 +173,8 @@ vi.mock('vscode', () => {
                 lineAt: () => ({ text: '' })
             };
         }),
-        applyEdit: vi.fn(async () => true)
+        applyEdit: vi.fn(async () => true),
+        onDidSaveTextDocument: () => ({ dispose: () => {} })
     };
 
     const commands = {
@@ -194,7 +195,8 @@ vi.mock('vscode', () => {
 
     const languages = {
         registerCodeLensProvider: () => ({ dispose: () => {} }),
-        registerHoverProvider: () => ({ dispose: () => {} })
+        registerHoverProvider: () => ({ dispose: () => {} }),
+        getDiagnostics: () => []
     };
 
     const ProgressLocation = {
@@ -217,7 +219,13 @@ vi.mock('vscode', () => {
         workspace,
         commands,
         languages,
-        ProgressLocation
+        ProgressLocation,
+        DiagnosticSeverity: {
+            Error: 0,
+            Warning: 1,
+            Information: 2,
+            Hint: 3
+        }
     };
 });
 
@@ -299,7 +307,7 @@ vi.mock('../utils/runtimeTraceLogger', () => {
     };
 });
 
-import { ReviewPanel, ReviewTreeItem } from '../ui/reviewPanel';
+import { ReviewPanel, ReviewPanelProvider, ReviewTreeItem } from '../ui/reviewPanel';
 import { activate } from '../extension';
 
 const createContext = (): import('vscode').ExtensionContext => ({
@@ -367,6 +375,109 @@ describe('Phase3: 左侧面板定位能力', () => {
         const selection = lastEditor?.selection as { start: { line: number; character: number } };
         expect(selection.start.line).toBe(1);
         expect(selection.start.character).toBe(3);
+    });
+});
+
+describe('Phase3: 放行后本地同步与标记', () => {
+    it('插入 @ai-ignore 后应本地同步行号并打上已放行标记', async () => {
+        const lines = [
+            '<template>',
+            '  <div class="sample">',
+            '    <!-- v-for 缺少 :key -->',
+            '    <!-- @ai-ignore: 当前迭代暂不处理 -->',
+            '    <li v-for="item in items">{{ item.name }}</li>',
+            '    <p v-if="user">{{ user.name }}</p>',
+            '  </div>',
+            '</template>',
+        ];
+        openTextDocumentBehavior = async (path: string) => ({
+            uri: { fsPath: path },
+            lineCount: lines.length,
+            lineAt: (index: number) => ({ text: lines[index] ?? '' }),
+        });
+
+        const panel = new ReviewPanel(createContext());
+        const filePath = 'd:/demo/sample.vue';
+        panel.showReviewResult({
+            passed: false,
+            errors: [],
+            warnings: [
+                {
+                    file: filePath,
+                    line: 4,
+                    column: 5,
+                    message: 'v-for 缺少 :key',
+                    rule: 'vue_require_v_for_key',
+                    severity: 'warning',
+                },
+                {
+                    file: filePath,
+                    line: 4,
+                    column: 5,
+                    message: '<li> 不应直接作为 <div> 子节点',
+                    rule: 'html_li_parent',
+                    severity: 'warning',
+                },
+                {
+                    file: filePath,
+                    line: 6,
+                    column: 22,
+                    message: '模板插值存在多余空格',
+                    rule: 'template_interp_spacing',
+                    severity: 'info',
+                },
+            ],
+            info: [],
+        }, 'completed');
+
+        await panel.syncAfterIssueIgnore({
+            filePath,
+            insertedLine: 4,
+        });
+
+        const next = panel.getCurrentResult();
+        expect(next).not.toBeNull();
+        const issues = next?.warnings ?? [];
+        expect(issues.length).toBe(3);
+        expect(issues[0].line).toBe(5);
+        expect(issues[0].ignored).toBe(true);
+        expect(issues[0].ignoreReason).toBe('当前迭代暂不处理');
+        expect(issues[1].line).toBe(5);
+        expect(issues[1].ignored).toBe(true);
+        expect(issues[2].line).toBe(7);
+        expect(issues[2].ignored).toBe(false);
+    });
+
+    it('TreeView 问题节点应展示“已放行”前缀', () => {
+        const provider = new ReviewPanelProvider(createContext());
+        const filePath = 'd:/demo/sample.vue';
+        provider.updateResult({
+            passed: false,
+            errors: [],
+            warnings: [
+                {
+                    file: filePath,
+                    line: 5,
+                    column: 3,
+                    message: 'v-for 缺少 :key',
+                    rule: 'vue_require_v_for_key',
+                    severity: 'warning',
+                    ignored: true,
+                    ignoreReason: '当前迭代暂不处理',
+                },
+            ],
+            info: [],
+        }, 'completed');
+
+        const rootItems = provider.getChildren();
+        const existingGroup = rootItems.find(item => item.groupKey === 'existing');
+        expect(existingGroup).toBeDefined();
+        const fileItems = provider.getChildren(existingGroup);
+        expect(fileItems.length).toBe(1);
+        const issueItems = provider.getChildren(fileItems[0]);
+        expect(issueItems.length).toBe(1);
+        expect(String(issueItems[0].label).startsWith('【已放行】')).toBe(true);
+        expect(typeof issueItems[0].description === 'string' && issueItems[0].description.includes('已放行')).toBe(true);
     });
 });
 
@@ -497,6 +608,7 @@ describe('Phase3: 命令与菜单注册', () => {
         expect(commandRegistry.has('agentreview.showReport')).toBe(true);
         expect(commandRegistry.has('agentreview.installHooks')).toBe(true);
         expect(commandRegistry.has('agentreview.refresh')).toBe(true);
+        expect(commandRegistry.has('agentreview.allowIssueIgnore')).toBe(true);
     });
 
     it('TreeView 菜单仅对问题节点生效', () => {

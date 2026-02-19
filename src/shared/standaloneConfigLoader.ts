@@ -29,7 +29,6 @@ const getDefaultConfig = (): AgentReviewConfig => ({
     git_hooks: {
         auto_install: false,
         pre_commit_enabled: true,
-        allow_commit_once: true,
     },
     exclusions: undefined,
 });

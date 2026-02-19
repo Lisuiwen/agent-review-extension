@@ -12,12 +12,14 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as path from 'path';
 import { createMockConfigManager } from '../helpers/mockConfigManager';
 import { ReviewEngine, ReviewIssue } from '../../core/reviewEngine';
 import type { FileDiff } from '../../utils/diffTypes';
 
 const ruleEngineCheckFilesMock = vi.fn<() => Promise<ReviewIssue[]>>(async () => []);
 const aiReviewerReviewMock = vi.fn<(...args: unknown[]) => Promise<ReviewIssue[]>>(async () => []);
+const workingDiffMock = vi.fn<() => Promise<Map<string, FileDiff>>>(async () => new Map());
 
 vi.mock('../../core/ruleEngine', () => ({
     RuleEngine: class {
@@ -36,6 +38,7 @@ vi.mock('../../ai/aiReviewer', () => ({
 vi.mock('../../utils/fileScanner', () => ({
     FileScanner: class {
         shouldExclude = vi.fn().mockReturnValue(false);
+        getWorkingDiff = workingDiffMock;
     },
 }));
 
@@ -43,6 +46,7 @@ describe('ReviewEngine 优化逻辑', () => {
     beforeEach(() => {
         ruleEngineCheckFilesMock.mockReset();
         aiReviewerReviewMock.mockReset();
+        workingDiffMock.mockReset();
     });
 
     it('规则引擎发现 blocking 错误时应跳过 AI 审查', async () => {
@@ -291,5 +295,55 @@ describe('ReviewEngine 优化逻辑', () => {
 
         expect(issues[0].incremental).toBe(true);
         expect(issues[1].incremental).toBe(false);
+    });
+
+    it('保存触发路径中，formatOnly 文件应被 AI 过滤', async () => {
+        const configManager = createMockConfigManager({
+            rules: {
+                enabled: false,
+                strict_mode: false,
+                diff_only: true,
+            },
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                timeout: 1000,
+                action: 'warning',
+                diff_only: true,
+                ignore_format_only_diff: true,
+            },
+        });
+
+        ruleEngineCheckFilesMock.mockResolvedValue([]);
+        aiReviewerReviewMock.mockResolvedValue([]);
+        const filePath = path.normalize('src/sample.vue');
+        workingDiffMock.mockResolvedValue(new Map<string, FileDiff>([
+            [
+                filePath,
+                {
+                    path: filePath,
+                    hunks: [
+                        {
+                            newStart: 1,
+                            newCount: 1,
+                            lines: ['<template>'],
+                        },
+                    ],
+                    formatOnly: true,
+                },
+            ],
+        ]));
+
+        const reviewEngine = new ReviewEngine(configManager);
+        vi.spyOn(reviewEngine as unknown as {
+            collectDiagnosticsByFile: () => Map<string, Array<{ line: number; message: string }>>;
+        }, 'collectDiagnosticsByFile').mockReturnValue(new Map());
+        await reviewEngine.initialize();
+
+        await reviewEngine.reviewFilesWithWorkingDiff([filePath]);
+
+        expect(workingDiffMock).toHaveBeenCalledTimes(1);
+        expect(aiReviewerReviewMock).not.toHaveBeenCalled();
     });
 });

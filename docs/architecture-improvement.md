@@ -85,7 +85,7 @@ src/
   commands/
     runReviewCommand.ts
     installHooksCommand.ts
-    allowCommitOnceCommand.ts
+    allowIssueIgnoreCommand.ts
   core/
     reviewEngine.ts
     ruleEngine.ts
