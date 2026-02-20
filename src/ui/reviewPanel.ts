@@ -99,8 +99,8 @@ export class ReviewTreeItem extends vscode.TreeItem {
                     }
                 ]
             };
-            // contextValue 用于控制 TreeView 菜单显示
-            this.contextValue = 'reviewIssue';
+            // contextValue 用于控制 TreeView 菜单显示：error 仅显示「放行」，非 error 显示「放行」+「忽略」
+            this.contextValue = issue.severity === 'error' ? 'reviewIssue' : 'reviewIssueNonError';
         } else if (filePath) {
             // 文件项：显示文件路径
             this.tooltip = filePath;
@@ -129,6 +129,8 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
     private status: 'idle' | 'reviewing' | 'completed' | 'error' = 'idle';
     private statusMessage: string | null = null;
     private emptyStateHint: string | null = null;
+    /** 根下分组节点缓存，用于局部刷新时 fire(分组节点) 及 Panel 侧 reveal；在 getChildren(undefined) 中写入/清空 */
+    private groupNodeCache: { rule: ReviewTreeItem | null; ai: ReviewTreeItem | null } = { rule: null, ai: null };
     private getAllIssues = (): ReviewIssue[] => {
         if (!this.reviewResult) {
             return [];
@@ -141,6 +143,23 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
 
     refresh(): void {
         this._onDidChangeTreeData.fire();
+    }
+
+    /**
+     * 只刷新指定分组子树，用于「忽略」后局部刷新；无缓存时退化为全树刷新。
+     */
+    refreshGroup(groupKey: 'rule' | 'ai'): void {
+        const node = this.groupNodeCache[groupKey];
+        if (node) {
+            this._onDidChangeTreeData.fire(node);
+        } else {
+            this._onDidChangeTreeData.fire();
+        }
+    }
+
+    /** 供 Panel 在刷新后对「有变化的节点」执行 treeView.reveal 时取分组节点引用 */
+    getCachedGroupNode(groupKey: 'rule' | 'ai'): ReviewTreeItem | null {
+        return this.groupNodeCache[groupKey] ?? null;
     }
 
     updateResult(
@@ -168,6 +187,35 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         return this.reviewResult;
     }
 
+    /**
+     * 从当前审查结果中移除指定问题并刷新 TreeView（用于「忽略」后立即从列表删除该条）。
+     * 匹配条件：file、line、column、rule、severity 一致。
+     * 只刷新该问题所在分组（局部刷新），返回分组 key 供 Panel 做 reveal；无 result 时返回 undefined。
+     */
+    removeIssue(issue: ReviewIssue): 'rule' | 'ai' | undefined {
+        if (!this.reviewResult) {
+            return undefined;
+        }
+        const sameIssue = (a: ReviewIssue) =>
+            path.normalize(a.file) === path.normalize(issue.file) &&
+            a.line === issue.line &&
+            a.column === issue.column &&
+            a.rule === issue.rule &&
+            a.severity === issue.severity;
+        const errors = this.reviewResult.errors.filter(i => !sameIssue(i));
+        const warnings = this.reviewResult.warnings.filter(i => !sameIssue(i));
+        const info = this.reviewResult.info.filter(i => !sameIssue(i));
+        this.reviewResult = {
+            passed: errors.length === 0,
+            errors,
+            warnings,
+            info,
+        };
+        const groupKey = isAiIssue(issue) ? 'ai' : 'rule';
+        this.refreshGroup(groupKey);
+        return groupKey;
+    }
+
     getStatusMessage(): string | null {
         return this.statusMessage;
     }
@@ -190,6 +238,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
      */
     getChildren(element?: ReviewTreeItem): ReviewTreeItem[] {
         if (!this.reviewResult) {
+            this.groupNodeCache = { rule: null, ai: null };
             // 方案 B：reviewing 时不显示 statusMessage；loading 仅由左侧侧边栏徽章显示，面板内不显示旋转图标
             if (this.status === 'reviewing') {
                 return [new ReviewTreeItem('点击刷新按钮开始复审', vscode.TreeItemCollapsibleState.None)];
@@ -214,6 +263,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
             // 如果没有问题且审查通过，检查是否是因为没有 staged 文件
             const totalIssues = this.reviewResult.errors.length + this.reviewResult.warnings.length + this.reviewResult.info.length;
             if (this.reviewResult.passed && totalIssues === 0) {
+                this.groupNodeCache = { rule: null, ai: null };
                 items.push(new ReviewTreeItem(
                     this.emptyStateHint ?? '无 staged 变更',
                     vscode.TreeItemCollapsibleState.None
@@ -227,25 +277,28 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                 : `审查未通过 (${this.reviewResult.errors.length}个错误, ${this.reviewResult.warnings.length}个警告)`;
             items.push(new ReviewTreeItem(statusText, vscode.TreeItemCollapsibleState.None));
 
-            // 根节点分两类：规则量（默认展开）与项目存量（默认折叠）
-                        const allIssues = this.getAllIssues();
+            // 根节点分两类：规则量（默认展开）与项目存量（默认折叠）；同时写入分组节点缓存供局部刷新与 reveal 使用
+            const allIssues = this.getAllIssues();
             const ruleIssues = allIssues.filter(issue => !isAiIssue(issue));
             const aiIssues = allIssues.filter(issue => isAiIssue(issue));
 
-            items.push(new ReviewTreeItem(
+            const ruleNode = new ReviewTreeItem(
                 `规则检测错误 (${ruleIssues.length})`,
                 vscode.TreeItemCollapsibleState.Expanded,
                 undefined,
                 undefined,
                 'rule'
-            ));
-            items.push(new ReviewTreeItem(
+            );
+            const aiNode = new ReviewTreeItem(
                 `AI检测错误 (${aiIssues.length})`,
                 vscode.TreeItemCollapsibleState.Collapsed,
                 undefined,
                 undefined,
                 'ai'
-            ));
+            );
+            this.groupNodeCache = { rule: ruleNode, ai: aiNode };
+            items.push(ruleNode);
+            items.push(aiNode);
 
             return items;
         }
@@ -1153,12 +1206,41 @@ export class ReviewPanel {
             md.appendMarkdown(`\nAST: 第 ${issue.astRange.startLine}-${issue.astRange.endLine} 行`);
         }
         md.appendMarkdown('\n\n');
-        md.appendMarkdown('[放行此条](command:agentreview.allowIssueIgnore) · [修复](command:agentreview.fixIssue)');
+        md.appendMarkdown('[放行](command:agentreview.allowIssueIgnore)');
+        if (issue.severity !== 'error') {
+            md.appendMarkdown(' · [忽略](command:agentreview.ignoreIssue)');
+        }
         return md;
     };
 
     getActiveIssueForActions(): ReviewIssue | null {
         return this.activeIssueForActions;
+    }
+
+    /**
+     * 从当前结果列表移除指定问题并刷新 TreeView（「忽略」命令调用后立即删除该条）。
+     * 只刷新该问题所在分组（局部刷新），并在重绘后展开该分组节点；若被移除的正是当前用于操作的 issue，则清除 activeIssueForActions。
+     */
+    removeIssueFromList(issue: ReviewIssue): void {
+        const wasActive =
+            this.activeIssueForActions &&
+            path.normalize(this.activeIssueForActions.file) === path.normalize(issue.file) &&
+            this.activeIssueForActions.line === issue.line &&
+            this.activeIssueForActions.column === issue.column &&
+            this.activeIssueForActions.rule === issue.rule &&
+            this.activeIssueForActions.severity === issue.severity;
+        const groupKey = this.provider.removeIssue(issue);
+        if (wasActive) {
+            this.activeIssueForActions = null;
+        }
+        if (groupKey) {
+            setTimeout(() => {
+                const node = this.provider.getCachedGroupNode(groupKey);
+                if (node) {
+                    void this.treeView.reveal(node);
+                }
+            }, 0);
+        }
     }
 
     /**

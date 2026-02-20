@@ -38,12 +38,12 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "agentreview.fixIssue",
-        "title": "AgentReview: 修复当前问题"
+        "command": "agentreview.allowIssueIgnore",
+        "title": "AgentReview: 放行"
       },
       {
-        "command": "agentreview.allowIssueIgnore",
-        "title": "AgentReview: 放行当前问题（插入@ai-ignore注释）"
+        "command": "agentreview.ignoreIssue",
+        "title": "AgentReview: 忽略此条（仅记录指纹）"
       },
       {
         "command": "agentreview.reviewCurrentFileNow",
@@ -74,12 +74,12 @@
       "view/item": [
         {
           "command": "agentreview.allowIssueIgnore",
-          "when": "view == agentReview.results && viewItem == reviewIssue",
+          "when": "view == agentReview.results && (viewItem == reviewIssue || viewItem == reviewIssueNonError)",
           "group": "inline@1"
         },
         {
-          "command": "agentreview.fixIssue",
-          "when": "view == agentReview.results && viewItem == reviewIssue",
+          "command": "agentreview.ignoreIssue",
+          "when": "view == agentReview.results && viewItem == reviewIssueNonError",
           "group": "inline@2"
         }
       ]

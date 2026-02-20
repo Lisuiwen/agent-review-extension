@@ -20,7 +20,7 @@ import { registerReviewCommand } from './commands/reviewCommand';
 import { registerShowReportCommand } from './commands/showReportCommand';
 import { registerRefreshCommand } from './commands/refreshCommand';
 import { registerAllowIssueIgnoreCommand } from './commands/allowIssueIgnoreCommand';
-import { registerFixIssueCommand } from './commands/fixIssueCommand';
+import { registerIgnoreIssueCommand } from './commands/ignoreIssueCommand';
 import { registerExplainRuntimeLogCommand } from './commands/explainRuntimeLogCommand';
 import type { CommandContext } from './commands/commandContext';
 import { RuntimeTraceLogger } from './utils/runtimeTraceLogger';
@@ -699,7 +699,7 @@ export const activate = async (context: vscode.ExtensionContext) => {
             registerShowReportCommand(commandDeps),
             registerRefreshCommand(),
             registerAllowIssueIgnoreCommand(commandDeps),
-            registerFixIssueCommand(commandDeps),
+            registerIgnoreIssueCommand(commandDeps),
             registerExplainRuntimeLogCommand(commandDeps, context),
             autoReviewController,
             reviewCurrentFileNowDisposable,

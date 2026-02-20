@@ -488,6 +488,83 @@ describe('Phase3: 放行后本地同步与标记', () => {
         expect(next?.info[0].ignored).toBe(false);
     });
 
+    it('removeIssue 应从当前结果移除匹配问题并刷新', () => {
+        const provider = new ReviewPanelProvider(createContext());
+        const filePath = 'd:/demo/a.ts';
+        provider.updateResult({
+            passed: false,
+            errors: [
+                { file: filePath, line: 1, column: 1, message: 'e1', rule: 'r1', severity: 'error' },
+                { file: filePath, line: 2, column: 1, message: 'e2', rule: 'r2', severity: 'error' },
+            ],
+            warnings: [{ file: filePath, line: 3, column: 1, message: 'w1', rule: 'r3', severity: 'warning' }],
+            info: [],
+        }, 'completed');
+
+        const toRemove = {
+            file: filePath,
+            line: 2,
+            column: 1,
+            message: 'e2',
+            rule: 'r2',
+            severity: 'error' as const,
+        };
+        provider.removeIssue(toRemove);
+
+        const next = provider.getCurrentResult();
+        expect(next).not.toBeNull();
+        expect(next?.errors.length).toBe(1);
+        expect(next?.errors[0].line).toBe(1);
+        expect(next?.warnings.length).toBe(1);
+        expect(next?.passed).toBe(false);
+    });
+
+    it('removeIssue 移除唯一 error 后 passed 应变 true', () => {
+        const provider = new ReviewPanelProvider(createContext());
+        provider.updateResult({
+            passed: false,
+            errors: [{ file: 'd:/demo/a.ts', line: 1, column: 1, message: 'e', rule: 'r', severity: 'error' }],
+            warnings: [],
+            info: [],
+        }, 'completed');
+        provider.removeIssue({
+            file: 'd:/demo/a.ts',
+            line: 1,
+            column: 1,
+            message: 'e',
+            rule: 'r',
+            severity: 'error',
+        });
+        const next = provider.getCurrentResult();
+        expect(next?.passed).toBe(true);
+        expect(next?.errors.length).toBe(0);
+    });
+
+    it('removeIssueFromList 调用后列表应立即少一条', () => {
+        const panel = new ReviewPanel(createContext());
+        const filePath = 'd:/demo/b.ts';
+        panel.showReviewResult({
+            passed: false,
+            errors: [],
+            warnings: [
+                { file: filePath, line: 10, column: 2, message: 'w', rule: 'r', severity: 'warning' },
+            ],
+            info: [],
+        }, 'completed');
+
+        panel.removeIssueFromList({
+            file: filePath,
+            line: 10,
+            column: 2,
+            message: 'w',
+            rule: 'r',
+            severity: 'warning',
+        });
+
+        const next = panel.getCurrentResult();
+        expect(next?.warnings.length).toBe(0);
+    });
+
     it('TreeView 问题节点应展示「已放行」前缀', () => {
         const provider = new ReviewPanelProvider(createContext());
         const filePath = 'd:/demo/sample.vue';
@@ -1030,10 +1107,11 @@ describe('Phase3: 命令与菜单注册', () => {
         expect(commandRegistry.has('agentreview.showReport')).toBe(true);
         expect(commandRegistry.has('agentreview.refresh')).toBe(true);
         expect(commandRegistry.has('agentreview.allowIssueIgnore')).toBe(true);
+        expect(commandRegistry.has('agentreview.ignoreIssue')).toBe(true);
     });
 
     it('TreeView 菜单仅对问题节点生效', () => {
-        const issue = {
+        const warningIssue = {
             file: 'd:/demo/a.ts',
             line: 1,
             column: 1,
@@ -1041,11 +1119,14 @@ describe('Phase3: 命令与菜单注册', () => {
             rule: 'r',
             severity: 'warning' as const
         };
-        const issueItem = new ReviewTreeItem('问题', 0, issue);
+        const errorIssue = { ...warningIssue, severity: 'error' as const };
+        const warningItem = new ReviewTreeItem('问题', 0, warningIssue);
+        const errorItem = new ReviewTreeItem('问题', 0, errorIssue);
         const fileItem = new ReviewTreeItem('文件', 1, undefined, 'd:/demo/a.ts');
         const statusItem = new ReviewTreeItem('状态', 0);
 
-        expect(issueItem.contextValue).toBe('reviewIssue');
+        expect(warningItem.contextValue).toBe('reviewIssueNonError');
+        expect(errorItem.contextValue).toBe('reviewIssue');
         expect(fileItem.contextValue).toBe('reviewFile');
         expect(statusItem.contextValue).toBeUndefined();
     });
