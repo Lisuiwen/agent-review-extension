@@ -80,36 +80,15 @@ export async function callReviewAPI(
             logger,
         });
 
-    const userMsgForLog = (requestBody as { messages?: Array<{ role: string; content: string }> }).messages?.find(m => m.role === 'user');
-    const inputLen = userMsgForLog?.content?.length ?? estimateRequestChars(request.files);
-    const mode = options?.isDiffContent ? 'diff_or_ast' : 'full';
     const callStartAt = Date.now();
-    runtimeTraceLogger.logEvent({
-        session: traceSession,
-        component: 'AIReviewer',
-        event: 'llm_call_start',
-        phase: 'ai',
-        data: {
-            mode,
-            files: request.files.length,
-            inputChars: inputLen,
-        },
-    });
-    const logCallSummary = (attempts: number, partial: boolean): void => {
-        runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'AIReviewer',
-            event: 'llm_call_done',
-            phase: 'ai',
-            durationMs: Date.now() - callStartAt,
-            data: {
-                mode,
-                files: request.files.length,
-                attempts,
-                partial,
-                inputChars: inputLen,
-            },
-        });
+    const reportLlmCall = (opts: { durationMs: number; prompt_tokens?: number; completion_tokens?: number }): void => {
+        if (traceSession) {
+            runtimeTraceLogger.addLlmCall(traceSession.runId, {
+                durationMs: opts.durationMs,
+                prompt_tokens: opts.prompt_tokens,
+                completion_tokens: opts.completion_tokens,
+            });
+        }
     };
 
     if (config.api_format !== 'custom') {
@@ -134,15 +113,20 @@ export async function callReviewAPI(
             if (config.api_format === 'custom') {
                 const parsedResponse = parseCustomResponse(response.data, logger);
                 const mergedResponse = mergeCachedIssues(requestHash, parsedResponse, false);
-                logCallSummary(attempt + 1, false);
+                reportLlmCall({ durationMs: Date.now() - callStartAt });
                 return mergedResponse;
             }
 
             const parsedResult = parseOpenAIResponse(response.data, logger, config.max_tokens ?? DEFAULT_MAX_TOKENS);
             const mergedResponse = mergeCachedIssues(requestHash, parsedResult.response, parsedResult.isPartial);
+            const durationMs = Date.now() - callStartAt;
 
             if (!parsedResult.isPartial) {
-                logCallSummary(attempt + 1, false);
+                reportLlmCall({
+                    durationMs,
+                    prompt_tokens: parsedResult.usage?.prompt_tokens,
+                    completion_tokens: parsedResult.usage?.completion_tokens,
+                });
                 return mergedResponse;
             }
 
@@ -150,14 +134,22 @@ export async function callReviewAPI(
 
             if (attempt === maxRetries) {
                 logger.warn('续写重试次数已用尽，返回已解析的部分结果');
-                logCallSummary(attempt + 1, true);
+                reportLlmCall({
+                    durationMs,
+                    prompt_tokens: parsedResult.usage?.prompt_tokens,
+                    completion_tokens: parsedResult.usage?.completion_tokens,
+                });
                 return mergedResponse;
             }
 
             const baseMessages = baseMessageCache.get(requestHash);
             if (!baseMessages) {
                 logger.warn('续写失败：未找到基础提示词，返回已解析的部分结果');
-                logCallSummary(attempt + 1, true);
+                reportLlmCall({
+                    durationMs,
+                    prompt_tokens: parsedResult.usage?.prompt_tokens,
+                    completion_tokens: parsedResult.usage?.completion_tokens,
+                });
                 return mergedResponse;
             }
 
@@ -177,56 +169,12 @@ export async function callReviewAPI(
             if (shouldRetry(error as AxiosError)) {
                 const delay = baseDelay * Math.pow(2, attempt);
                 logger.warn(`AI API 调用失败，${delay}ms 后重试 (${attempt + 1}/${maxRetries})`);
-                runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'AIReviewer',
-                    event: 'llm_retry_scheduled',
-                    phase: 'ai',
-                    level: 'warn',
-                    data: {
-                        mode,
-                        attempt: attempt + 1,
-                        delayMs: delay,
-                        statusCode: axios.isAxiosError(error) ? (error.response?.status ?? 0) : 0,
-                        reason: getRetryReason(error),
-                    },
-                });
                 await sleep(delay);
             } else {
-                runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'AIReviewer',
-                    event: 'llm_call_abort',
-                    phase: 'ai',
-                    level: 'warn',
-                    durationMs: Date.now() - callStartAt,
-                    data: {
-                        mode,
-                        files: request.files.length,
-                        attempts: attempt + 1,
-                        inputChars: inputLen,
-                        errorClass: error instanceof Error ? error.name : 'UnknownError',
-                    },
-                });
                 throw error;
             }
         }
     }
 
-    runtimeTraceLogger.logEvent({
-        session: traceSession,
-        component: 'AIReviewer',
-        event: 'llm_call_failed',
-        phase: 'ai',
-        level: 'warn',
-        durationMs: Date.now() - callStartAt,
-        data: {
-            mode,
-            files: request.files.length,
-            attempts: maxRetries + 1,
-            inputChars: inputLen,
-            errorClass: lastError?.name ?? 'UnknownError',
-        },
-    });
     throw new Error(`AI API 调用失败（已重试 ${maxRetries} 次）: ${lastError?.message || '未知错误'}`);
 }

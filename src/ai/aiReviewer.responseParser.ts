@@ -18,6 +18,7 @@ export type ParseOpenAIResult = {
     response: AIReviewResponse;
     isPartial: boolean;
     cleanedContent: string;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 };
 
 /** 清理 JSON：去掉 ```json ... ``` 包裹 */
@@ -256,10 +257,18 @@ export function parseOpenAIResponse(
         const parseResult = parseJsonContent(cleanedContent, logger);
         const validatedResponse = AIReviewResponseSchema.parse(parseResult.parsed);
         logger.debug('AI响应解析与结构校验通过');
+        const usage = openAIResponse.usage
+            ? {
+                prompt_tokens: openAIResponse.usage.prompt_tokens,
+                completion_tokens: openAIResponse.usage.completion_tokens,
+                total_tokens: openAIResponse.usage.total_tokens,
+            }
+            : undefined;
         return {
             response: validatedResponse,
             isPartial: parseResult.isPartial,
             cleanedContent,
+            usage,
         };
     } catch (error) {
         if (error instanceof z.ZodError) {

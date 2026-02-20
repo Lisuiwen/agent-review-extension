@@ -211,27 +211,14 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         return '未检测到待审查变更，已跳过自动复审';
     };
 
-    /** 若运行时日志支持会话接口则记录一次“自动复审跳过”事件，否则静默跳过 */
+    /** 自动复审跳过时不再写入运行日志（已改为按次审核汇总，无单独“跳过”事件） */
     const logAutoReviewSkipped = (
-        filePath: string,
-        reason: AutoReviewSkipReason,
-        effectiveChangedLines: number,
-        riskMatched: boolean
+        _filePath: string,
+        _reason: AutoReviewSkipReason,
+        _effectiveChangedLines: number,
+        _riskMatched: boolean
     ): void => {
-        const rt = runtimeTraceLogger as unknown as { startRunSession?: (t: string) => string | null; logEvent?: (e: unknown) => void; endRunSession?: (s: string) => void };
-        if (typeof rt.startRunSession !== 'function' || typeof rt.logEvent !== 'function' || typeof rt.endRunSession !== 'function') {
-            return;
-        }
-        const session = rt.startRunSession('manual');
-        if (!session) return;
-        rt.logEvent({
-            session,
-            component: 'Extension',
-            event: 'auto_review_skipped',
-            phase: 'manual',
-            data: { filePath, reason, effectiveChangedLines, riskMatched },
-        });
-        rt.endRunSession(session);
+        // 静默跳过，不写日志
     };
 
     /** 解析指定文件的待提交 diff；失败时返回 ok: false */

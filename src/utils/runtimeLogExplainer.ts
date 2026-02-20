@@ -1,265 +1,69 @@
 /**
- * 运行日志可读化：将 JSONL 解析为可读摘要
+ * 运行汇总日志可读化
  *
- * 支持多种粒度（stage_summary / events / summary_with_key_events），
- * 提供阶段耗时、关键事件、瓶颈提示等。
+ * 解析按日存储的 YYYYMMDD.jsonl（每行一条 RunSummaryPayload），
+ * 取最新日文件最后一行，格式化为可读摘要供命令展示。
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { RuntimeEventRecord } from './runtimeTraceLogger';
+import type { RunSummaryPayload } from './runtimeTraceLogger';
 
-export type HumanReadableGranularity = 'stage_summary' | 'events' | 'summary_with_key_events';
-
-const KEY_EVENTS = new Set([
-    'llm_retry_scheduled',
-    'llm_call_failed',
-    'llm_call_abort',
-    'batch_split_triggered',
-    'ai_batch_failed',
-]);
-
-export interface RuntimeLogParseResult {
-    records: RuntimeEventRecord[];
-    parseSkippedLines: number;
-}
-
-export const parseRuntimeJsonl = (content: string): RuntimeLogParseResult => {
-    const records: RuntimeEventRecord[] = [];
+/** 解析 JSONL 内容为运行汇总列表；无效行计入 parseSkippedLines */
+export const parseRunSummaryJsonl = (content: string): { payloads: RunSummaryPayload[]; parseSkippedLines: number } => {
+    const payloads: RunSummaryPayload[] = [];
     let parseSkippedLines = 0;
     for (const line of content.split(/\r?\n/)) {
-        if (!line.trim()) {
-            continue;
-        }
+        if (!line.trim()) continue;
         try {
-            records.push(JSON.parse(line) as RuntimeEventRecord);
+            payloads.push(JSON.parse(line) as RunSummaryPayload);
         } catch {
             parseSkippedLines++;
         }
     }
-    records.sort((a, b) => a.ts.localeCompare(b.ts));
-    return { records, parseSkippedLines };
+    return { payloads, parseSkippedLines };
 };
 
-const formatTime = (ts?: string): string => {
-    if (!ts) {
-        return 'N/A';
-    }
-    const d = new Date(ts);
-    if (Number.isNaN(d.getTime())) {
-        return ts;
-    }
+const formatTime = (ms: number): string => {
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return 'N/A';
     return d.toLocaleString('zh-CN', { hour12: false });
 };
 
-const formatHmsMs = (ts?: string): string => {
-    if (!ts) {
-        return 'N/A';
-    }
-    const d = new Date(ts);
-    if (Number.isNaN(d.getTime())) {
-        return ts;
-    }
-    const ms = d.getMilliseconds().toString().padStart(3, '0');
-    return `${d.toTimeString().slice(0, 8)}.${ms}`;
-};
-
-const pickByEvent = (records: RuntimeEventRecord[], event: string): RuntimeEventRecord | undefined =>
-    records.find(r => r.event === event);
-
-const safeNum = (v: unknown): string => (typeof v === 'number' ? `${v}` : 'N/A');
-const safeVal = (v: unknown): string =>
+const safe = (v: unknown): string =>
     typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? `${v}` : 'N/A';
 
-const collectPhaseCost = (records: RuntimeEventRecord[]): Map<string, number> => {
-    const phaseCost = new Map<string, number>();
-    const setPhaseCost = (phase: string, durationMs?: number): void => {
-        if (typeof durationMs !== 'number') {
-            return;
-        }
-        phaseCost.set(phase, durationMs);
-    };
-
-    // 优先使用阶段汇总事件，避免嵌套事件耗时被重复累计。
-    for (const r of records) {
-        switch (r.event) {
-            case 'diff_fetch_summary':
-                setPhaseCost('staged', r.durationMs);
-                break;
-            case 'ast_scope_summary':
-                setPhaseCost('ast', r.durationMs);
-                break;
-            case 'rule_scan_summary':
-                setPhaseCost('rules', r.durationMs);
-                break;
-            case 'ai_review_done':
-                setPhaseCost('ai', r.durationMs);
-                break;
-            case 'run_end':
-                setPhaseCost('review', r.durationMs);
-                break;
-            default:
-                break;
-        }
-    }
-
-    // 兼容老日志：若没有汇总事件，则按 phase 取最大耗时而非累加。
-    if (phaseCost.size === 0) {
-        for (const r of records) {
-            if (!r.phase || typeof r.durationMs !== 'number') {
-                continue;
-            }
-            const previous = phaseCost.get(r.phase) ?? 0;
-            phaseCost.set(r.phase, Math.max(previous, r.durationMs));
-        }
-    }
-
-    return phaseCost;
-};
-
-const eventLine = (r: RuntimeEventRecord): string => {
-    const data = r.data ?? {};
-    switch (r.event) {
-        case 'llm_retry_scheduled':
-            return `[${formatHmsMs(r.ts)}] LLM重试 attempt=${safeVal(data.attempt)} delayMs=${safeVal(data.delayMs)} reason=${safeVal(data.reason)} status=${safeVal(data.statusCode)}`;
-        case 'llm_call_failed':
-            return `[${formatHmsMs(r.ts)}] LLM调用失败 attempts=${safeVal(data.attempts)} errorClass=${safeVal(data.errorClass)}`;
-        case 'llm_call_abort':
-            return `[${formatHmsMs(r.ts)}] LLM调用中止 attempts=${safeVal(data.attempts)} errorClass=${safeVal(data.errorClass)}`;
-        case 'batch_split_triggered':
-            return `[${formatHmsMs(r.ts)}] 批次降载 reason=${safeVal(data.reason)} leftUnits=${safeVal(data.leftUnits)} rightUnits=${safeVal(data.rightUnits)}`;
-        case 'ai_batch_failed':
-            return `[${formatHmsMs(r.ts)}] AI批次失败 batch=${safeVal(data.batchIndex)}/${safeVal(data.totalBatches)} errorClass=${safeVal(data.errorClass)}`;
-        case 'run_end':
-            if (data.status === 'failed') {
-                return `[${formatHmsMs(r.ts)}] 运行失败 errorClass=${safeVal(data.errorClass)}`;
-            }
-            return `[${formatHmsMs(r.ts)}] 运行结束 status=${safeVal(data.status)}`;
-        default:
-            return `[${formatHmsMs(r.ts)}] ${r.component}.${r.event}`;
-    }
-};
-
-export const explainRuntimeRecords = (
-    records: RuntimeEventRecord[],
-    options?: { granularity?: HumanReadableGranularity; parseSkippedLines?: number }
-): string => {
-    if (records.length === 0) {
-        return '运行日志摘要\n\n无可用事件记录。';
-    }
-    const granularity = options?.granularity ?? 'summary_with_key_events';
-    const parseSkippedLines = options?.parseSkippedLines ?? 0;
-    const runId = records[0].runId;
-    const startedAt = records[0].ts;
-    const endedAt = records[records.length - 1].ts;
-    const runStart = pickByEvent(records, 'run_start');
-    const runEnd = [...records].reverse().find(r => r.event === 'run_end');
-
-    const fileFilter = pickByEvent(records, 'file_filter_summary');
-    const astSummary = pickByEvent(records, 'ast_scope_summary');
-    const ruleSummary = pickByEvent(records, 'rule_scan_summary');
-    const aiPlan = pickByEvent(records, 'ai_plan_summary');
-
-    const llmStarts = records.filter(r => r.event === 'llm_call_start').length;
-    const llmDones = records.filter(r => r.event === 'llm_call_done');
-    const llmRetries = records.filter(r => r.event === 'llm_retry_scheduled');
-    const batchSplits = records.filter(r => r.event === 'batch_split_triggered').length;
-    const avgLlmCost = llmDones.length === 0
-        ? 'N/A'
-        : `${Math.round(llmDones.reduce((sum, r) => sum + (r.durationMs ?? 0), 0) / llmDones.length)}`;
-
-    const phaseCost = collectPhaseCost(records);
-    const topPhases = [...phaseCost.entries()]
-        .filter(([phase]) => phase !== 'review')
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 2);
-
+/** 将单条运行汇总格式化为可读文本 */
+export const formatRunSummaryPayload = (p: RunSummaryPayload): string => {
     const lines: string[] = [];
-    lines.push('运行日志摘要');
-    lines.push(`RunId: ${runId}`);
-    lines.push(`开始: ${formatTime(startedAt)}`);
-    lines.push(`结束: ${formatTime(endedAt)}`);
-    lines.push(`触发方式: ${safeVal(runStart?.data?.trigger)}`);
-    lines.push(`总耗时(ms): ${safeNum(runEnd?.durationMs)}`);
-    lines.push(`状态: ${safeVal(runEnd?.data?.status)}`);
-    lines.push(`解析跳过行: ${parseSkippedLines}`);
-    lines.push('');
-
-    if (granularity !== 'events') {
-        lines.push('阶段摘要');
-        lines.push(`- File Filter: input=${safeVal(fileFilter?.data?.inputFiles)} excluded=${safeVal(fileFilter?.data?.excludedFiles)} remaining=${safeVal(fileFilter?.data?.remainingFiles)}`);
-        lines.push(`- AST: attempted=${safeVal(astSummary?.data?.attemptedFiles)} success=${safeVal(astSummary?.data?.successFiles)} fallback=${safeVal(astSummary?.data?.fallbackFiles)} snippets=${safeVal(astSummary?.data?.totalSnippets)} durationMs=${safeNum(astSummary?.durationMs)}`);
-        lines.push(`- Rule Scan: files=${safeVal(ruleSummary?.data?.filesScanned)} bytesRead=${safeVal(ruleSummary?.data?.bytesRead)} skippedMissing=${safeVal(ruleSummary?.data?.skippedMissing)} skippedLarge=${safeVal(ruleSummary?.data?.skippedLarge)} skippedBinary=${safeVal(ruleSummary?.data?.skippedBinary)} durationMs=${safeNum(ruleSummary?.durationMs)}`);
-        lines.push(`- AI Plan: units=${safeVal(aiPlan?.data?.units)} batches=${safeVal(aiPlan?.data?.batches)} concurrency=${safeVal(aiPlan?.data?.concurrency)} budget=${safeVal(aiPlan?.data?.budget)}`);
-        lines.push(`- LLM: calls=${llmStarts} done=${llmDones.length} avgDurationMs=${avgLlmCost} retries=${llmRetries.length} split=${batchSplits}`);
-        lines.push('');
+    lines.push('运行汇总');
+    lines.push(`RunId: ${p.runId}`);
+    lines.push(`开始: ${formatTime(p.startedAt)}`);
+    lines.push(`结束: ${formatTime(p.endedAt)}`);
+    lines.push(`耗时(ms): ${p.durationMs}`);
+    lines.push(`触发: ${p.trigger}`);
+    lines.push(`状态: ${p.status}${p.errorClass ? ` (${p.errorClass})` : ''}`);
+    lines.push(`通过: ${p.passed}`);
+    if (p.projectName) lines.push(`项目: ${p.projectName}`);
+    if (p.userName ?? p.userEmail) lines.push(`用户: ${p.userName ?? ''} ${p.userEmail ?? ''}`.trim());
+    lines.push(`问题: error=${p.errorsCount} warning=${p.warningsCount} info=${p.infoCount}`);
+    if (p.inputTokensTotal != null || p.outputTokensTotal != null) {
+        lines.push(`Token: 输入=${safe(p.inputTokensTotal)} 输出=${safe(p.outputTokensTotal)}`);
     }
-
-    if (granularity === 'events') {
-        lines.push('事件明细');
-        for (const r of records) {
-            lines.push(eventLine(r));
-        }
-    } else {
-        lines.push('关键事件');
-        const keyEvents = records.filter(r =>
-            KEY_EVENTS.has(r.event) || (r.event === 'run_end' && r.data?.status === 'failed')
-        );
-        if (keyEvents.length === 0) {
-            lines.push('- 无');
-        } else {
-            for (const r of keyEvents) {
-                lines.push(`- ${eventLine(r)}`);
-            }
-        }
-        lines.push('');
-        lines.push('瓶颈提示');
-        if (topPhases.length === 0) {
-            lines.push('- 无可用耗时数据');
-        } else {
-            const phaseHints: Record<string, string> = {
-                ai: '可尝试降低单批体积、提高并发上限或检查模型端耗时。',
-                rules: '可检查规则扫描范围与大文件过滤策略。',
-                ast: '可检查 AST 切片预算与解析回退比例。',
-            };
-            for (const [phase, ms] of topPhases) {
-                const hint = phaseHints[phase] ?? '可关注该阶段慢事件。';
-                lines.push(`- ${phase}: ${ms}ms。${hint}`);
-            }
-        }
-    }
-
+    if (p.llmTotalMs != null) lines.push(`LLM 总耗时(ms): ${p.llmTotalMs}`);
+    lines.push(`忽略: 按指纹=${p.ignoredByFingerprintCount} 按行=${p.allowedByLineCount}`);
+    if (p.ignoreStoreCount != null) lines.push(`忽略表条数: ${p.ignoreStoreCount}`);
     return lines.join('\n');
 };
 
-export const generateRuntimeSummaryForFile = async (
-    jsonlPath: string,
-    options?: { granularity?: HumanReadableGranularity }
-): Promise<{ summaryPath: string; content: string; parseSkippedLines: number }> => {
-    const content = await fs.promises.readFile(jsonlPath, 'utf8');
-    const parseResult = parseRuntimeJsonl(content);
-    const explained = explainRuntimeRecords(parseResult.records, {
-        granularity: options?.granularity,
-        parseSkippedLines: parseResult.parseSkippedLines,
-    });
-    const summaryPath = jsonlPath.replace(/\.jsonl$/i, '.summary.log');
-    await fs.promises.writeFile(summaryPath, explained, 'utf8');
-    return {
-        summaryPath,
-        content: explained,
-        parseSkippedLines: parseResult.parseSkippedLines,
-    };
-};
-
+/** 查找目录下按修改时间最新的 .jsonl 文件（即“最新日”文件） */
 export const findLatestRuntimeJsonlFile = async (runtimeLogDir: string): Promise<string | null> => {
     try {
         const entries = await fs.promises.readdir(runtimeLogDir, { withFileTypes: true });
         const files = entries
             .filter(entry => entry.isFile() && entry.name.endsWith('.jsonl'))
             .map(entry => path.join(runtimeLogDir, entry.name));
-        if (files.length === 0) {
-            return null;
-        }
+        if (files.length === 0) return null;
         const stats = await Promise.all(files.map(async file => ({
             file,
             mtimeMs: (await fs.promises.stat(file)).mtimeMs,
@@ -269,4 +73,25 @@ export const findLatestRuntimeJsonlFile = async (runtimeLogDir: string): Promise
     } catch {
         return null;
     }
+};
+
+/**
+ * 读取指定 JSONL 文件，取最后一条运行汇总，格式化为可读内容并可选写入同名的 .summary.log。
+ * 供“解释运行日志”命令使用：展示最新一次审核的汇总。
+ */
+export const generateRuntimeSummaryForFile = async (
+    jsonlPath: string,
+    _options?: { granularity?: string }
+): Promise<{ summaryPath: string; content: string; parseSkippedLines: number }> => {
+    const content = await fs.promises.readFile(jsonlPath, 'utf8');
+    const { payloads, parseSkippedLines } = parseRunSummaryJsonl(content);
+    const last = payloads.length > 0 ? payloads[payloads.length - 1] : null;
+    const explained = last ? formatRunSummaryPayload(last) : '运行汇总\n\n该文件中无有效运行记录。';
+    const summaryPath = jsonlPath.replace(/\.jsonl$/i, '.summary.log');
+    await fs.promises.writeFile(summaryPath, explained, 'utf8');
+    return {
+        summaryPath,
+        content: explained,
+        parseSkippedLines,
+    };
 };

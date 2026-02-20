@@ -3,11 +3,29 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-    explainRuntimeRecords,
     findLatestRuntimeJsonlFile,
+    formatRunSummaryPayload,
     generateRuntimeSummaryForFile,
-    parseRuntimeJsonl,
+    parseRunSummaryJsonl,
 } from '../../utils/runtimeLogExplainer';
+import type { RunSummaryPayload } from '../../utils/runtimeTraceLogger';
+
+const samplePayload: RunSummaryPayload = {
+    runId: '20260220-120000-abc',
+    startedAt: 1708423200000,
+    endedAt: 1708423205000,
+    durationMs: 5000,
+    trigger: 'manual',
+    projectName: 'test-project',
+    passed: true,
+    errorsCount: 0,
+    warningsCount: 1,
+    infoCount: 0,
+    ignoredByFingerprintCount: 0,
+    allowedByLineCount: 0,
+    errorFingerprints: [],
+    status: 'success',
+};
 
 describe('runtimeLogExplainer', () => {
     const tempDirs: string[] = [];
@@ -18,66 +36,44 @@ describe('runtimeLogExplainer', () => {
         ));
     });
 
-    it('应解析 JSONL 并统计非法行', () => {
+    it('应解析运行汇总 JSONL 并统计非法行', () => {
         const content = [
-            '{"ts":"2026-02-10T10:00:00.000Z","level":"info","runId":"r1","component":"ReviewEngine","event":"run_start","phase":"review","data":{"inputFiles":2}}',
+            JSON.stringify(samplePayload),
             'NOT_JSON',
-            '{"ts":"2026-02-10T10:00:01.000Z","level":"info","runId":"r1","component":"ReviewEngine","event":"run_end","phase":"review","durationMs":1000,"data":{"status":"success"}}',
+            JSON.stringify({ ...samplePayload, runId: 'r2' }),
         ].join('\n');
-        const result = parseRuntimeJsonl(content);
-        expect(result.records.length).toBe(2);
+        const result = parseRunSummaryJsonl(content);
+        expect(result.payloads.length).toBe(2);
         expect(result.parseSkippedLines).toBe(1);
     });
 
-    it('应输出阶段摘要和关键事件', () => {
-        const records = [
-            { ts: '2026-02-10T10:00:00.000Z', level: 'info', runId: 'r1', component: 'ReviewEngine', event: 'run_start', phase: 'review', data: { trigger: 'staged' } },
-            { ts: '2026-02-10T10:00:00.100Z', level: 'info', runId: 'r1', component: 'ReviewEngine', event: 'file_filter_summary', phase: 'review', data: { inputFiles: 10, excludedFiles: 2, remainingFiles: 8 } },
-            { ts: '2026-02-10T10:00:01.000Z', level: 'warn', runId: 'r1', component: 'AIReviewer', event: 'llm_retry_scheduled', phase: 'ai', data: { attempt: 2, delayMs: 2000, reason: 'rate_limit' } },
-            { ts: '2026-02-10T10:00:02.000Z', level: 'info', runId: 'r1', component: 'ReviewEngine', event: 'run_end', phase: 'review', durationMs: 2000, data: { status: 'success' } },
-        ] as any;
-        const text = explainRuntimeRecords(records, { granularity: 'summary_with_key_events' });
-        expect(text).toContain('运行日志摘要');
-        expect(text).toContain('File Filter');
-        expect(text).toContain('关键事件');
-        expect(text).toContain('LLM重试');
-        expect(text).toContain('瓶颈提示');
+    it('应格式化单条运行汇总为可读文本', () => {
+        const text = formatRunSummaryPayload(samplePayload);
+        expect(text).toContain('运行汇总');
+        expect(text).toContain(samplePayload.runId);
+        expect(text).toContain('通过: true');
+        expect(text).toContain('error=0 warning=1 info=0');
     });
 
-    it('瓶颈阶段耗时应优先使用阶段汇总事件，避免批次事件重复累计', () => {
-        const records = [
-            { ts: '2026-02-10T10:00:00.000Z', level: 'info', runId: 'r2', component: 'ReviewEngine', event: 'run_start', phase: 'review', data: { trigger: 'manual' } },
-            { ts: '2026-02-10T10:00:00.050Z', level: 'info', runId: 'r2', component: 'AIReviewer', event: 'ai_batch_done', phase: 'ai', durationMs: 120, data: { batchIndex: 1 } },
-            { ts: '2026-02-10T10:00:00.100Z', level: 'info', runId: 'r2', component: 'AIReviewer', event: 'ai_batch_done', phase: 'ai', durationMs: 130, data: { batchIndex: 2 } },
-            { ts: '2026-02-10T10:00:00.200Z', level: 'info', runId: 'r2', component: 'AIReviewer', event: 'ai_review_done', phase: 'ai', durationMs: 300, data: { scope: 'all_batches' } },
-            { ts: '2026-02-10T10:00:00.300Z', level: 'info', runId: 'r2', component: 'RuleEngine', event: 'rule_scan_summary', phase: 'rules', durationMs: 220, data: { filesScanned: 2 } },
-            { ts: '2026-02-10T10:00:01.000Z', level: 'info', runId: 'r2', component: 'ReviewEngine', event: 'run_end', phase: 'review', durationMs: 1000, data: { status: 'success' } },
-        ] as any;
-        const text = explainRuntimeRecords(records, { granularity: 'summary_with_key_events' });
-        expect(text).toContain('- ai: 300ms');
-        expect(text).not.toContain('- ai: 550ms');
-    });
-
-    it('应生成 summary 文件', async () => {
+    it('应生成 summary 文件（取最后一条汇总）', async () => {
         const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agentreview-explainer-'));
         tempDirs.push(tempDir);
-        const jsonlPath = path.join(tempDir, 'r1.jsonl');
-        const content = [
-            '{"ts":"2026-02-10T10:00:00.000Z","level":"info","runId":"r1","component":"ReviewEngine","event":"run_start","phase":"review","data":{"trigger":"manual"}}',
-            '{"ts":"2026-02-10T10:00:01.000Z","level":"info","runId":"r1","component":"ReviewEngine","event":"run_end","phase":"review","durationMs":1000,"data":{"status":"success"}}',
-        ].join('\n');
-        await fs.promises.writeFile(jsonlPath, content, 'utf8');
+        const jsonlPath = path.join(tempDir, '20260220.jsonl');
+        const line1 = JSON.stringify({ ...samplePayload, runId: 'first' });
+        const line2 = JSON.stringify({ ...samplePayload, runId: 'last' });
+        await fs.promises.writeFile(jsonlPath, `${line1}\n${line2}\n`, 'utf8');
 
         const result = await generateRuntimeSummaryForFile(jsonlPath);
         expect(result.summaryPath.endsWith('.summary.log')).toBe(true);
+        expect(result.content).toContain('last');
         expect(await fs.promises.stat(result.summaryPath)).toBeDefined();
     });
 
     it('应找到最新 jsonl 文件', async () => {
         const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agentreview-explainer-'));
         tempDirs.push(tempDir);
-        const oldFile = path.join(tempDir, 'old.jsonl');
-        const newFile = path.join(tempDir, 'new.jsonl');
+        const oldFile = path.join(tempDir, '20260219.jsonl');
+        const newFile = path.join(tempDir, '20260220.jsonl');
         await fs.promises.writeFile(oldFile, '{}\n', 'utf8');
         await fs.promises.writeFile(newFile, '{}\n', 'utf8');
         const oldTime = new Date(Date.now() - 3600000);

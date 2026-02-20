@@ -191,17 +191,6 @@ export class RuleEngine {
         let checkedLines = 0;
         let skippedUnchangedLines = 0;
 
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'RuleEngine',
-            event: 'rule_scan_start',
-            phase: 'rules',
-            data: {
-                files: files.length,
-                diffMode: !!diffByFile,
-            },
-        });
-
         for (const file of files) {
             try {
                 if (!fs.existsSync(file)) {
@@ -253,31 +242,6 @@ export class RuleEngine {
             }
         }
 
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'RuleEngine',
-            event: 'rule_scan_summary',
-            phase: 'rules',
-            durationMs: Date.now() - scanStartAt,
-            data: {
-                filesScanned: files.length,
-                skippedMissing,
-                skippedLarge,
-                skippedBinary,
-                bytesRead,
-            },
-        });
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'RuleEngine',
-            event: 'rule_diff_filter_summary',
-            phase: 'rules',
-            data: {
-                candidateLines,
-                checkedLines,
-                skippedUnchangedLines,
-            },
-        });
 
         return issues;
     }

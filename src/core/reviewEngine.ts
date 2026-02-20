@@ -13,6 +13,8 @@
 
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { RuleEngine } from './ruleEngine';
 import { AIReviewer } from '../ai/aiReviewer';
 import { ConfigManager } from '../config/configManager';
@@ -22,10 +24,11 @@ import { IssueDeduplicator } from './issueDeduplicator';
 import type { FileDiff } from '../utils/diffTypes';
 import type { ReviewIssue, ReviewResult } from '../types/review';
 import { getAffectedScopeWithDiagnostics, type AffectedScopeResult, type AstFallbackReason } from '../utils/astScope';
-import { RuntimeTraceLogger, type RuntimeTraceSession } from '../utils/runtimeTraceLogger';
-import { generateRuntimeSummaryForFile } from '../utils/runtimeLogExplainer';
+import { RuntimeTraceLogger, type RuntimeTraceSession, type RunSummaryPayload } from '../utils/runtimeTraceLogger';
 import { computeIssueFingerprint } from '../utils/issueFingerprint';
-import { loadIgnoredFingerprints } from '../config/ignoreStore';
+import { loadIgnoredFingerprints, getIgnoreStoreCount } from '../config/ignoreStore';
+
+const execAsync = promisify(exec);
 
 export type { ReviewIssue, ReviewResult } from '../types/review';
 
@@ -118,6 +121,70 @@ export class ReviewEngine {
         Logger.setInfoOutputEnabled(this.runtimeTraceLogger.shouldOutputInfoToChannel());
     };
 
+    /** 获取 git user.name / user.email，供运行汇总使用；失败返回空字符串 */
+    private getGitUser = async (workspaceRoot: string): Promise<{ userName: string; userEmail: string }> => {
+        let userName = '';
+        let userEmail = '';
+        if (!workspaceRoot) return { userName, userEmail };
+        try {
+            const { stdout } = await execAsync('git config user.name', { cwd: workspaceRoot, encoding: 'utf8' });
+            userName = (stdout && typeof stdout === 'string' ? stdout : String(stdout || '')).trim();
+        } catch {
+            // 忽略
+        }
+        try {
+            const { stdout } = await execAsync('git config user.email', { cwd: workspaceRoot, encoding: 'utf8' });
+            userEmail = (stdout && typeof stdout === 'string' ? stdout : String(stdout || '')).trim();
+        } catch {
+            // 忽略
+        }
+        return { userName, userEmail };
+    };
+
+    /** 组装当次 run 的汇总 payload，用于写入 YYYYMMDD.jsonl */
+    private buildRunSummaryPayload = async (
+        session: RuntimeTraceSession,
+        result: ReviewResult,
+        status: 'success' | 'failed',
+        opts: { errorClass?: string; ignoredByFingerprintCount: number; allowedByLineCount: number },
+        workspaceRoot: string,
+        reviewStartAt: number
+    ): Promise<RunSummaryPayload> => {
+        const endedAt = Date.now();
+        const durationMs = endedAt - reviewStartAt;
+        const projectName = vscode.workspace.workspaceFolders?.[0]?.name ?? (workspaceRoot ? path.basename(workspaceRoot) : '');
+        const { userName, userEmail } = await this.getGitUser(workspaceRoot);
+        const ignoreStoreCount = workspaceRoot ? await getIgnoreStoreCount(workspaceRoot) : 0;
+        const aggregates = this.runtimeTraceLogger.getRunAggregates(session.runId);
+        const collectFingerprints = (issues: ReviewIssue[]): string[] =>
+            [...new Set(issues.map(i => i.fingerprint).filter((f): f is string => !!f))];
+        return {
+            runId: session.runId,
+            startedAt: session.startedAt,
+            endedAt,
+            durationMs,
+            trigger: session.trigger,
+            projectName: projectName || undefined,
+            userName: userName || undefined,
+            userEmail: userEmail || undefined,
+            passed: result.passed,
+            errorsCount: result.errors.length,
+            warningsCount: result.warnings.length,
+            infoCount: result.info.length,
+            inputTokensTotal: aggregates?.inputTokensTotal ?? 0,
+            outputTokensTotal: aggregates?.outputTokensTotal ?? 0,
+            llmTotalMs: aggregates?.llmTotalMs ?? 0,
+            ignoredByFingerprintCount: opts.ignoredByFingerprintCount,
+            allowedByLineCount: opts.allowedByLineCount,
+            ignoreStoreCount,
+            errorFingerprints: collectFingerprints(result.errors),
+            warningFingerprints: collectFingerprints(result.warnings),
+            infoFingerprints: collectFingerprints(result.info),
+            status,
+            errorClass: opts.errorClass,
+        };
+    };
+
     /**
      * 对指定文件执行规则 + AI 审查，支持 diff/ast 等选项。
      * @param files - 要审查的文件路径数组
@@ -144,51 +211,20 @@ export class ReviewEngine {
         const traceSession =
             options?.traceSession ?? this.runtimeTraceLogger.startRunSession(options?.diffByFile ? 'staged' : 'manual');
 
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'ReviewEngine',
-            event: 'run_start',
-            phase: 'review',
-            data: {
-                inputFiles: files.length,
-                trigger: traceSession?.trigger ?? 'manual',
-            },
-        });
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'ReviewEngine',
-            event: 'config_snapshot',
-            phase: 'review',
-            data: {
-                rulesEnabled: config.rules.enabled,
-                ruleDiffOnly: config.rules.diff_only ?? true,
-                aiEnabled: config.ai_review?.enabled ?? false,
-                aiDiffOnly: config.ai_review?.diff_only ?? true,
-                aiRunOnSave: config.ai_review?.run_on_save ?? false,
-                aiFunnelLint: config.ai_review?.funnel_lint ?? false,
-                aiFunnelLintSeverity: config.ai_review?.funnel_lint_severity ?? 'error',
-                aiIgnoreFormatOnlyDiff: config.ai_review?.ignore_format_only_diff ?? true,
-                aiIgnoreCommentOnlyDiff: config.ai_review?.ignore_comment_only_diff ?? true,
-                astEnabled: config.ast?.enabled ?? false,
-                astMaxNodeLines: config.ast?.max_node_lines ?? 0,
-                astMaxFileLines: config.ast?.max_file_lines ?? 0,
-                aiBatchingMode: config.ai_review?.batching_mode ?? 'file_count',
-                aiBatchConcurrency: config.ai_review?.batch_concurrency ?? 2,
-                aiMaxRequestChars: config.ai_review?.max_request_chars ?? 50000,
-            },
-        });
-
         try {
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
             if (files.length === 0) {
-                this.runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'ReviewEngine',
-                    event: 'run_end',
-                    phase: 'review',
-                    durationMs: Date.now() - reviewStartAt,
-                    data: { status: 'success' },
-                });
-                await this.generateRuntimeSummaryIfEnabled(traceSession, config);
+                if (traceSession) {
+                    const payload = await this.buildRunSummaryPayload(
+                        traceSession,
+                        result,
+                        'success',
+                        { ignoredByFingerprintCount: 0, allowedByLineCount: 0 },
+                        workspaceRoot,
+                        reviewStartAt
+                    );
+                    this.runtimeTraceLogger.writeRunSummary(traceSession, payload);
+                }
                 return result;
             }
 
@@ -199,28 +235,18 @@ export class ReviewEngine {
                 return true;
             });
 
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'file_filter_summary',
-                phase: 'review',
-                data: {
-                    inputFiles: files.length,
-                    excludedFiles: files.length - filteredFiles.length,
-                    remainingFiles: filteredFiles.length,
-                },
-            });
-
             if (filteredFiles.length === 0) {
-                this.runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'ReviewEngine',
-                    event: 'run_end',
-                    phase: 'review',
-                    durationMs: Date.now() - reviewStartAt,
-                    data: { status: 'success' },
-                });
-                await this.generateRuntimeSummaryIfEnabled(traceSession, config);
+                if (traceSession) {
+                    const payload = await this.buildRunSummaryPayload(
+                        traceSession,
+                        result,
+                        'success',
+                        { ignoredByFingerprintCount: 0, allowedByLineCount: 0 },
+                        workspaceRoot,
+                        reviewStartAt
+                    );
+                    this.runtimeTraceLogger.writeRunSummary(traceSession, payload);
+                }
                 return result;
             }
 
@@ -294,36 +320,6 @@ export class ReviewEngine {
                     }
                 }
 
-                const totalAstSnippets = Array.from(snippetsByFile.values())
-                    .reduce((sum, item) => sum + item.snippets.length, 0);
-                this.runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'ReviewEngine',
-                    event: 'ast_scope_summary',
-                    phase: 'ast',
-                    durationMs: Date.now() - astStartAt,
-                    data: {
-                        attemptedFiles,
-                        astAttemptedFiles: attemptedFiles,
-                        successFiles: snippetsByFile.size,
-                        fallbackFiles: attemptedFiles - snippetsByFile.size,
-                        totalSnippets: totalAstSnippets,
-                    },
-                });
-                this.runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'ReviewEngine',
-                    event: 'ast_fallback_summary',
-                    phase: 'ast',
-                    data: {
-                        unsupportedExt: fallbackCounts.unsupportedExt,
-                        parseFailed: fallbackCounts.parseFailed,
-                        maxFileLines: fallbackCounts.maxFileLines,
-                        maxNodeLines: fallbackCounts.maxNodeLines,
-                        emptyResult: fallbackCounts.emptyResult,
-                    },
-                });
-
                 return snippetsByFile.size > 0 ? snippetsByFile : undefined;
             };
 
@@ -346,18 +342,6 @@ export class ReviewEngine {
                 aiConfig: config.ai_review,
             });
             const aiInputFiles = aiInputFilterResult.files;
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'ai_input_filter_summary',
-                phase: 'review',
-                data: {
-                    inputFiles: filteredFiles.length,
-                    aiInputFiles: aiInputFiles.length,
-                    formatOnlySkippedFiles: aiInputFilterResult.formatOnlySkippedFiles,
-                    commentOnlySkippedFiles: aiInputFilterResult.commentOnlySkippedFiles,
-                },
-            });
             const runAiReview = async (): Promise<ReviewIssue[]> => {
                 if (!config.ai_review?.enabled) {
                     return [];
@@ -426,7 +410,6 @@ export class ReviewEngine {
             }
 
             const deduplicatedIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
-            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
             if (workspaceRoot) {
                 for (const issue of deduplicatedIssues) {
                     if (issue.fingerprint) continue;
@@ -438,7 +421,7 @@ export class ReviewEngine {
                     }
                 }
             }
-            const allIssues = await this.filterIgnoredIssues(deduplicatedIssues, workspaceRoot);
+            const { issues: allIssues, ignoredByFingerprintCount, allowedByLineCount } = await this.filterIgnoredIssues(deduplicatedIssues, workspaceRoot);
             // #region agent log
             fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H1',location:'reviewEngine.ts:399',message:'pre_attach_ast_ranges',data:{useAstScope:!!useAstScope,hasDiffByFile:!!options?.diffByFile,astMapSize:astSnippetsByFile?.size??0,allIssues:allIssues.length,aiIssues:aiIssues.length,ruleIssues:ruleIssues.length},timestamp:Date.now()})}).catch(()=>{});
             // #endregion
@@ -458,31 +441,32 @@ export class ReviewEngine {
             }
 
             this.logger.info('审查流程完成');
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'run_end',
-                phase: 'review',
-                durationMs: Date.now() - reviewStartAt,
-                data: { status: 'success' },
-            });
-            await this.generateRuntimeSummaryIfEnabled(traceSession, config);
+            if (traceSession) {
+                const payload = await this.buildRunSummaryPayload(
+                    traceSession,
+                    result,
+                    'success',
+                    { ignoredByFingerprintCount, allowedByLineCount },
+                    workspaceRoot,
+                    reviewStartAt
+                );
+                this.runtimeTraceLogger.writeRunSummary(traceSession, payload);
+            }
             return result;
         } catch (error) {
             const errorClass = error instanceof Error ? error.name : 'UnknownError';
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'run_end',
-                phase: 'review',
-                durationMs: Date.now() - reviewStartAt,
-                level: 'error',
-                data: {
-                    status: 'failed',
-                    errorClass,
-                },
-            });
-            await this.generateRuntimeSummaryIfEnabled(traceSession, config);
+            if (traceSession) {
+                const emptyResult: ReviewResult = { passed: true, errors: [], warnings: [], info: [] };
+                const payload = await this.buildRunSummaryPayload(
+                    traceSession,
+                    emptyResult,
+                    'failed',
+                    { errorClass, ignoredByFingerprintCount: 0, allowedByLineCount: 0 },
+                    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '',
+                    reviewStartAt
+                );
+                this.runtimeTraceLogger.writeRunSummary(traceSession, payload);
+            }
             throw error;
         } finally {
             if (ownTraceSession) {
@@ -743,24 +727,27 @@ export class ReviewEngine {
 
     /**
      * 识别并过滤已忽略的问题。顺序不可颠倒：
-     * 2) 再按 @ai-ignore 行号过滤（标记行及下一非空行）
+     * 1) 先按项目级忽略指纹过滤；2) 再按 @ai-ignore 行号过滤（标记行及下一非空行）。
+     * 返回过滤后的问题列表及本次因指纹/放行过滤掉的数量，供运行汇总统计用。
      */
     private filterIgnoredIssues = async (
         issues: ReviewIssue[],
         workspaceRoot: string
-    ): Promise<ReviewIssue[]> => {
+    ): Promise<{ issues: ReviewIssue[]; ignoredByFingerprintCount: number; allowedByLineCount: number }> => {
         if (issues.length === 0) {
-            return issues;
+            return { issues: [], ignoredByFingerprintCount: 0, allowedByLineCount: 0 };
         }
 
         let afterFingerprint = issues;
+        let ignoredByFingerprintCount = 0;
         if (workspaceRoot) {
             const ignoredSet = new Set(await loadIgnoredFingerprints(workspaceRoot));
             afterFingerprint = issues.filter(
                 i => !(i.fingerprint && ignoredSet.has(i.fingerprint))
             );
-            if (afterFingerprint.length < issues.length) {
-                this.logger.info(`已按指纹过滤 ${issues.length - afterFingerprint.length} 条项目级忽略问题`);
+            ignoredByFingerprintCount = issues.length - afterFingerprint.length;
+            if (ignoredByFingerprintCount > 0) {
+                this.logger.info(`已按指纹过滤 ${ignoredByFingerprintCount} 条项目级忽略问题`);
             }
         }
 
@@ -799,10 +786,11 @@ export class ReviewEngine {
             const ignoredLines = ignoredLinesByFile.get(path.normalize(issue.file));
             return !ignoredLines?.has(issue.line);
         });
-        if (filtered.length < afterFingerprint.length) {
-            this.logger.info(`已过滤 ${afterFingerprint.length - filtered.length} 条 @ai-ignore 标记的问题`);
+        const allowedByLineCount = afterFingerprint.length - filtered.length;
+        if (allowedByLineCount > 0) {
+            this.logger.info(`已过滤 ${allowedByLineCount} 条 @ai-ignore 标记的问题`);
         }
-        return filtered;
+        return { issues: filtered, ignoredByFingerprintCount, allowedByLineCount };
     };
 
     /**
@@ -832,34 +820,6 @@ export class ReviewEngine {
         for (const issue of issues) {
             const lines = changedLinesByFile.get(path.normalize(issue.file));
             issue.incremental = !!lines?.has(issue.line);
-        }
-    };
-
-    /**
-     * 若配置启用运行结束自动生成可读摘要，则对当前会话日志生成并写入摘要文件。
-     */
-    private generateRuntimeSummaryIfEnabled = async (
-        session: RuntimeTraceSession | null | undefined,
-        config: ReturnType<ConfigManager['getConfig']>
-    ): Promise<void> => {
-        if (!session) {
-            return;
-        }
-        const humanReadable = config.runtime_log?.human_readable;
-        if (!humanReadable?.enabled || !humanReadable.auto_generate_on_run_end) {
-            return;
-        }
-        const runLogFile = this.runtimeTraceLogger.getRunLogFilePath(session);
-        if (!runLogFile) {
-            return;
-        }
-        try {
-            await this.runtimeTraceLogger.flush();
-            await generateRuntimeSummaryForFile(runLogFile, {
-                granularity: humanReadable.granularity ?? 'summary_with_key_events',
-            });
-        } catch (error) {
-            this.logger.warn('自动生成运行时日志摘要失败', error);
         }
     };
 
@@ -961,22 +921,6 @@ export class ReviewEngine {
         phase: 'manual' | 'staged',
         trigger: 'manual' | 'staged' | 'save'
     ): Promise<ReviewResult> => {
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'ReviewEngine',
-            event: 'run_start',
-            phase,
-            data: { inputFiles: 0, trigger },
-        });
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'ReviewEngine',
-            event: 'run_end',
-            phase,
-            durationMs: 0,
-            data: { status: 'success' },
-        });
-        await this.generateRuntimeSummaryIfEnabled(traceSession, config);
         return this.createEmptyReviewResult();
     };
 
@@ -1025,16 +969,6 @@ export class ReviewEngine {
         traceSession: RuntimeTraceSession | null,
         reason: string
     ): Promise<ReviewResult> => {
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'ReviewEngine',
-            event: 'diff_fetch_summary',
-            phase: 'manual',
-            data: {
-                filePath,
-                reason,
-            },
-        });
         return await this.review([filePath], { traceSession });
     };
 
@@ -1076,18 +1010,6 @@ export class ReviewEngine {
                         'scope_hint_fallback_empty_snippets_after_bounding'
                     );
                 }
-                this.runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'ReviewEngine',
-                    event: 'diff_fetch_summary',
-                    phase: 'manual',
-                    data: {
-                        filePath: normalizedFilePath,
-                        reason: 'scope_hint_review_start',
-                        scopeCount: normalizedScopes.length,
-                        hunkCount: artifacts.diffByFile.get(normalizedFilePath)?.hunks.length ?? 0,
-                    },
-                });
                 const scopeResult = await this.review([normalizedFilePath], {
                     diffByFile: artifacts.diffByFile,
                     astSnippetsByFileOverride: artifacts.astSnippetsByFile,
@@ -1136,18 +1058,6 @@ export class ReviewEngine {
             const pendingFiles = Array.from(pendingDiffByFile.keys()).map(filePath => path.normalize(filePath));
             const diffByFile = useDiff ? pendingDiffByFile : undefined;
 
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'diff_fetch_summary',
-                phase: 'manual',
-                durationMs: Date.now() - diffStartAt,
-                data: {
-                    pendingFiles: pendingFiles.length,
-                    useDiff,
-                    diffFiles: pendingDiffByFile.size,
-                },
-            });
 
             if (pendingFiles.length === 0) {
                 return {
@@ -1216,18 +1126,6 @@ export class ReviewEngine {
                         },
                     ],
                 ]);
-                this.runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'ReviewEngine',
-                    event: 'diff_fetch_summary',
-                    phase: 'manual',
-                    data: {
-                        filePath: normalizedFilePath,
-                        reason: 'pending_diff_review_start',
-                        diffFiles: pendingDiffByFile.size,
-                        hunkCount: matchedDiff.hunks.length,
-                    },
-                });
 
                 return {
                     result: await this.review([normalizedFilePath], {
@@ -1278,18 +1176,6 @@ export class ReviewEngine {
             if (useDiff) {
                 diffByFile = await this.fileScanner.getStagedDiff(stagedFiles);
             }
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'diff_fetch_summary',
-                phase: 'staged',
-                durationMs: Date.now() - diffStartAt,
-                data: {
-                    stagedFiles: stagedFiles.length,
-                    useDiff,
-                    diffFiles: diffByFile?.size ?? 0,
-                },
-            });
 
             return await this.review(stagedFiles, { diffByFile, traceSession });
         } finally {
@@ -1319,18 +1205,6 @@ export class ReviewEngine {
             if (useDiff) {
                 diffByFile = await this.fileScanner.getWorkingDiff(normalizedFiles);
             }
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'diff_fetch_summary',
-                phase: 'manual',
-                durationMs: Date.now() - diffStartAt,
-                data: {
-                    workingFiles: normalizedFiles.length,
-                    useDiff,
-                    diffFiles: diffByFile?.size ?? 0,
-                },
-            });
 
             return await this.review(normalizedFiles, { diffByFile, traceSession });
         } finally {

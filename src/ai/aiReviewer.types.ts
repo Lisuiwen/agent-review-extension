@@ -61,7 +61,7 @@ export const AIReviewResponseSchema = z.object({
     )
 });
 
-/** OpenAI 兼容响应 Schema：choices[0].message.content */
+/** OpenAI 兼容响应 Schema：choices[0].message.content，可选 usage 用于运行汇总 Token 统计 */
 export const OpenAIResponseSchema = z.object({
     choices: z.array(
         z.object({
@@ -69,7 +69,12 @@ export const OpenAIResponseSchema = z.object({
                 content: z.string().min(1, '响应内容不能为空')
             })
         })
-    ).min(1, '响应中必须包含至少一个 choice')
+    ).min(1, '响应中必须包含至少一个 choice'),
+    usage: z.object({
+        prompt_tokens: z.number().optional(),
+        completion_tokens: z.number().optional(),
+        total_tokens: z.number().optional(),
+    }).optional(),
 });
 
 export type AIReviewRequest = z.infer<typeof AIReviewRequestSchema>;

@@ -74,6 +74,15 @@ export const loadIgnoredFingerprints = async (workspaceRoot: string): Promise<st
 };
 
 /**
+ * 返回当前忽略表条数；供运行汇总统计用（如 run 日志中的 ignoreStoreCount）。
+ */
+export const getIgnoreStoreCount = async (workspaceRoot: string): Promise<number> => {
+    const storePath = getIgnoreStorePath(workspaceRoot);
+    const data = await loadRaw(storePath);
+    return data.items.length;
+};
+
+/**
  * 将指纹加入项目级忽略列表并写回；若已存在则不重复添加。会确保 .vscode 目录存在。
  * meta 必传，用于文件内可读（file 为相对路径、line、rule、message、severity）。
  */

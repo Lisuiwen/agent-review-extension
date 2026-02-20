@@ -350,57 +350,14 @@ export class AIReviewer {
                 ? splitUnitsBySnippetBudget(reviewUnits, getAstSnippetBudget(this.config))
                 : splitIntoBatches(reviewUnits, DEFAULT_BATCH_SIZE);
 
-            // 打点：本次审查的文件数、单元数、批次数、并发与预算，便于排查与调优
-            const totalAstSnippetCount = countAstSnippetMap(astSnippetsByFile);
-            const totalSnippetCount = countUnitSnippets(reviewUnits);
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'AIReviewer',
-                event: 'ai_plan_summary',
-                phase: 'ai',
-                data: {
-                    files: validatedRequest.files.length,
-                    loadedFiles: validFiles.length,
-                    units: reviewUnits.length,
-                    batches: batches.length,
-                    astSnippets: totalAstSnippetCount,
-                    snippets: totalSnippetCount,
-                    batchingMode: useAstSnippetBatching ? 'ast_snippet' : 'file_count',
-                    concurrency: getBatchConcurrency(this.config),
-                    budget: useAstSnippetBatching ? getAstSnippetBudget(this.config) : DEFAULT_BATCH_SIZE,
-                },
-            });
-
             const issues = await this.processReviewUnitBatches(batches, {
                 useDiffContent,
                 allowedLinesByFile,
                 diagnosticsByFile,
                 astSnippetsByFile: astSnippetsByFile ?? undefined,
             }, traceSession);
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'AIReviewer',
-                event: 'ai_review_done',
-                phase: 'ai',
-                durationMs: Date.now() - reviewStartAt,
-                data: {
-                    scope: 'all_batches',
-                },
-            });
             return issues;
         } catch (error) {
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'AIReviewer',
-                event: 'ai_batch_failed',
-                phase: 'ai',
-                level: 'warn',
-                durationMs: Date.now() - reviewStartAt,
-                data: {
-                    scope: 'all_batches',
-                    errorClass: error instanceof Error ? error.name : 'UnknownError',
-                },
-            });
             return this.handleReviewError(error);
         }
     }
@@ -599,18 +556,6 @@ export class AIReviewer {
         await Promise.all(workers);
         const flattened = results.flat();
         // 打点：整个并发池耗时、批次数、并发数
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'AIReviewer',
-            event: 'ai_pool_done',
-            phase: 'ai',
-            durationMs: Date.now() - poolStartAt,
-            data: {
-                scope: 'pool',
-                batches: batches.length,
-                concurrency: maxConcurrency,
-            },
-        });
         return flattened;
     };
 
@@ -646,49 +591,10 @@ export class AIReviewer {
         const batchEstimatedChars = estimateRequestChars(
             batchUnits.map(unit => ({ path: unit.path, content: unit.content }))
         );
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'AIReviewer',
-            event: 'ai_batch_start',
-            phase: 'ai',
-            data: {
-                batchIndex,
-                totalBatches,
-                units: batchUnits.length,
-                snippets: batchSnippetCount,
-                estimatedChars: batchEstimatedChars,
-            },
-        });
-
         try {
             const issues = await this.executeBatchWithFallback(batchUnits, options, true, traceSession);
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'AIReviewer',
-                event: 'ai_batch_done',
-                phase: 'ai',
-                durationMs: Date.now() - batchStartAt,
-                data: {
-                    batchIndex,
-                    totalBatches,
-                    units: batchUnits.length,
-                },
-            });
             return issues;
         } catch (error) {
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'AIReviewer',
-                event: 'ai_batch_failed',
-                phase: 'ai',
-                level: 'warn',
-                durationMs: Date.now() - batchStartAt,
-                data: {
-                    batchIndex,
-                    totalBatches,
-                    errorClass: error instanceof Error ? error.name : 'UnknownError',
-                },
-            });
             return this.handleReviewError(error);
         }
     };
@@ -714,18 +620,6 @@ export class AIReviewer {
         if (allowSplit && batchFiles.length > 1 && estimatedChars > maxRequestChars) {
             this.logger.warn(`[batch_guard] 批次预估长度 ${estimatedChars} 超过上限 ${maxRequestChars}，将二分降载`);
             const [leftUnits, rightUnits] = splitUnitsInHalf(batchUnits);
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'AIReviewer',
-                event: 'batch_split_triggered',
-                phase: 'ai',
-                level: 'warn',
-                data: {
-                    reason: 'max_request_chars',
-                    leftUnits: leftUnits.length,
-                    rightUnits: rightUnits.length,
-                },
-            });
             const leftIssues = await this.executeBatchWithFallback(leftUnits, options, false, traceSession);
             const rightIssues = await this.executeBatchWithFallback(rightUnits, options, false, traceSession);
             return [...leftIssues, ...rightIssues];
@@ -751,32 +645,14 @@ export class AIReviewer {
             attachAstRangesForBatch(issuesInScope, options.astSnippetsByFile);
             return filterIssuesByDiagnostics(issuesInScope, diagnosticsForBatch, {
                 logger: this.logger,
-                onOverdropFallback: (data) =>
-                    this.runtimeTraceLogger.logEvent({
-                        session: traceSession,
-                        component: 'AIReviewer',
-                        event: 'diagnostics_filter_overdrop_fallback',
-                        phase: 'ai',
-                        level: 'warn',
-                        data: { issuesBefore: data.issuesBefore, diagnosticsFiles: data.diagnosticsFiles },
-                    }),
+                onOverdropFallback: (data) => {
+                    this.logger.debug(`[diagnostics] 本批无诊断数据，跳过重叠过滤 issuesBefore=${data.issuesBefore} diagnosticsFiles=${data.diagnosticsFiles}`);
+                },
             });
         } catch (error) {
             if (allowSplit && batchFiles.length > 1 && this.isContextTooLongError(error)) {
                 this.logger.warn('[batch_guard] 检测到上下文超限错误，批次将二分后重试一次');
                 const [leftUnits, rightUnits] = splitUnitsInHalf(batchUnits);
-                this.runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'AIReviewer',
-                    event: 'batch_split_triggered',
-                    phase: 'ai',
-                    level: 'warn',
-                    data: {
-                        reason: 'context_too_long',
-                        leftUnits: leftUnits.length,
-                        rightUnits: rightUnits.length,
-                    },
-                });
                 const leftIssues = await this.executeBatchWithFallback(leftUnits, options, false, traceSession);
                 const rightIssues = await this.executeBatchWithFallback(rightUnits, options, false, traceSession);
                 return [...leftIssues, ...rightIssues];

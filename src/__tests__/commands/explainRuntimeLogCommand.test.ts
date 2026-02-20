@@ -20,15 +20,23 @@ describe('explainRuntimeLogCommand', () => {
         tempDirs.push(workspaceRoot);
         const runtimeDir = path.join(workspaceRoot, 'docs', 'logs', 'runtime-logs');
         await fs.promises.mkdir(runtimeDir, { recursive: true });
-        const jsonlPath = path.join(runtimeDir, '20260210-100000-a1.jsonl');
-        await fs.promises.writeFile(
-            jsonlPath,
-            [
-                '{"ts":"2026-02-10T10:00:00.000Z","level":"info","runId":"r1","component":"ReviewEngine","event":"run_start","phase":"review","data":{"trigger":"manual"}}',
-                '{"ts":"2026-02-10T10:00:01.000Z","level":"info","runId":"r1","component":"ReviewEngine","event":"run_end","phase":"review","durationMs":1000,"data":{"status":"success"}}',
-            ].join('\n'),
-            'utf8'
-        );
+        const jsonlPath = path.join(runtimeDir, '20260210.jsonl');
+        const runSummary = JSON.stringify({
+            runId: 'r1',
+            startedAt: 1707552000000,
+            endedAt: 1707552001000,
+            durationMs: 1000,
+            trigger: 'manual',
+            passed: true,
+            errorsCount: 0,
+            warningsCount: 0,
+            infoCount: 0,
+            ignoredByFingerprintCount: 0,
+            allowedByLineCount: 0,
+            errorFingerprints: [],
+            status: 'success',
+        });
+        await fs.promises.writeFile(jsonlPath, `${runSummary}\n`, 'utf8');
 
         (vscode.workspace as any).workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
         const callbackHolder: { cb?: () => Promise<void> } = {};
