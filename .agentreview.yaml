@@ -1,30 +1,30 @@
 version: "1.0"
 
 rules:
-  enabled: true
-  strict_mode: false
-  diff_only: true
+  enabled: true                      # 是否启用规则引擎（内置 no_todo/no_debugger/文件名等检查）
+  strict_mode: false                 # true=任意 error 即判定未通过；false=仅 block_commit 规则阻断提交
+  diff_only: true                    # 有变更范围时仅扫描变更行，不扫全文件
   code_quality:
-    enabled: true
-    max_complexity: 10
-    action: "block_commit"
-    no_debugger: true
+    enabled: true                   # 是否启用代码质量规则组
+    max_complexity: 10               # 复杂度阈值（预留，当前未实现）
+    action: "block_commit"           # 违反时行为：block_commit=阻止提交，warning=警告，log=仅记录
+    no_debugger: true                # 是否检查并禁止 debugger 语句
   
   security:
-    enabled: true
-    scan_secrets: true
+    enabled: true                    # 是否启用安全规则组
+    scan_secrets: true               # 是否扫描敏感信息（预留，当前未实现）
     action: "block_commit"
   
   naming_convention:
-    enabled: true
+    enabled: true                    # 是否启用命名规范（如文件名不含空格）
     action: "warning"
   
   business_logic:
-    enabled: true
+    enabled: true                    # 是否启用业务逻辑规则组（预留）
     action: "block_commit"
 ast:
-  enabled: true
-  preview_only: false
+  enabled: true                      # 是否启用 AST 切片模式（按节点切分送审，减少 token）
+  preview_only: false                # true=不请求大模型，仅打印将发送的切片内容（调试用）
 # AI审查配置
 # 支持通过VSCode Settings UI或此配置文件进行配置
 # 优先级：VSCode Settings > 此配置文件 > 默认配置
@@ -42,62 +42,40 @@ ai_review:
   api_key: "${AGENTREVIEW_AI_API_KEY}"            # API 密钥（支持环境变量）
   model: "${AGENTREVIEW_AI_MODEL}"                  # 模型名称（需在 .env 或设置中配置，如 kimi-k2-turbo-preview）
   timeout: 30000                   # 请求超时时间（毫秒）
-  temperature: 0.7                # 温度参数（0-2），控制输出的随机性
-  max_tokens: 2000                # 最大token数
+  temperature: 0.2                # 温度参数（0-2），降低发散建议，提升稳定性
+  max_tokens: 1500                # 最大token数（配合精简提示词，减少冗长输出）
   diff_only: true                # 仅发送变更片段给 AI（默认 true）
-  run_on_save: true
-  run_on_save_debounce_ms: 1200
-  run_on_save_max_runs_per_minute: 4
-  run_on_save_skip_same_content: true
-  run_on_save_min_effective_changed_lines: 3
-  run_on_save_funnel_lint_severity: "error"
-  # 系统提示词 - 前端代码审查专用版本
-  # 完整的前端审查提示词请参考：.cursor/prompts/frontend-review-prompt.md
+  run_on_save: true                    # 保存文件时自动触发复审
+  run_on_save_debounce_ms: 1200         # 保存防抖时间（毫秒），多次快速保存只触发一次
+  run_on_save_max_runs_per_minute: 4    # 每分钟最多执行次数，超限进入冷却队列
+  run_on_save_skip_same_content: true   # 内容哈希与上次一致时跳过复审（避免重复跑）
+  run_on_save_min_effective_changed_lines: 8  # 有效改动行数低于此值时视为小改动，可配合风险特征决定是否跳过（0=关闭）
+  run_on_save_funnel_lint_severity: "warning"  # 保存触发时：若存在不低于此级别的 diagnostics，先跳过自动复审让用户修 Lint
+  funnel_lint: true                     # 是否启用 diagnostics 漏斗：先过滤与本地诊断重复的 AI 问题
+  funnel_lint_severity: "warning"       # 漏斗阈值：error=仅错误级拦截，warning=警告及以上拦截
+  ignore_format_only_diff: true         # 仅格式/空白变更的 diff 不送审（跳过噪声）
+  ignore_comment_only_diff: true        # 仅注释变更的 diff 不送审（跳过噪声）
+  # 系统提示词 - 高置信、低打扰、短提示词版本
   system_prompt: |
-    你是一个专业的前端代码审查专家，擅长发现JavaScript/TypeScript、React、Vue、Angular等前端框架代码中的bug、性能问题和安全隐患。
-    
-    ## 审查重点
-    
-    ### 1. 常见Bug检查
-    - 空值/未定义错误：检查变量、对象属性、数组元素是否可能为null/undefined
-    - 类型错误：类型不匹配、隐式类型转换问题
-    - 异步处理错误：Promise未处理、async/await使用错误、竞态条件
-    - 作用域问题：闭包陷阱、this绑定错误、变量提升问题
-    - 数组/对象操作错误：越界访问、属性不存在、解构赋值错误
-    
-    ### 2. React/Vue/Angular框架特定问题
-    - React：Hook依赖数组缺失、useEffect清理函数缺失、不必要的重新渲染、Key属性缺失
-    - Vue：响应式数据更新问题、watch/computed依赖错误、生命周期钩子使用不当
-    - Angular：变更检测问题、订阅未取消导致内存泄漏、依赖注入错误
-    
-    ### 3. 性能问题
-    - 不必要的重新渲染、大列表未虚拟化、内存泄漏、资源加载优化
-    
-    ### 4. 安全问题
-    - XSS漏洞、CSRF攻击、敏感信息泄露、不安全的依赖
-    
-    ### 5. 代码质量问题
-    - 错误处理缺失、边界条件未处理、代码重复、可访问性问题
-    
-    ## 输出格式
-    
-    请严格按照以下JSON格式返回结果：
+    你是资深前端代码审查员。仅报告高置信、可复现、会影响功能正确性/安全性/明显性能的问题。
+    不要报告样式、命名、主观偏好、证据不足的问题。
+    若与已知 diagnostics/Linter 问题重复，请忽略。
+    最多输出 5 条，按风险从高到低排序；无问题时返回 {"issues":[]}
+    仅返回 JSON，不要附加解释文字。
+
+    返回格式：
     {
       "issues": [
         {
           "file": "文件路径",
           "line": 行号,
           "column": 列号,
-          "message": "问题描述和修复建议",
+          "snippet": "原始代码片段(1-3行)",
+          "message": "问题与修复建议（简洁且可操作）",
           "severity": "error|warning|info"
         }
       ]
     }
-    
-    严重程度说明：
-    - error：会导致运行时错误或功能失效的严重bug
-    - warning：可能导致问题但不影响基本功能
-    - info：代码改进建议、最佳实践
   retry_count: 3                  # API请求失败时的重试次数
   retry_delay: 1000               # 重试延迟时间（毫秒）
   action: "warning"               # 发现问题时的行为：block_commit（阻止提交）、warning（警告但允许）、log（仅记录）

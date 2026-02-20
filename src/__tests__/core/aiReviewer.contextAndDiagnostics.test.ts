@@ -14,7 +14,7 @@ import { AIReviewer } from '../../ai/aiReviewer';
 import type { AIReviewConfig } from '../../ai/aiReviewer.types';
 import { buildOpenAIRequest } from '../../ai/aiReviewer.prompts';
 
-describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
+describe('AIReviewer 上下文补充与 Diagnostics 去重', () => {
     beforeEach(() => {
         vi.restoreAllMocks();
         buildLspReferenceContextMock.mockReset();
@@ -70,7 +70,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         expect(sentContent).toContain('符号: helper');
     });
 
-    it('应过滤与 diagnostics 同?AI ', async () => {
+    it('应过滤与 diagnostics 同行的 AI 问题', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -90,7 +90,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
             .mockResolvedValue({
                 issues: [
                     { file: 'src/a.ts', line: 2, column: 1, message: 'x 已声明但从未读取（重复）', severity: 'warning' },
-                    { file: 'src/a.ts', line: 4, column: 1, message: '鐪熷疄 AI 闂', severity: 'warning' },
+                    { file: 'src/a.ts', line: 4, column: 1, message: '真实 AI 问题', severity: 'warning' },
                 ],
             });
 
@@ -104,10 +104,10 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         expect(callApiSpy).toHaveBeenCalledTimes(1);
         expect(result.length).toBe(1);
         expect(result[0].line).toBe(4);
-        expect(result[0].message).toContain('鐪熷疄 AI 闂');
+        expect(result[0].message).toContain('真实 AI 问题');
     });
 
-    it('diagnostics 过滤后若变为 0，应回保留?AI 结果', async () => {
+    it('diagnostics 过滤后若变为 0，应回退保留原 AI 结果', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
