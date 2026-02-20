@@ -83,7 +83,7 @@ describe('ReviewEngine 优化逻辑', () => {
             file: 'test file.ts',
             line: 1,
             column: 1,
-            message: '文件名包吩? test file.ts',
+            message: '文件名包含空格 test file.ts',
             rule: 'no_space_in_filename',
             severity: 'error',
         };
@@ -100,7 +100,7 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(aiReviewerReviewMock).not.toHaveBeenCalled();
     });
 
-    it('?blocking 错时应执 AI 审查', async () => {
+    it('无 blocking 错误时应执行 AI 审查', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: true,
@@ -124,7 +124,7 @@ describe('ReviewEngine 优化逻辑', () => {
             file: 'test.ts',
             line: 2,
             column: 5,
-            message: '鍙戠幇 TODO 娉ㄩ噴',
+            message: '发现 TODO 注释',
             rule: 'no_todo',
             severity: 'warning',
         };
@@ -143,7 +143,7 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);
     });
 
-    it('规则引擎?AI 审查重应去?', async () => {
+    it('规则引擎与 AI 审查重复应去重', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: true,
@@ -162,7 +162,7 @@ describe('ReviewEngine 优化逻辑', () => {
             file: 'src/app.ts',
             line: 10,
             column: 1,
-            message: '变量 userName 朮?',
+            message: '变量 userName 未使用',
             rule: 'no_todo',
             severity: 'error',
         };
@@ -171,7 +171,7 @@ describe('ReviewEngine 优化逻辑', () => {
             file: 'src/app.ts',
             line: 10,
             column: 1,
-            message: '变量 userName 朮?',
+            message: '变量 userName 未使用',
             rule: 'ai_review',
             severity: 'error',
         };
@@ -230,7 +230,7 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);
     });
 
-    it('AI 审查调用应携?diagnosticsByFile，用于去重白名单', async () => {
+    it('AI 审查调用应携带 diagnosticsByFile，用于去重白名单', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: false,
@@ -266,7 +266,7 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(diagnostics[0].line).toBe(2);
     });
 
-    it('应基?diff 行号正确标 incremental', async () => {
+    it('应基于 diff 行号正确标 incremental', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
         const issues: ReviewIssue[] = [
@@ -274,7 +274,7 @@ describe('ReviewEngine 优化逻辑', () => {
                 file: 'src/demo.ts',
                 line: 5,
                 column: 1,
-                message: '增量行问?',
+                message: '增量行问题',
                 rule: 'ai_review',
                 severity: 'warning',
             },
@@ -282,7 +282,7 @@ describe('ReviewEngine 优化逻辑', () => {
                 file: 'src/demo.ts',
                 line: 20,
                 column: 1,
-                message: '存量行问?',
+                message: '存量行问题',
                 rule: 'ai_review',
                 severity: 'warning',
             },
@@ -711,7 +711,7 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(result).toEqual(expectedResult);
     });
 
-    it('保存复?scope hints 时，应构造切?diff ?AST override', async () => {
+    it('保存复审 scope hints 时，应构造切片 diff 与 AST override', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
         const filePath = path.normalize('src/scope.ts');
@@ -754,7 +754,7 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(options.astSnippetsByFileOverride?.get(filePath)?.snippets[0].startLine).toBe(2);
     });
 
-    it('保存复无有?scope hints 时，应回整文件?', async () => {
+    it('保存复审无有效 scope hints 时，应回退整文件', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
         const filePath = path.normalize('src/fallback.ts');
@@ -777,7 +777,7 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(options.astSnippetsByFileOverride).toBeUndefined();
     });
 
-    it('切片复返回空结果时，应臊回整文件?', async () => {
+    it('切片复审返回空结果时，应回退整文件', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
         const filePath = path.normalize('src/empty-scope.ts');

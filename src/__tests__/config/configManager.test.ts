@@ -81,7 +81,7 @@ describe('ConfigManager', () => {
             expect(configManager.getRuleSource()).toBe('project');
         });
 
-        it('', async () => {
+        it('仅有 builtin_rules_enabled 为 false 时规则来源仍为 project', async () => {
             await tempFs.createFile('.eslintrc.json', '{"root": true}');
             await tempFs.createFile('.agentreview.yaml', `version: "1.0"
 rules:
@@ -126,7 +126,7 @@ rules:
             expect(config.rules.code_quality?.action).toBe('block_commit');
         });
 
-        it('', async () => {
+        it('YAML 中 code_quality 子项应正确解析', async () => {
             const yamlContent = `version: "1.0"
 rules:
   enabled: true
@@ -170,7 +170,7 @@ rules:
             expect(config.rules.code_quality?.no_todo).toBe(true);
         });
 
-        it('', async () => {
+        it('部分配置时其他规则应使用默认', async () => {
             const yamlContent = `version: "1.0"
 rules:
   enabled: true
@@ -197,7 +197,7 @@ rules:
         });
     });
 
-    describe('', () => {
+    describe('Settings 与 YAML 优先级', () => {
         it('未显式配置 Settings 时，不应让默认覆盖 YAML 的 human_readable.auto_generate_on_run_end', async () => {
             const originalGetConfiguration = (vscode.workspace as any).getConfiguration;
             try {
@@ -243,14 +243,14 @@ runtime_log:
             }
         });
 
-        it('', async () => {
+        it('无 YAML 时 human_readable.auto_generate_on_run_end 使用默认 false', async () => {
             await configManager.initialize();
             const config = configManager.getConfig();
             expect(config.runtime_log?.human_readable?.auto_generate_on_run_end).toBe(false);
         });
     });
 
-    describe('', () => {
+    describe('仅 Settings 时默认不覆盖 YAML', () => {
         it('仅配置 Settings 时，不应让默认覆盖 YAML 的 ai_review.run_on_save', async () => {
             const originalGetConfiguration = (vscode.workspace as any).getConfiguration;
             try {
@@ -328,7 +328,7 @@ rules:
             expect(config.rules.enabled).toBe(true);
         });
 
-        it('', async () => {
+        it('空 YAML 文件应使用默认配置', async () => {
             await tempFs.createFile('.agentreview.yaml', '');
             await configManager.initialize();
             
@@ -339,7 +339,7 @@ rules:
         });
     });
 
-    describe('', () => {
+    describe('配置字段顺序与稳定序列化', () => {
         it('配置字段顺序变化不应该触发加载失败或回退', async () => {
             // 单独创建初始配置
             const config1 = {
@@ -398,7 +398,7 @@ rules:
             expect(beforeStr).toBe(afterStr);
         });
 
-        it('', () => {
+        it('stableStringify 应使对象键序一致', () => {
             const obj1 = {
                 a: 1,
                 b: 2,

@@ -115,7 +115,7 @@ export class ReviewTreeItem extends vscode.TreeItem {
 }
 
 /**
- * 
+ * ReviewPanelProvider：树形审查结果的数据提供者，供 TreeView 使用。
  * 此类实现了 vscode.TreeDataProvider 接口，负责：
  * 1. 管理审查结果数据
  *
@@ -899,7 +899,7 @@ export class ReviewPanel {
     };
 
     /**
-     *
+     * 文档变更后同步：对受影响文件的 issue 做行号重算或标记为过期（大范围变更仅标 stale）。
      */
     private syncAfterDocumentChange = async (event: vscode.TextDocumentChangeEvent): Promise<void> => {
         if (!this.enableLocalRebase) {
@@ -1050,9 +1050,6 @@ export class ReviewPanel {
                 preserveFocus: false,
                 preview: true
             });
-            // #region agent log
-            fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H4',location:'reviewPanel.ts:489',message:'highlight_issue_selected',data:{file:issue.file,line:issue.line,column:issue.column,hasAstRange:!!issue.astRange,astRange:issue.astRange??null},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
 
             // 安全校验行序号，避免越界导致异常
             const safeLine = Math.min(Math.max(issue.line, 1), document.lineCount);
@@ -1129,7 +1126,7 @@ export class ReviewPanel {
     };
 
     /**
-     * 鏋勫缓 Hover 娴眰鍐呭锛氱揣鍑戙€佽嚜閫傚簲锛岄鏍间笌 TS/ESLint 鎶ラ敊涓€鑷达紙鏃犲帤閲嶈竟妗嗭級
+     * 构建 Hover 层内容：紧凑、自适应，风格与 TS/ESLint 报错一致（无厚边框）
      */
     private buildIssueHoverMarkdown = (issue: ReviewIssue): vscode.MarkdownString => {
         const md = new vscode.MarkdownString();
@@ -1203,6 +1200,7 @@ export class ReviewPanel {
     };
 
     /**
+     * 从行内 @ai-ignore 注释中解析放行原因（冒号或空格后的说明文字）。
      */
     private extractIgnoreReason = (lineText: string): string | undefined => {
         const match = lineText.match(/@ai-ignore(?:\s*:\s*|\s+)?(.*)$/i);

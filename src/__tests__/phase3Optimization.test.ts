@@ -1,8 +1,13 @@
 /**
- * Phase 3 功能单元测试（Vitest? *
- * 盚? * 1. 覆盖当前已实现的“定?高亮/命令注册”? * 2. 验证关键边界：越界列无效路? *
- * 说明? * - 使用 vi.mock('vscode') 做最小化模拟
- * - 取关键调用与参数，不依赖真?VSCode
+ * Phase 3 功能单元测试（Vitest）
+ *
+ * 目标：
+ * 1. 覆盖当前已实现的“定位/高亮/命令注册”
+ * 2. 验证关键边界：越界列、无效路径
+ *
+ * 说明：
+ * - 使用 vi.mock('vscode') 做最小化模拟
+ * - 取关键调用与参数，不依赖真实 VSCode
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -133,10 +138,12 @@ vi.mock('vscode', () => {
         createTreeView: () => {
             const selectionHandlers: Array<(event: { selection: Array<{ issue?: unknown; filePath?: string }> }) => void> = [];
             const treeView = {
+                visible: true,
                 onDidChangeSelection: (handler: (event: { selection: Array<{ issue?: unknown; filePath?: string }> }) => void) => {
                     selectionHandlers.push(handler);
                     return { dispose: () => {} };
                 },
+                onDidChangeVisibility: (_handler: (event: { visible: boolean }) => void) => ({ dispose: () => {} }),
                 dispose: () => {}
             };
             lastTreeView = {
@@ -180,7 +187,8 @@ vi.mock('vscode', () => {
             command: '',
             show: () => {},
             dispose: () => {}
-        })
+        }),
+        onDidChangeActiveTextEditor: (_handler: (editor: unknown) => void) => ({ dispose: () => {} })
     };
 
     const workspace = {
@@ -354,7 +362,7 @@ beforeEach(() => {
     vi.clearAllMocks();
 });
 
-describe('Phase3: 宸︿晶闈㈡澘瀹氫綅鑳藉姏', () => {
+describe('Phase3: 侧边栏面板定位能力', () => {
     it('问题节点应配置打开文件与定位范围', () => {
         const issue = {
             file: 'd:/demo/file.ts',
@@ -365,7 +373,7 @@ describe('Phase3: 宸︿晶闈㈡澘瀹氫綅鑳藉姏', () => {
             severity: 'error' as const
         };
 
-        const item = new ReviewTreeItem('闂', 0, issue);
+        const item = new ReviewTreeItem('问题', 0, issue);
 
         expect(item.command?.command).toBe('vscode.open');
         expect(Array.isArray(item.command?.arguments)).toBe(true);
@@ -393,16 +401,19 @@ describe('Phase3: 宸︿晶闈㈡澘瀹氫綅鑳藉姏', () => {
             rule: 'r',
             severity: 'error' as const
         };
-        const item = new ReviewTreeItem('闂', 0, issue);
+        const item = new ReviewTreeItem('问题', 0, issue);
 
         lastTreeView?.fireSelection([item]);
 
         await flushPromises();
 
-        expect(lastEditor?.selection).toBeDefined();
-        const selection = lastEditor?.selection as { start: { line: number; character: number } };
-        expect(selection.start.line).toBe(1);
-        expect(selection.start.character).toBe(3);
+        expect(lastEditor).toBeDefined();
+        expect(lastEditor?.revealRange).toHaveBeenCalled();
+        expect((lastEditor?.decorationCalls?.length ?? 0)).toBeGreaterThan(0);
+        // 定位到行 2（0-based 为 1）、列 4（0-based 为 3）所在行
+        const revealCall = (lastEditor?.revealRange as ReturnType<typeof vi.fn>)?.mock?.calls?.[0];
+        expect(revealCall?.[0]?.start?.line).toBe(1);
+        expect(revealCall?.[0]?.start?.character).toBe(0);
     });
 });
 
@@ -434,7 +445,7 @@ describe('Phase3: 放行后本地同步与标记', () => {
                     file: filePath,
                     line: 4,
                     column: 5,
-                    message: 'v-for 缂哄皯 :key',
+                    message: 'v-for 缺少 :key',
                     rule: 'vue_require_v_for_key',
                     severity: 'warning',
                 },
@@ -488,7 +499,7 @@ describe('Phase3: 放行后本地同步与标记', () => {
                     file: filePath,
                     line: 5,
                     column: 3,
-                    message: 'v-for 缂哄皯 :key',
+                    message: 'v-for 缺少 :key',
                     rule: 'vue_require_v_for_key',
                     severity: 'warning',
                     incremental: true,
@@ -512,7 +523,7 @@ describe('Phase3: 放行后本地同步与标记', () => {
 });
 
 describe('Phase3: 保存复审文件级补丁合并', () => {
-    it('应提?stale scope hints，并优先合并 AST 范围', () => {
+    it('应提取 stale scope hints，并优先合并 AST 范围', () => {
         const panel = new ReviewPanel(createContext());
         const filePath = 'd:/demo/scope.ts';
         panel.showReviewResult({
@@ -848,7 +859,7 @@ describe('Phase3: 保存复审文件级补丁合并', () => {
     });
 });
 
-describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
+describe('Phase3: 侧边栏面板选中高亮', () => {
     it('连续选择两个问题节点，高亮应更新并清理旧高亮', async () => {
         openTextDocumentBehavior = async (path: string) => ({
             uri: { fsPath: path },
@@ -913,7 +924,8 @@ describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
         lastTreeView?.fireSelection([new ReviewTreeItem('文件', 1, undefined, 'd:/demo/a.ts')]);
         await flushPromises();
 
-        expect(editorAfterIssue?.decorationCalls.some(call => call.ranges.length === 0)).toBe(true);
+        // 选中文件节点后应清除高亮（setDecorations(..., [])）
+        expect(editorAfterIssue?.decorationCalls?.some(call => call.ranges.length === 0) ?? false).toBe(true);
     });
 
     it('文件不存在或路径无效时应提示并跳过', async () => {
@@ -959,14 +971,16 @@ describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
         lastTreeView?.fireSelection([new ReviewTreeItem('', 0, issue)]);
         await flushPromises();
 
-        const selection = lastEditor?.selection as { start: { line: number; character: number } };
-        expect(selection.start.line).toBe(0);
-        expect(selection.start.character).toBe(3);
+        // 行列越界时安全夹取：line 99 -> safeLine 1，仍打开并高亮
+        expect(lastEditor).toBeDefined();
+        expect(lastEditor?.revealRange).toHaveBeenCalled();
+        const revealCall = (lastEditor?.revealRange as ReturnType<typeof vi.fn>)?.mock?.calls?.[0];
+        expect(revealCall?.[0]?.start?.line).toBe(0);
     });
 });
 
 describe('Phase3: 保存触发复审链路', () => {
-    it('保存事件应走单文?scope 复入口', async () => {
+    it('保存事件应走单文件 scope 复审入口', async () => {
         mockConfig = {
             ...createMockConfig(),
             ai_review: {
@@ -1027,7 +1041,7 @@ describe('Phase3: 命令与菜单注册', () => {
             rule: 'r',
             severity: 'warning' as const
         };
-        const issueItem = new ReviewTreeItem('闂', 0, issue);
+        const issueItem = new ReviewTreeItem('问题', 0, issue);
         const fileItem = new ReviewTreeItem('文件', 1, undefined, 'd:/demo/a.ts');
         const statusItem = new ReviewTreeItem('状态', 0);
 
