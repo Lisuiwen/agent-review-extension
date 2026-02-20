@@ -34,6 +34,9 @@ type ReviewedRange = {
     endLine: number;
 };
 
+const isAiIssue = (issue: ReviewIssue): boolean =>
+    issue.rule === 'ai_review' || issue.rule.startsWith('ai_');
+
 /**
  * 
  * - 文件节点：显示文件路径和问题统计
@@ -226,8 +229,8 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
 
             // 根节点分两类：规则量（默认展开）与项目存量（默认折叠）
                         const allIssues = this.getAllIssues();
-            const ruleIssues = allIssues.filter(issue => !this.isAiIssue(issue));
-            const aiIssues = allIssues.filter(issue => this.isAiIssue(issue));
+            const ruleIssues = allIssues.filter(issue => !isAiIssue(issue));
+            const aiIssues = allIssues.filter(issue => isAiIssue(issue));
 
             items.push(new ReviewTreeItem(
                 `规则检测错误 (${ruleIssues.length})`,
@@ -280,9 +283,9 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         }
         const allIssues = this.getAllIssues();
         if (groupKey === 'ai') {
-            return allIssues.filter(issue => this.isAiIssue(issue));
+            return allIssues.filter(issue => isAiIssue(issue));
         }
-        return allIssues.filter(issue => !this.isAiIssue(issue));
+        return allIssues.filter(issue => !isAiIssue(issue));
     };
 
     /** 将同一分组下的问题按文件聚合为「文件节点」TreeItem 列表 */
@@ -329,8 +332,6 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         return items;
     };
 
-    private isAiIssue = (issue: ReviewIssue): boolean =>
-        issue.rule === 'ai_review' || issue.rule.startsWith('ai_');
 }
 
 export class ReviewPanel {
@@ -417,7 +418,11 @@ export class ReviewPanel {
     private normalizeResultForDisplay = (result: ReviewResult): ReviewResult => {
         const allIssues = this.getAllIssues(result);
         const exactDeduplicated = this.deduplicateIssues(allIssues);
-        const similarityDeduplicated = IssueDeduplicator.dedupeAiIssuesByLineSimilarity(exactDeduplicated);
+        const similarityDeduplicated = IssueDeduplicator.dedupeAiIssuesByProximityAndSimilarity(exactDeduplicated, {
+            lineWindow: 2,
+            similarityThreshold: 0.42,
+            sameSeverityPick: 'latest',
+        });
         return this.buildResultFromIssues(similarityDeduplicated);
     };
 
@@ -771,6 +776,15 @@ export class ReviewPanel {
             }
             if (params.replaceMode === 'all_in_file') {
                 return false;
+            }
+            // 保存补丁场景下，已复审范围内的 AI 问题采用“新结果覆盖旧结果”，避免重复叠加。
+            if (isAiIssue(issue) && reviewedMode === 'diff') {
+                if (reviewedRanges.length === 0) {
+                    return false;
+                }
+                if (this.isLineInReviewedRanges(issue.line, reviewedRanges)) {
+                    return false;
+                }
             }
             if (issue.stale !== true) {
                 return true;
