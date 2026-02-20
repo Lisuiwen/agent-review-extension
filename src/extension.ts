@@ -6,11 +6,14 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import { ReviewEngine } from './core/reviewEngine';
 import { ConfigManager } from './config/configManager';
 import { ReviewPanel } from './ui/reviewPanel';
 import { StatusBar } from './ui/statusBar';
 import { Logger } from './utils/logger';
+import { FileScanner } from './utils/fileScanner';
+import type { FileDiff } from './types/diff';
 import { registerRunReviewCommand } from './commands/runReviewCommand';
 import { registerRunStagedReviewCommand } from './commands/runStagedReviewCommand';
 import { registerReviewCommand } from './commands/reviewCommand';
@@ -22,6 +25,12 @@ import { registerExplainRuntimeLogCommand } from './commands/explainRuntimeLogCo
 import type { CommandContext } from './commands/commandContext';
 import { RuntimeTraceLogger } from './utils/runtimeTraceLogger';
 import { resolveRuntimeLogBaseDir } from './utils/runtimeLogPath';
+import {
+    DEFAULT_RUN_ON_SAVE_RISK_PATTERNS,
+    evaluateAutoReviewGate,
+    type AutoReviewSkipReason,
+    type AutoReviewDiagnosticSeverity,
+} from './core/autoReviewGate';
 
 let reviewEngine: ReviewEngine | undefined;
 let configManager: ConfigManager | undefined;
@@ -35,12 +44,14 @@ type QueuedAutoReviewTask = {
     editRevision: number;
     saveRevision: number;
     bypassRateLimit: boolean;
+    savedContentHash: string | null;
 };
 
 type FileAutoReviewState = {
     editRevision: number;
     latestSavedRevision: number;
     latestRequestSeq: number;
+    lastReviewedContentHash: string | null;
     inFlight: boolean;
     queuedTask: QueuedAutoReviewTask | null;
     saveDebounceTimer: ReturnType<typeof setTimeout> | null;
@@ -57,6 +68,8 @@ type AutoReviewController = vscode.Disposable & {
  */
 const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController => {
     const { reviewEngine, reviewPanel, statusBar, logger, configManager } = deps;
+    const fileScanner = new FileScanner();
+    const runtimeTraceLogger = RuntimeTraceLogger.getInstance();
     const fileStates = new Map<string, FileAutoReviewState>();
     const readyQueue: string[] = [];
     const queuedPaths = new Set<string>();
@@ -105,6 +118,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             editRevision: 0,
             latestSavedRevision: 0,
             latestRequestSeq: 0,
+            lastReviewedContentHash: null,
             inFlight: false,
             queuedTask: null,
             saveDebounceTimer: null,
@@ -136,14 +150,51 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         return normalized;
     };
 
+    const parseStringArray = (value: unknown): string[] | undefined => {
+        if (!Array.isArray(value)) {
+            return undefined;
+        }
+        const normalized = value
+            .filter(item => typeof item === 'string')
+            .map(item => item.trim())
+            .filter(Boolean);
+        return normalized.length > 0 ? normalized : undefined;
+    };
+
+    const toDiagnosticSeverity = (severity: vscode.DiagnosticSeverity): AutoReviewDiagnosticSeverity => {
+        if (severity === vscode.DiagnosticSeverity.Error) return 'error';
+        if (severity === vscode.DiagnosticSeverity.Warning) return 'warning';
+        if (severity === vscode.DiagnosticSeverity.Information) return 'info';
+        return 'hint';
+    };
+
+    const collectDiagnosticsForFile = (
+        filePath: string
+    ): Array<{ severity: AutoReviewDiagnosticSeverity }> =>
+        vscode.languages
+            .getDiagnostics(vscode.Uri.file(filePath))
+            .map(item => ({ severity: toDiagnosticSeverity(item.severity) }));
+
+    const createContentHash = (content: string): string => {
+        return createHash('sha1').update(content, 'utf8').digest('hex');
+    };
+
     const getRuntimeOptions = () => {
         const config = configManager?.getConfig();
         const ai = config?.ai_review;
+        const riskPatterns = parseStringArray(ai?.run_on_save_risk_patterns) ?? DEFAULT_RUN_ON_SAVE_RISK_PATTERNS;
+        const funnelLintSeverity = ai?.run_on_save_funnel_lint_severity;
+        const saveFunnelLintSeverity: 'off' | 'error' | 'warning' =
+            (funnelLintSeverity === 'off' || funnelLintSeverity === 'warning') ? funnelLintSeverity : 'error';
         return {
             aiEnabled: ai?.enabled === true,
             runOnSaveEnabled: ai?.run_on_save === true,
-            debounceMs: parseNumber(ai?.run_on_save_debounce_ms, 800, 0),
-            maxRunsPerMinute: parseNumber(ai?.run_on_save_max_runs_per_minute, 6, 1),
+            debounceMs: parseNumber(ai?.run_on_save_debounce_ms, 1200, 0),
+            maxRunsPerMinute: parseNumber(ai?.run_on_save_max_runs_per_minute, 4, 1),
+            skipSameContent: ai?.run_on_save_skip_same_content !== false,
+            minEffectiveChangedLines: parseNumber(ai?.run_on_save_min_effective_changed_lines, 3, 0),
+            riskPatterns,
+            saveFunnelLintSeverity,
             maxParallelFiles: parseNumber(ai?.auto_review_max_parallel_files, 1, 1, 2),
             enableLocalRebase: ai?.enable_local_rebase !== false,
             largeChangeLineThreshold: parseNumber(ai?.large_change_line_threshold, 40, 1),
@@ -151,6 +202,48 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             idleRecheckMs: parseNumber(ai?.idle_recheck_ms, 2500, 300),
             manualBypassRateLimit: ai?.review_current_file_now_bypass_rate_limit === true,
         };
+    };
+
+    const getSkipReasonMessage = (reason: AutoReviewSkipReason): string => {
+        if (reason === 'same_content') return '内容未变化，已跳过自动复审';
+        if (reason === 'small_low_risk_change') return '小改动且低风险，已跳过自动复审';
+        if (reason === 'diagnostic_funnel') return '检测到高优先级诊断，已跳过自动复审';
+        return '未检测到待审查变更，已跳过自动复审';
+    };
+
+    /** 若运行时日志支持会话接口则记录一次“自动复审跳过”事件，否则静默跳过 */
+    const logAutoReviewSkipped = (
+        filePath: string,
+        reason: AutoReviewSkipReason,
+        effectiveChangedLines: number,
+        riskMatched: boolean
+    ): void => {
+        const rt = runtimeTraceLogger as unknown as { startRunSession?: (t: string) => string | null; logEvent?: (e: unknown) => void; endRunSession?: (s: string) => void };
+        if (typeof rt.startRunSession !== 'function' || typeof rt.logEvent !== 'function' || typeof rt.endRunSession !== 'function') {
+            return;
+        }
+        const session = rt.startRunSession('manual');
+        if (!session) return;
+        rt.logEvent({
+            session,
+            component: 'Extension',
+            event: 'auto_review_skipped',
+            phase: 'manual',
+            data: { filePath, reason, effectiveChangedLines, riskMatched },
+        });
+        rt.endRunSession(session);
+    };
+
+    /** 解析指定文件的待提交 diff；失败时返回 ok: false */
+    const resolvePendingDiffForFile = async (filePath: string): Promise<{ diff: FileDiff | null; ok: boolean }> => {
+        try {
+            const pendingDiffByFile = await fileScanner.getPendingDiff([filePath]);
+            const norm = normalizeFilePath(filePath);
+            const matched = [...pendingDiffByFile.entries()].find(([key]) => normalizeFilePath(key) === norm);
+            return { diff: matched?.[1] ?? null, ok: true };
+        } catch {
+            return { diff: null, ok: false };
+        }
     };
 
     const syncReviewPanelOptions = (): void => {
@@ -196,15 +289,14 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             .getDiagnostics(vscode.Uri.file(filePath))
             .some(item => item.severity === vscode.DiagnosticSeverity.Error);
 
+    /** 复审完成时的状态文案：保留历史问题时与“已最新保存”区分 */
     const getSaveReviewDoneMessage = (preserveStaleOnEmpty: boolean): string =>
-        preserveStaleOnEmpty
-            ? 'δУ'
-            : '复审完成（已最新保存）';
+        preserveStaleOnEmpty ? '复审完成（已保留历史）' : '复审完成（已最新保存）';
 
     const enqueueTask = (filePath: string, task: QueuedAutoReviewTask): void => {
         const normalizedPath = normalizeFilePath(filePath);
         const state = ensureState(normalizedPath);
-        state.queuedTask = task; // coalesce：同文件仅保留最后一次任?
+        state.queuedTask = task; // coalesce：同文件仅保留最后一次任务
         if (!state.inFlight) {
             pushReadyPath(normalizedPath);
         }
@@ -229,6 +321,43 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             void flushQueue();
         }, Math.max(0, delayMs));
         updateQueuedStatus('已限频，冷却中');
+    };
+
+    const evaluateSaveTaskGate = async (
+        filePath: string,
+        task: QueuedAutoReviewTask,
+        options: ReturnType<typeof getRuntimeOptions>
+    ): Promise<{
+        skip: boolean;
+        reason?: AutoReviewSkipReason;
+        effectiveChangedLines: number;
+        riskMatched: boolean;
+    }> => {
+        if (task.trigger !== 'save') {
+            return { skip: false, effectiveChangedLines: 0, riskMatched: false };
+        }
+        if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+            return { skip: false, effectiveChangedLines: 0, riskMatched: false };
+        }
+        const state = ensureState(filePath);
+        const resolvedDiff = await resolvePendingDiffForFile(filePath);
+        if (!resolvedDiff.ok) {
+            return { skip: false, effectiveChangedLines: 0, riskMatched: false };
+        }
+        const diagnostics = collectDiagnosticsForFile(filePath);
+        return evaluateAutoReviewGate({
+            trigger: 'save',
+            savedContentHash: task.savedContentHash,
+            lastReviewedContentHash: state.lastReviewedContentHash,
+            diff: resolvedDiff.diff,
+            diagnostics,
+            config: {
+                skipSameContent: options.skipSameContent,
+                minEffectiveChangedLines: options.minEffectiveChangedLines,
+                riskPatterns: options.riskPatterns,
+                funnelLintSeverity: options.saveFunnelLintSeverity,
+            },
+        });
     };
 
     const flushQueue = async (): Promise<void> => {
@@ -257,6 +386,22 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                     const task = state.queuedTask;
                     state.queuedTask = null;
 
+                    const gateDecision = await evaluateSaveTaskGate(nextPath, task, options);
+                    if (gateDecision.skip && gateDecision.reason) {
+                        if (gateDecision.reason === 'same_content') {
+                            readyReviewPanel.clearFileStaleMarkers(nextPath);
+                        }
+                        const message = getSkipReasonMessage(gateDecision.reason);
+                        updateCompletedStatus(message);
+                        logAutoReviewSkipped(
+                            nextPath,
+                            gateDecision.reason,
+                            gateDecision.effectiveChangedLines,
+                            gateDecision.riskMatched
+                        );
+                        continue;
+                    }
+
                     if (!task.bypassRateLimit) {
                         pruneExecutionWindow();
                         if (executionTimestamps.length >= options.maxRunsPerMinute) {
@@ -271,39 +416,47 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                     state.latestRequestSeq = requestSeq;
                     state.inFlight = true;
                     activeRuns++;
-                    updateQueuedStatus('复审执行中');
 
                     void (async () => {
                         try {
-                            const saveReviewContext = await readyReviewEngine.reviewSavedFileWithPendingDiffContext(nextPath);
-                            const result = saveReviewContext.result;
-                            const preserveStaleOnEmpty =
-                                readyReviewPanel.isFileStale(nextPath)
-                                && countIssuesForFile(result, nextPath) === 0
-                                && hasErrorDiagnostics(nextPath);
-                            const saveReviewDoneMessage = getSaveReviewDoneMessage(preserveStaleOnEmpty);
-                            const latestState = ensureState(nextPath);
-                            const staleByRequest = requestSeq < latestState.latestRequestSeq;
-                            const staleByEdit = task.editRevision < latestState.editRevision;
-                            const staleBySave = task.saveRevision < latestState.latestSavedRevision;
-                            if (staleByRequest || staleByEdit || staleBySave) {
-                                updateCompletedStatus('已丢弃过期结果');
-                                return;
-                            }
-                            readyReviewPanel.applyFileReviewPatch({
-                                filePath: nextPath,
-                                newResult: result,
-                                replaceMode: 'stale_only',
-                                status: 'completed',
-                                statusMessage: saveReviewDoneMessage,
-                                emptyStateHint: '当前保存文件复审未发现问题',
-                                preserveStaleOnEmpty,
-                                reviewedMode: saveReviewContext.mode,
-                                reviewedRanges: saveReviewContext.reviewedRanges,
-                            });
-                            readyStatusBar.updateWithResult(
-                                readyReviewPanel.getCurrentResult() ?? result,
-                                saveReviewDoneMessage
+                            await vscode.window.withProgress(
+                                { location: { viewId: 'agentReview.results' }, title: '复审中…' },
+                                async () => {
+                                    updateQueuedStatus('复审执行中');
+                                    const saveReviewContext = await readyReviewEngine.reviewSavedFileWithPendingDiffContext(nextPath);
+                                    const result = saveReviewContext.result;
+                                    const preserveStaleOnEmpty =
+                                        readyReviewPanel.isFileStale(nextPath)
+                                        && countIssuesForFile(result, nextPath) === 0
+                                        && hasErrorDiagnostics(nextPath);
+                                    const saveReviewDoneMessage = getSaveReviewDoneMessage(preserveStaleOnEmpty);
+                                    const latestState = ensureState(nextPath);
+                                    const staleByRequest = requestSeq < latestState.latestRequestSeq;
+                                    const staleByEdit = task.editRevision < latestState.editRevision;
+                                    const staleBySave = task.saveRevision < latestState.latestSavedRevision;
+                                    if (staleByRequest || staleByEdit || staleBySave) {
+                                        updateCompletedStatus('已丢弃过期结果');
+                                        return;
+                                    }
+                                    if (task.trigger === 'save' && task.savedContentHash) {
+                                        latestState.lastReviewedContentHash = task.savedContentHash;
+                                    }
+                                    readyReviewPanel.applyFileReviewPatch({
+                                        filePath: nextPath,
+                                        newResult: result,
+                                        replaceMode: 'stale_only',
+                                        status: 'completed',
+                                        statusMessage: saveReviewDoneMessage,
+                                        emptyStateHint: '当前保存文件复审未发现问题',
+                                        preserveStaleOnEmpty,
+                                        reviewedMode: saveReviewContext.mode,
+                                        reviewedRanges: saveReviewContext.reviewedRanges,
+                                    });
+                                    readyStatusBar.updateWithResult(
+                                        readyReviewPanel.getCurrentResult() ?? result,
+                                        saveReviewDoneMessage
+                                    );
+                                }
                             );
                         } catch (error) {
                             logger.error('自动复审执行失败', error);
@@ -326,7 +479,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         }
     };
 
-    const scheduleSaveReview = (filePath: string): void => {
+    const scheduleSaveReview = (filePath: string, savedContentHash: string): void => {
         const options = getRuntimeOptions();
         const state = ensureState(filePath);
         const snapshotTask: QueuedAutoReviewTask = {
@@ -334,6 +487,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             editRevision: state.editRevision,
             saveRevision: state.latestSavedRevision,
             bypassRateLimit: false,
+            savedContentHash,
         };
         state.saveDebounceTimer = clearTimer(state.saveDebounceTimer);
         if (options.debounceMs <= 0) {
@@ -371,6 +525,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                 editRevision: state.editRevision,
                 saveRevision: state.latestSavedRevision,
                 bypassRateLimit: false,
+                savedContentHash: null,
             });
             void flushQueue();
         }, options.idleRecheckMs);
@@ -402,6 +557,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             editRevision: state.editRevision,
             saveRevision: state.latestSavedRevision,
             bypassRateLimit: options.manualBypassRateLimit,
+            savedContentHash: null,
         });
         void flushQueue();
     };
@@ -457,7 +613,8 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             const filePath = normalizeFilePath(document.uri.fsPath);
             const state = ensureState(filePath);
             state.latestSavedRevision = state.editRevision;
-            scheduleSaveReview(filePath);
+            const content = typeof document.getText === 'function' ? document.getText() : '';
+            scheduleSaveReview(filePath, createContentHash(content));
         })
         : { dispose: () => {} };
 
@@ -495,7 +652,7 @@ const getGitRoot = (): string | null => {
 
 export const activate = async (context: vscode.ExtensionContext) => {
     const logger = new Logger('AgentReview');
-    logger.info('AgentReview插件正在?..');
+    logger.info('AgentReview插件正在启动…');
 
     try {
         configManager = new ConfigManager();

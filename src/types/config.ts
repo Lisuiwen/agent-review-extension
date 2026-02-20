@@ -50,8 +50,12 @@ export interface AgentReviewConfig {
         batch_concurrency?: number;         // 批次并发数
         max_request_chars?: number;         // 单次请求字符数上限
         run_on_save?: boolean;              // 保存文件时自动触发审查（默认 false）
-        run_on_save_debounce_ms?: number;   // 保存自动审查防抖时间（默认 800ms）
-        run_on_save_max_runs_per_minute?: number; // 保存自动审查每分钟最大执行次数（默认 6）
+        run_on_save_debounce_ms?: number;   // 保存自动审查防抖时间（默认 1200ms）
+        run_on_save_max_runs_per_minute?: number; // 保存自动审查每分钟最大执行次数（默认 4）
+        run_on_save_skip_same_content?: boolean; // 保存内容与上次复审一致时跳过（默认 true）
+        run_on_save_min_effective_changed_lines?: number; // 保存自动复审最小有效改动行数（默认 3，0 为关闭）
+        run_on_save_risk_patterns?: string[]; // 保存自动复审风险特征正则列表（命中则不按小改动跳过）
+        run_on_save_funnel_lint_severity?: 'off' | 'error' | 'warning'; // 保存自动复审 diagnostics 漏斗阈值（默认 error）
         enable_local_rebase?: boolean;      // 编辑期本地行号重映射（默认 true）
         large_change_line_threshold?: number; // 大改动阈值，超出仅标记 stale（默认 40）
         idle_recheck_enabled?: boolean;     // 编辑停顿后自动复审（默认 false）

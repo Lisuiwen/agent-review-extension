@@ -225,15 +225,44 @@
         },
         "agentreview.ai.runOnSaveDebounceMs": {
           "type": "number",
-          "default": 800,
+          "default": 1200,
           "minimum": 0,
           "description": "保存复审防抖时间（毫秒）"
         },
         "agentreview.ai.runOnSaveMaxRunsPerMinute": {
           "type": "number",
-          "default": 6,
+          "default": 4,
           "minimum": 1,
           "description": "每分钟最多触发保存复审次数（限频）"
+        },
+        "agentreview.ai.runOnSaveSkipSameContent": {
+          "type": "boolean",
+          "default": true,
+          "description": "保存内容与上次复审一致时跳过自动复审"
+        },
+        "agentreview.ai.runOnSaveMinEffectiveChangedLines": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "description": "保存自动复审最小有效改动行数（0 表示关闭小改动跳过）"
+        },
+        "agentreview.ai.runOnSaveRiskPatterns": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "保存自动复审风险特征正则列表，命中后不按小改动规则跳过"
+        },
+        "agentreview.ai.runOnSaveFunnelLintSeverity": {
+          "type": "string",
+          "enum": [
+            "off",
+            "error",
+            "warning"
+          ],
+          "default": "error",
+          "description": "保存自动复审 diagnostics 漏斗阈值"
         },
         "agentreview.ai.enableLocalRebase": {
           "type": "boolean",

@@ -16,6 +16,7 @@
 import * as vscode from 'vscode';
 import type { ReviewResult, ReviewIssue } from '../types/review';
 import * as path from 'path';
+import { IssueDeduplicator } from '../core/issueDeduplicator';
 
 type IgnoreLineMeta = {
     ignoredLines: Set<number>;
@@ -186,32 +187,25 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
      */
     getChildren(element?: ReviewTreeItem): ReviewTreeItem[] {
         if (!this.reviewResult) {
+            // 方案 B：reviewing 时不显示 statusMessage；loading 仅由左侧侧边栏徽章显示，面板内不显示旋转图标
+            if (this.status === 'reviewing') {
+                return [new ReviewTreeItem('点击刷新按钮开始复审', vscode.TreeItemCollapsibleState.None)];
+            }
             const statusItem = this.createStatusMessageItem();
             if (statusItem) {
                 return [statusItem];
-            }
-            if (this.status === 'reviewing') {
-                const loadingItem = new ReviewTreeItem('正在审查...', vscode.TreeItemCollapsibleState.None);
-                loadingItem.iconPath = new vscode.ThemeIcon('sync~spin');
-                loadingItem.description = '请稍候';
-                return [loadingItem];
             }
             return [new ReviewTreeItem('点击刷新按钮开始复审', vscode.TreeItemCollapsibleState.None)];
         }
 
         if (!element) {
             const items: ReviewTreeItem[] = [];
-            const statusItem = this.createStatusMessageItem();
-            if (statusItem) {
-                items.push(statusItem);
-            }
-            
-            // 审查进行时，优先显示明显的加载提示
-            if (this.status === 'reviewing') {
-                const loadingItem = new ReviewTreeItem('正在审查...', vscode.TreeItemCollapsibleState.None);
-                loadingItem.iconPath = new vscode.ThemeIcon('sync~spin');
-                loadingItem.description = '请稍候';
-                items.push(loadingItem);
+            // 方案 B：reviewing 时不添加任何 statusItem（不显示「复审执行中」等），也不在面板内显示 loading 图标（改由侧边栏徽章显示）
+            if (this.status !== 'reviewing') {
+                const statusItem = this.createStatusMessageItem();
+                if (statusItem) {
+                    items.push(statusItem);
+                }
             }
             
             // 如果没有问题且审查通过，检查是否是因为没有 staged 文件
@@ -321,7 +315,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
             const countText = [
                 errorCount > 0 ? `${errorCount}` : '',
                 warningCount > 0 ? `${warningCount}` : '',
-                infoCount > 0 ? `${infoCount}ʾ` : '',
+                infoCount > 0 ? `${infoCount}` : '',
             ].filter(Boolean).join(', ');
 
             items.push(new ReviewTreeItem(
@@ -406,6 +400,25 @@ export class ReviewPanel {
             deduplicated.push(issue);
         }
         return deduplicated;
+    };
+
+    private buildResultFromIssues = (issues: ReviewIssue[]): ReviewResult => {
+        const errors = issues.filter(issue => issue.severity === 'error');
+        const warnings = issues.filter(issue => issue.severity === 'warning');
+        const info = issues.filter(issue => issue.severity === 'info');
+        return {
+            passed: errors.length === 0,
+            errors,
+            warnings,
+            info,
+        };
+    };
+
+    private normalizeResultForDisplay = (result: ReviewResult): ReviewResult => {
+        const allIssues = this.getAllIssues(result);
+        const exactDeduplicated = this.deduplicateIssues(allIssues);
+        const similarityDeduplicated = IssueDeduplicator.dedupeAiIssuesByLineSimilarity(exactDeduplicated);
+        return this.buildResultFromIssues(similarityDeduplicated);
     };
 
     private normalizeReviewedRanges = (ranges: ReviewedRange[]): ReviewedRange[] => {
@@ -517,18 +530,61 @@ export class ReviewPanel {
         context.subscriptions.push(this.documentChangeDisposable);
     }
 
+    /**
+     * 同步侧边栏「审查结果」视图的 description 与 badge：
+     * reviewing 时仅显示 loading；有 result 时按 error > warning > info 显示数量与 tooltip；否则清空
+     */
+    private syncTreeViewBadgeAndDescription(): void {
+        const status = this.provider.getStatus();
+        const result = this.provider.getCurrentResult();
+        if (status === 'reviewing') {
+            this.treeView.description = '$(sync~spin)';
+            this.treeView.badge = { value: 0, tooltip: '审查中…' };
+            return;
+        }
+        if (!result) {
+            this.treeView.description = undefined;
+            this.treeView.badge = undefined;
+            return;
+        }
+        const e = result.errors.length;
+        const w = result.warnings.length;
+        const i = result.info.length;
+        const tooltip = `错误: ${e}, 警告: ${w}, 信息: ${i}`;
+        const bySeverity: Array<{ icon: string; count: number }> = [
+            { icon: '$(error)', count: e },
+            { icon: '$(warning)', count: w },
+            { icon: '$(info)', count: i },
+        ];
+        const first = bySeverity.find(s => s.count > 0);
+        if (first) {
+            this.treeView.description = `${first.icon} ${first.count}`;
+            this.treeView.badge = { value: first.count, tooltip };
+        } else {
+            this.treeView.description = undefined;
+            this.treeView.badge = undefined;
+        }
+    }
+
     showReviewResult(
         result: ReviewResult,
         status: 'idle' | 'reviewing' | 'completed' | 'error' = 'completed',
         statusMessage = '',
         emptyStateHint = ''
     ): void {
-        this.provider.updateResult(result, status, statusMessage, emptyStateHint);
+        this.provider.updateResult(
+            this.normalizeResultForDisplay(result),
+            status,
+            statusMessage,
+            emptyStateHint
+        );
+        this.syncTreeViewBadgeAndDescription();
     }
 
     setStatus(status: 'idle' | 'reviewing' | 'completed' | 'error', statusMessage = ''): void {
         const currentResult = this.provider.getCurrentResult();
         this.provider.updateResult(currentResult, status, statusMessage);
+        this.syncTreeViewBadgeAndDescription();
     }
 
     getStatus(): 'idle' | 'reviewing' | 'completed' | 'error' {
@@ -544,6 +600,61 @@ export class ReviewPanel {
     setSubStatus(statusMessage?: string): void {
         const currentResult = this.provider.getCurrentResult();
         this.provider.updateResult(currentResult, this.provider.getStatus(), statusMessage);
+        this.syncTreeViewBadgeAndDescription();
+    }
+
+    /**
+     * 清除指定文件的 stale 标记（仅改 stale，不改其他字段）
+     */
+    clearFileStaleMarkers(filePath: string): void {
+        const currentResult = this.provider.getCurrentResult();
+        if (!currentResult) {
+            return;
+        }
+        const normalizedTarget = path.normalize(filePath);
+        let changed = false;
+
+        const clearInIssues = (issues: ReviewIssue[]): ReviewIssue[] => issues.map(issue => {
+            if (path.normalize(issue.file) !== normalizedTarget || issue.stale !== true) {
+                return issue;
+            }
+            changed = true;
+            return {
+                ...issue,
+                stale: false,
+            };
+        });
+
+        if (!changed && !this.getAllIssues(currentResult).some(issue =>
+            path.normalize(issue.file) === normalizedTarget && issue.stale === true
+        )) {
+            return;
+        }
+
+        const nextResult: ReviewResult = {
+            ...currentResult,
+            errors: clearInIssues(currentResult.errors),
+            warnings: clearInIssues(currentResult.warnings),
+            info: clearInIssues(currentResult.info),
+        };
+
+        if (!changed) {
+            return;
+        }
+
+        if (
+            this.activeIssueForActions
+            && path.normalize(this.activeIssueForActions.file) === normalizedTarget
+            && this.activeIssueForActions.stale === true
+        ) {
+            this.activeIssueForActions = {
+                ...this.activeIssueForActions,
+                stale: false,
+            };
+        }
+
+        this.provider.updateResult(nextResult, this.provider.getStatus());
+        this.syncTreeViewBadgeAndDescription();
     }
 
     /**
@@ -574,8 +685,7 @@ export class ReviewPanel {
     }
 
     /**
-     * - 浼樺厛浣跨敤 issue.astRange
-     * - 最终返回归并后的有序范围，减少重复覆盖
+     * 优先使用 issue.astRange；最终返回归并后的有序范围，减少重复覆盖
      */
     getStaleScopeHints(filePath: string): Array<{ startLine: number; endLine: number; source: 'ast' | 'line' }> {
         const result = this.provider.getCurrentResult();
@@ -673,22 +783,15 @@ export class ReviewPanel {
             }
             return !this.isLineInReviewedRanges(issue.line, reviewedRanges);
         };
-        const nextResult: ReviewResult = {
-            passed: true,
-            errors: this.deduplicateIssues([
-                ...currentResult.errors.filter(shouldKeepExistingIssue),
-                ...incomingBySeverity.errors,
-            ]),
-            warnings: this.deduplicateIssues([
-                ...currentResult.warnings.filter(shouldKeepExistingIssue),
-                ...incomingBySeverity.warnings,
-            ]),
-            info: this.deduplicateIssues([
-                ...currentResult.info.filter(shouldKeepExistingIssue),
-                ...incomingBySeverity.info,
-            ]),
-        };
-        nextResult.passed = nextResult.errors.length === 0;
+        const mergedIssues = [
+            ...incomingBySeverity.errors,
+            ...currentResult.errors.filter(shouldKeepExistingIssue),
+            ...incomingBySeverity.warnings,
+            ...currentResult.warnings.filter(shouldKeepExistingIssue),
+            ...incomingBySeverity.info,
+            ...currentResult.info.filter(shouldKeepExistingIssue),
+        ];
+        const nextResult = this.normalizeResultForDisplay(this.buildResultFromIssues(mergedIssues));
 
         this.clearHighlight();
         this.provider.updateResult(
@@ -697,6 +800,7 @@ export class ReviewPanel {
             params.statusMessage,
             params.emptyStateHint
         );
+        this.syncTreeViewBadgeAndDescription();
     }
 
     /**
@@ -736,18 +840,15 @@ export class ReviewPanel {
 
         this.clearHighlight();
         this.provider.updateResult(nextResult, this.provider.getStatus());
+        this.syncTreeViewBadgeAndDescription();
     }
 
     reveal(): void {
-        // TreeView 宸茬粡鍦ㄤ晶杈规爮鏄剧ず锛屾棤闇€棰濆鎿嶄綔
         this.provider.refresh();
+        this.syncTreeViewBadgeAndDescription();
     }
 
-    /**
-     * 娓呯悊褰撳墠楂樹寒
-     * 
-     * 褰撻€変腑闈為棶棰樿妭鐐规垨鍙戠敓寮傚父鏃讹紝绉婚櫎鏃х殑楂樹寒
-     */
+    /** 清理当前高亮；当选中文档非问题节点或发生异常时，移除旧的高亮 */
     private clearHighlight = (): void => {
         if (this.lastHighlightedEditor) {
             this.lastHighlightedEditor.setDecorations(this.highlightDecoration, []);
@@ -793,6 +894,39 @@ export class ReviewPanel {
         }, 0);
         const onlyMarkStale = changeImpactLines > this.largeChangeLineThreshold;
 
+        const affectedRanges = event.contentChanges.map(change => {
+            const startLine = change.range.start.line + 1;
+            const endLine = change.range.end.line + 1;
+            const removedLineCount = Math.max(0, change.range.end.line - change.range.start.line);
+            const addedLineCount = (change.text.match(/\n/g) ?? []).length;
+            const isPureInsert = removedLineCount === 0 && addedLineCount > 0;
+            if (isPureInsert) {
+                return { startLine, endLine: startLine };
+            }
+            return {
+                startLine,
+                endLine: Math.max(startLine, endLine),
+            };
+        });
+
+        const intersectsAffectedRanges = (startLine: number, endLine: number): boolean => {
+            const normalizedStart = Math.max(1, Math.floor(startLine));
+            const normalizedEnd = Math.max(normalizedStart, Math.floor(endLine));
+            return affectedRanges.some(range =>
+                normalizedStart <= range.endLine && normalizedEnd >= range.startLine
+            );
+        };
+
+        const isIssueAffected = (issue: ReviewIssue): boolean => {
+            if (onlyMarkStale) {
+                return true;
+            }
+            if (issue.astRange) {
+                return intersectsAffectedRanges(issue.astRange.startLine, issue.astRange.endLine);
+            }
+            return intersectsAffectedRanges(issue.line, issue.line);
+        };
+
         const rebaseLineByChanges = (line: number): number => {
             let rebased = line;
             for (const change of event.contentChanges) {
@@ -819,13 +953,26 @@ export class ReviewPanel {
         };
 
         const markIssueStale = (issue: ReviewIssue): ReviewIssue => {
+            const affected = isIssueAffected(issue);
             if (onlyMarkStale) {
                 return { ...issue, stale: true };
             }
+            const rebasedLine = rebaseLineByChanges(issue.line);
+            const rebasedAstRange = issue.astRange
+                ? (() => {
+                    const rebasedStart = rebaseLineByChanges(issue.astRange.startLine);
+                    const rebasedEnd = rebaseLineByChanges(issue.astRange.endLine);
+                    return {
+                        startLine: Math.min(rebasedStart, rebasedEnd),
+                        endLine: Math.max(rebasedStart, rebasedEnd),
+                    };
+                })()
+                : undefined;
             return {
                 ...issue,
-                line: rebaseLineByChanges(issue.line),
-                stale: true,
+                line: rebasedLine,
+                astRange: rebasedAstRange,
+                stale: affected ? true : issue.stale,
             };
         };
 
@@ -850,6 +997,7 @@ export class ReviewPanel {
             info: mapIssues(currentResult.info),
         };
         this.provider.updateResult(nextResult, this.provider.getStatus(), '已同步位置（待复审）');
+        this.syncTreeViewBadgeAndDescription();
 
         if (
             this.lastHighlightedEditor
@@ -860,11 +1008,7 @@ export class ReviewPanel {
         }
     };
 
-    /**
-     * 楂樹寒骞跺畾浣嶉棶棰樿
-     * 
-     * @param issue - 闇€瑕佸畾浣嶇殑闂
-     */
+    /** 高亮并定位问题到编辑器中 */
     private highlightIssue = async (issue: ReviewIssue): Promise<void> => {
         try {
             const document = await vscode.workspace.openTextDocument(vscode.Uri.file(issue.file));
@@ -961,16 +1105,16 @@ export class ReviewPanel {
         md.appendMarkdown(`${severityLabel}: `);
         md.appendText(issue.message);
         if (issue.ignored) {
-            md.appendMarkdown('\n\n状? 已放行（@ai-ignore?');
+            md.appendMarkdown('\n\n状态: 已放行（@ai-ignore）');
             if (issue.ignoreReason) {
                 md.appendMarkdown(`\n放行原因: ${issue.ignoreReason}`);
             }
         }
         if (issue.stale) {
-            md.appendMarkdown('\n\n状? 已同步位罼待审，诹參过期?');
+            md.appendMarkdown('\n\n状态: 已同步位置待审，参考过期');
         }
         md.appendMarkdown('\n\n');
-        md.appendMarkdown(`瑙勫垯: ${issue.rule}`);
+        md.appendMarkdown(`规则: ${issue.rule}`);
         if (issue.reason && issue.reason !== issue.message) {
             md.appendMarkdown('\n');
             md.appendText(issue.reason);
@@ -988,7 +1132,7 @@ export class ReviewPanel {
     }
 
     /**
-     * - 娉ㄩ噴鍚庣殑棣栦釜闈炵┖琛岋細蹇界暐锛堜笌 ReviewEngine.filterIgnoredIssues 淇濇寔涓€鑷达級
+     * - 注释后的首个非空行：忽略（与 ReviewEngine.filterIgnoredIssues 保持一致）
      */
     private collectIgnoredLineMeta = async (filePath: string): Promise<IgnoreLineMeta> => {
         const meta: IgnoreLineMeta = {
@@ -1052,5 +1196,3 @@ export class ReviewPanel {
         this.treeView.dispose();
     }
 }
-
-

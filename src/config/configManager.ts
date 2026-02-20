@@ -191,6 +191,10 @@ export class ConfigManager implements vscode.Disposable {
             { key: 'ai.runOnSave', configKey: 'run_on_save' },
             { key: 'ai.runOnSaveDebounceMs', configKey: 'run_on_save_debounce_ms' },
             { key: 'ai.runOnSaveMaxRunsPerMinute', configKey: 'run_on_save_max_runs_per_minute' },
+            { key: 'ai.runOnSaveSkipSameContent', configKey: 'run_on_save_skip_same_content' },
+            { key: 'ai.runOnSaveMinEffectiveChangedLines', configKey: 'run_on_save_min_effective_changed_lines' },
+            { key: 'ai.runOnSaveRiskPatterns', configKey: 'run_on_save_risk_patterns' },
+            { key: 'ai.runOnSaveFunnelLintSeverity', configKey: 'run_on_save_funnel_lint_severity' },
             { key: 'ai.enableLocalRebase', configKey: 'enable_local_rebase' },
             { key: 'ai.largeChangeLineThreshold', configKey: 'large_change_line_threshold' },
             { key: 'ai.idleRecheckEnabled', configKey: 'idle_recheck_enabled' },
@@ -212,8 +216,8 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
-     *
-     * 浼樺厛绾э細Settings > YAML > 榛樿
+     * 从 VSCode Settings 加载运行时日志配置
+     * 优先级：Settings > YAML > 默认
      */
     private loadRuntimeLogConfigFromSettings(): Partial<NonNullable<AgentReviewConfig['runtime_log']>> | undefined {
         const settings = vscode.workspace.getConfiguration('agentreview');
@@ -367,11 +371,26 @@ export class ConfigManager implements vscode.Disposable {
                     run_on_save_debounce_ms:
                         settingsAIConfig.run_on_save_debounce_ms
                         ?? existingAIConfig?.run_on_save_debounce_ms
-                        ?? 800,
+                        ?? 1200,
                     run_on_save_max_runs_per_minute:
                         settingsAIConfig.run_on_save_max_runs_per_minute
                         ?? existingAIConfig?.run_on_save_max_runs_per_minute
-                        ?? 6,
+                        ?? 4,
+                    run_on_save_skip_same_content:
+                        settingsAIConfig.run_on_save_skip_same_content
+                        ?? existingAIConfig?.run_on_save_skip_same_content
+                        ?? true,
+                    run_on_save_min_effective_changed_lines:
+                        settingsAIConfig.run_on_save_min_effective_changed_lines
+                        ?? existingAIConfig?.run_on_save_min_effective_changed_lines
+                        ?? 3,
+                    run_on_save_risk_patterns:
+                        settingsAIConfig.run_on_save_risk_patterns
+                        ?? existingAIConfig?.run_on_save_risk_patterns,
+                    run_on_save_funnel_lint_severity:
+                        settingsAIConfig.run_on_save_funnel_lint_severity
+                        ?? existingAIConfig?.run_on_save_funnel_lint_severity
+                        ?? 'error',
                     enable_local_rebase:
                         settingsAIConfig.enable_local_rebase
                         ?? existingAIConfig?.enable_local_rebase
@@ -623,8 +642,8 @@ export class ConfigManager implements vscode.Disposable {
                 enabled: true,
                 max_node_lines: 200,
                 max_file_lines: 2000,
-                include_lsp_context: true, // 榛樿鍚敤锛氫负 AST 鐗囨琛ュ厖涓€灞傚閮ㄥ畾涔変笂涓嬫枃
-                preview_only: false,  // 默 false：常求大模型；true 时仅打印切片不?
+                include_lsp_context: true, // 默认启用：为 AST 片段补充一层局部定义上下文
+                preview_only: false,  // 默认 false：正常请求大模型；true 时仅打印切片不请求
             },
             exclusions: {
                 files: [],

@@ -46,8 +46,11 @@ ai_review:
   max_tokens: 2000                # 最大token数
   diff_only: true                # 仅发送变更片段给 AI（默认 true）
   run_on_save: true
-  run_on_save_debounce_ms: 800
-  run_on_save_max_runs_per_minute: 6
+  run_on_save_debounce_ms: 1200
+  run_on_save_max_runs_per_minute: 4
+  run_on_save_skip_same_content: true
+  run_on_save_min_effective_changed_lines: 3
+  run_on_save_funnel_lint_severity: "error"
   # 系统提示词 - 前端代码审查专用版本
   # 完整的前端审查提示词请参考：.cursor/prompts/frontend-review-prompt.md
   system_prompt: |

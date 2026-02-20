@@ -48,12 +48,10 @@ describe('ConfigManager', () => {
 
     describe('测试用例 2.1: 默认配置加载', () => {
         it('应在没有配置文件时使用默认配置', async () => {
-            // 不创建配罖件，直接初?
+            // 不创建配置文件，直接初始化
             await configManager.initialize();
-            
             const config = configManager.getConfig();
-            
-            // 验证默配置的基朻?
+            // 验证默认配置的基本项
             expect(config).toBeDefined();
             expect(config.version).toBe('1.0');
             expect(config.rules.enabled).toBe(true);
@@ -62,11 +60,10 @@ describe('ConfigManager', () => {
             expect(config.rules.code_quality?.enabled).toBe(true);
         });
 
-        it('默配置应包含有必的?', async () => {
+        it('默认配置应包含必要项', async () => {
             await configManager.initialize();
             const config = configManager.getConfig();
-            
-            // 楠岃瘉鍛藉悕瑙勮寖瑙勫垯
+            // 验证命名规范规则
             expect(config.rules.naming_convention?.no_space_in_filename).toBe(true);
             expect(config.rules.naming_convention?.action).toBe('block_commit');
             
@@ -76,7 +73,7 @@ describe('ConfigManager', () => {
             expect(config.rules.code_quality?.action).toBe('block_commit');
         });
 
-        it('测到项目规则文件且用户未显式配置时，应默认开?builtin_rules_enabled', async () => {
+        it('检测到项目规则文件且用户未显式配置时，builtin_rules_enabled 仍为 false、规则来源为 project', async () => {
             await tempFs.createFile('.eslintrc.json', '{"root": true}');
             await configManager.initialize();
             const config = configManager.getConfig();
@@ -201,11 +198,10 @@ rules:
     });
 
     describe('', () => {
-        it('朘式配?Settings 时，不应让默认?YAML ?human_readable.auto_generate_on_run_end', async () => {
+        it('未显式配置 Settings 时，不应让默认覆盖 YAML 的 human_readable.auto_generate_on_run_end', async () => {
             const originalGetConfiguration = (vscode.workspace as any).getConfiguration;
             try {
                 (vscode.workspace as any).getConfiguration = () => ({
-                    // 模拟 VSCode get() 參返回默?
                     get: (key: string) => {
                         const defaults: Record<string, unknown> = {
                             runtimeLog: {},
@@ -221,7 +217,6 @@ rules:
                         };
                         return defaults[key];
                     },
-                    // 关键：inspect 表示“未显式设置?
                     inspect: (_key: string) => ({
                         defaultValue: undefined,
                         globalValue: undefined,
@@ -256,7 +251,7 @@ runtime_log:
     });
 
     describe('', () => {
-        it('朘式配?Settings 时，不应让默认?YAML ?ai_review.run_on_save', async () => {
+        it('仅配置 Settings 时，不应让默认覆盖 YAML 的 ai_review.run_on_save', async () => {
             const originalGetConfiguration = (vscode.workspace as any).getConfiguration;
             try {
                 (vscode.workspace as any).getConfiguration = () => ({
@@ -301,16 +296,13 @@ ai_review:
     });
 
     describe('测试用例 2.4: 配置文件错误处理', () => {
-        it('应优雅处理格式错?YAML 文件', async () => {
-            // 创建格式错?YAML
+        it('应优雅处理格式错误的 YAML 文件', async () => {
             const invalidYaml = `version: "1.0"
 rules:
   enabled: true
-  # 缺少闐拏或格式错?
   naming_convention:
     enabled: true
     action: "block_commit"
-    # 格式错：缺少?
     no_space_in_filename:
 `;
             
@@ -327,7 +319,6 @@ rules:
         });
 
         it('应处理不存在的配置文件', async () => {
-            // 不创建配罖?
             await configManager.initialize();
             
             const config = configManager.getConfig();

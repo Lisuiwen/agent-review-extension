@@ -20,13 +20,18 @@ export const registerRunStagedReviewCommand = (deps: CommandContext): vscode.Dis
         }
 
         try {
-            statusBar.updateStatus('reviewing');
-            reviewPanel.setStatus('reviewing');
-            reviewPanel.reveal();
+            await vscode.window.withProgress(
+                { location: { viewId: 'agentReview.results' }, title: '审查中…' },
+                async () => {
+                    statusBar.updateStatus('reviewing');
+                    reviewPanel.setStatus('reviewing');
+                    reviewPanel.reveal();
 
-            const result = await reviewEngine.reviewStagedFiles();
-            reviewPanel.showReviewResult(result, 'completed', '', '没有staged文件需要审查');
-            statusBar.updateWithResult(result);
+                    const result = await reviewEngine.reviewStagedFiles();
+                    reviewPanel.showReviewResult(result, 'completed', '', '没有staged文件需要审查');
+                    statusBar.updateWithResult(result);
+                }
+            );
         } catch (error) {
             logger.error('staged 审查过程出错', error);
             statusBar.updateStatus('error');

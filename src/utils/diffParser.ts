@@ -23,6 +23,9 @@ export function parseUnifiedDiff(raw: string): FileDiff[] {
     let currentPath: string | null = null;
     let currentHunks: DiffHunk[] = [];
     let currentHunk: { newStart: number; newCount: number; lines: string[] } | null = null;
+    let currentAddedLines = 0;
+    let currentDeletedLines = 0;
+    let currentAddedContentLines: string[] = [];
     let newLineIndex = 0; // 当前 hunk 内「新文件」已处理行数
 
     const flushHunk = () => {
@@ -39,10 +42,19 @@ export function parseUnifiedDiff(raw: string): FileDiff[] {
 
     const flushFile = () => {
         if (currentPath && currentHunks.length > 0) {
-            files.push({ path: currentPath, hunks: currentHunks });
+            files.push({
+                path: currentPath,
+                hunks: currentHunks,
+                addedLines: currentAddedLines,
+                deletedLines: currentDeletedLines,
+                addedContentLines: currentAddedContentLines,
+            });
         }
         currentPath = null;
         currentHunks = [];
+        currentAddedLines = 0;
+        currentDeletedLines = 0;
+        currentAddedContentLines = [];
         flushHunk();
     };
 
@@ -75,16 +87,18 @@ export function parseUnifiedDiff(raw: string): FileDiff[] {
         if (currentHunk) {
             const prefix = line[0];
             const rest = line.slice(1);
-            // 上下文行或新增行计入新文件
-            if (prefix === ' ' || prefix === '+') {
+            const isContextOrAdd = prefix === ' ' || prefix === '+';
+            if (isContextOrAdd) {
                 currentHunk.lines.push(rest);
                 newLineIndex++;
             }
-            // 删除行 '-' 不计入新文件
-            // 若 newCount 已满，不再追加（兼容异常 diff）
-            if (newLineIndex >= currentHunk.newCount) {
-                flushHunk();
+            if (prefix === '+') {
+                currentAddedLines++;
+                currentAddedContentLines.push(rest);
+            } else if (prefix === '-') {
+                currentDeletedLines++;
             }
+            if (newLineIndex >= currentHunk.newCount) flushHunk();
         }
 
         i++;

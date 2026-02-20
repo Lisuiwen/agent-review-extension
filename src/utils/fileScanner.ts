@@ -232,35 +232,14 @@ export class FileScanner {
                 });
             }
 
-            // working diff 不包含 untracked 文件；保存触发审查时需要把“新建但未 git add”的文件也纳入增量范围
+            // working/pending 不包含 untracked；将未跟踪的新文件纳入为“全量新增”的 diff
             if (mode === 'working' || mode === 'pending') {
                 const untrackedFiles = await this.getUntrackedFiles(fileArgs);
                 for (const filePath of untrackedFiles) {
                     const normalizedPath = path.normalize(filePath);
-                    if (map.has(normalizedPath)) {
-                        continue;
-                    }
-
-                    let hunks: FileDiff['hunks'] = [];
-                    try {
-                        const content = await fs.promises.readFile(normalizedPath, 'utf-8');
-                        const lines = content.length > 0 ? content.split(/\r?\n/) : [];
-                        hunks = lines.length > 0
-                            ? [{
-                                newStart: 1,
-                                newCount: lines.length,
-                                lines,
-                            }]
-                            : [];
-                    } catch {
-                        // 文件读不到时保守回退为“无 hunk”，上层会自动按整文件路径继续审查
-                    }
-
-                    map.set(normalizedPath, {
-                        path: normalizedPath,
-                        hunks,
-                        formatOnly: false,
-                    });
+                    if (map.has(normalizedPath)) continue;
+                    const fileDiff = await this.buildUntrackedFileDiff(normalizedPath);
+                    map.set(normalizedPath, fileDiff);
                 }
             }
 
@@ -292,6 +271,29 @@ export class FileScanner {
         } catch {
             return EMPTY_TREE_HASH;
         }
+    }
+
+    /** 为未跟踪文件构造 FileDiff（读入全文为单一 hunk，含 addedLines/addedContentLines） */
+    private async buildUntrackedFileDiff(normalizedPath: string): Promise<FileDiff> {
+        let hunks: FileDiff['hunks'] = [];
+        try {
+            const content = await fs.promises.readFile(normalizedPath, 'utf-8');
+            const lines = content.length > 0 ? content.split(/\r?\n/) : [];
+            hunks = lines.length > 0
+                ? [{ newStart: 1, newCount: lines.length, lines }]
+                : [];
+        } catch {
+            // 文件读不到时保守回退为无 hunk，上层按整文件路径继续审查
+        }
+        const addedLines = hunks.reduce((sum, h) => sum + h.newCount, 0);
+        return {
+            path: normalizedPath,
+            hunks,
+            formatOnly: false,
+            addedLines,
+            deletedLines: 0,
+            addedContentLines: hunks.flatMap(h => h.lines),
+        };
     }
 
     private async getUntrackedFiles(fileArgs: string): Promise<string[]> {

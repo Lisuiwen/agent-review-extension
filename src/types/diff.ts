@@ -29,4 +29,10 @@ export interface FileDiff {
     hunks: DiffHunk[];
     /** 是否仅包含格式/空白差异（通过 git diff -w --ignore-blank-lines --ignore-cr-at-eol 判定） */
     formatOnly?: boolean;
+    /** 新增行数量（按 unified diff 中 '+' 行统计，不含上下文行） */
+    addedLines?: number;
+    /** 删除行数量（按 unified diff 中 '-' 行统计，不含上下文行） */
+    deletedLines?: number;
+    /** 新增行文本（用于自动复审风险特征匹配） */
+    addedContentLines?: string[];
 }

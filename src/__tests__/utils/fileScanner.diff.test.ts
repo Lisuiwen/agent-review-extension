@@ -67,6 +67,9 @@ describe('FileScanner working diff formatOnly', () => {
         const fileDiff = result.get(absolutePath);
         expect(fileDiff).toBeDefined();
         expect(fileDiff?.formatOnly).toBe(true);
+        expect(fileDiff?.addedLines).toBe(1);
+        expect(fileDiff?.deletedLines).toBe(1);
+        expect(fileDiff?.addedContentLines).toEqual(['<template>']);
     });
 
     it('语义 diff 仍有内容时应判定为 formatOnly=false', async () => {
@@ -77,6 +80,9 @@ describe('FileScanner working diff formatOnly', () => {
         const fileDiff = result.get(absolutePath);
         expect(fileDiff).toBeDefined();
         expect(fileDiff?.formatOnly).toBe(false);
+        expect(fileDiff?.addedLines).toBe(1);
+        expect(fileDiff?.deletedLines).toBe(1);
+        expect(fileDiff?.addedContentLines).toEqual(['<template>']);
     });
 
     it('working diff 为空但文件为 untracked 时，应补充该文件的 diff hunk', async () => {
@@ -97,6 +103,9 @@ describe('FileScanner working diff formatOnly', () => {
         expect(fileDiff?.hunks.length).toBe(1);
         expect(fileDiff?.hunks[0].newStart).toBe(1);
         expect(fileDiff?.hunks[0].newCount).toBeGreaterThan(0);
+        expect(fileDiff?.addedLines).toBe(fileDiff?.hunks[0].newCount);
+        expect(fileDiff?.deletedLines).toBe(0);
+        expect(fileDiff?.addedContentLines?.length).toBe(fileDiff?.hunks[0].newCount);
 
         readFileSpy.mockRestore();
     });
