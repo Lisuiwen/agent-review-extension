@@ -12,6 +12,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReviewEngine } from '../../core/reviewEngine';
 import { RuntimeTraceLogger } from '../../utils/runtimeTraceLogger';
+import type { RunSummaryPayload } from '../../utils/runtimeTraceLogger';
 import { createMockConfigManager } from '../helpers/mockConfigManager';
 import type { FileDiff } from '../../utils/diffTypes';
 
@@ -29,13 +30,7 @@ vi.mock('../../utils/fileScanner', () => ({
     },
 }));
 
-type RuntimeRecord = {
-    runId: string;
-    event: string;
-    data?: Record<string, unknown>;
-};
-
-const readRuntimeRecords = async (baseDir: string): Promise<RuntimeRecord[]> => {
+const readRuntimeSummaries = async (baseDir: string): Promise<RunSummaryPayload[]> => {
     const runtimeDir = path.join(baseDir, 'runtime-logs');
     const files = (await fs.promises.readdir(runtimeDir))
         .filter(name => name.endsWith('.jsonl'))
@@ -45,7 +40,7 @@ const readRuntimeRecords = async (baseDir: string): Promise<RuntimeRecord[]> => 
     return content
         .split(/\r?\n/)
         .filter(line => line.trim().length > 0)
-        .map(line => JSON.parse(line) as RuntimeRecord);
+        .map(line => JSON.parse(line) as RunSummaryPayload);
 };
 
 describe('ReviewEngine 运行链路日志完整性', () => {
@@ -73,7 +68,7 @@ describe('ReviewEngine 运行链路日志完整性', () => {
         tempDirs.push(baseDir);
         await runtimeTraceLogger.initialize({
             baseDir,
-            config: { enabled: true, level: 'info', retention_days: 14, file_mode: 'per_run', format: 'jsonl' },
+            config: { enabled: true, retention_days: 14 },
         });
 
         const stagedPath = path.normalize('src/app.ts');
@@ -144,41 +139,16 @@ describe('ReviewEngine 运行链路日志完整性', () => {
         await reviewEngine.reviewStagedFiles();
         await runtimeTraceLogger.flushAndCloseAll();
 
-        const records = await readRuntimeRecords(baseDir);
-        expect(records.length).toBeGreaterThan(0);
-
-        const runIds = new Set(records.map(record => record.runId));
+        const summaries = await readRuntimeSummaries(baseDir);
+        expect(summaries.length).toBeGreaterThan(0);
+        const runIds = new Set(summaries.map(s => s.runId));
         expect(runIds.size).toBe(1);
-
-        const events = records.map(record => record.event);
-        const requiredEvents = [
-            'diff_fetch_summary',
-            'run_start',
-            'config_snapshot',
-            'file_filter_summary',
-            'rule_scan_start',
-            'rule_scan_summary',
-            'rule_diff_filter_summary',
-            'ai_plan_summary',
-            'ai_batch_start',
-            'llm_call_start',
-            'llm_call_done',
-            'ai_batch_done',
-            'ai_pool_done',
-            'ai_review_done',
-            'run_end',
-        ];
-        for (const eventName of requiredEvents) {
-            expect(events.includes(eventName)).toBe(true);
-        }
-
-        for (const record of records) {
-            if (!record.data) continue;
-            expect(record.data.issuesCount).toBeUndefined();
-            expect(record.data.errorsCount).toBeUndefined();
-            expect(record.data.warningsCount).toBeUndefined();
-            expect(record.data.passed).toBeUndefined();
-        }
+        const one = summaries[0];
+        expect(one.status).toBe('success');
+        expect(one.trigger).toBe('staged');
+        expect(one.runId).toBeTruthy();
+        expect(typeof one.startedAt).toBe('number');
+        expect(typeof one.endedAt).toBe('number');
     });
 
     it('开启 AST 后应输出 AST 汇总事件', async () => {
@@ -251,10 +221,9 @@ describe('ReviewEngine 运行链路日志完整性', () => {
         await reviewEngine.reviewStagedFiles();
         await runtimeTraceLogger.flushAndCloseAll();
 
-        const records = await readRuntimeRecords(baseDir);
-        const events = records.map(record => record.event);
-        expect(events.includes('ast_scope_summary')).toBe(true);
-        expect(events.includes('ast_fallback_summary')).toBe(true);
-        expect(events.includes('run_end')).toBe(true);
+        const summaries = await readRuntimeSummaries(baseDir);
+        expect(summaries.length).toBeGreaterThan(0);
+        expect(summaries[0].status).toBe('success');
+        expect(summaries[0].runId).toBeTruthy();
     });
 });

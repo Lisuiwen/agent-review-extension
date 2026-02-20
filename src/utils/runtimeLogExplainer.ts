@@ -24,11 +24,25 @@ export const parseRunSummaryJsonl = (content: string): { payloads: RunSummaryPay
     return { payloads, parseSkippedLines };
 };
 
-const formatTime = (ms: number): string => {
+/** 将时间戳格式化为 HH:mm:ss（日期由日志文件名 YYYYMMDD.jsonl 体现） */
+export const formatTimeHms = (ms: number): string => {
     const d = new Date(ms);
     if (Number.isNaN(d.getTime())) return 'N/A';
-    return d.toLocaleString('zh-CN', { hour12: false });
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
+
+/** 将毫秒数格式化为可读运行时长，如 "2.7秒"、"1分2秒" */
+export const formatDurationMs = (ms: number): string => {
+    if (typeof ms !== 'number' || ms < 0) return 'N/A';
+    if (ms < 1000) return `${ms}毫秒`;
+    if (ms < 60 * 1000) return `${(ms / 1000).toFixed(1)}秒`;
+    const min = Math.floor(ms / 60000);
+    const sec = ((ms % 60000) / 1000).toFixed(1);
+    return sec === '0.0' ? `${min}分` : `${min}分${sec}秒`;
+};
+
+const formatTime = (ms: number): string => formatTimeHms(ms);
 
 const safe = (v: unknown): string =>
     typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? `${v}` : 'N/A';
@@ -38,9 +52,9 @@ export const formatRunSummaryPayload = (p: RunSummaryPayload): string => {
     const lines: string[] = [];
     lines.push('运行汇总');
     lines.push(`RunId: ${p.runId}`);
-    lines.push(`开始: ${formatTime(p.startedAt)}`);
-    lines.push(`结束: ${formatTime(p.endedAt)}`);
-    lines.push(`耗时(ms): ${p.durationMs}`);
+    lines.push(`开始: ${p.startedAtHms ?? formatTime(p.startedAt)}`);
+    lines.push(`结束: ${p.endedAtHms ?? formatTime(p.endedAt)}`);
+    lines.push(`运行时长: ${p.durationDisplay ?? formatDurationMs(p.durationMs)} (${p.durationMs}ms)`);
     lines.push(`触发: ${p.trigger}`);
     lines.push(`状态: ${p.status}${p.errorClass ? ` (${p.errorClass})` : ''}`);
     lines.push(`通过: ${p.passed}`);
@@ -53,6 +67,17 @@ export const formatRunSummaryPayload = (p: RunSummaryPayload): string => {
     if (p.llmTotalMs != null) lines.push(`LLM 总耗时(ms): ${p.llmTotalMs}`);
     lines.push(`忽略: 按指纹=${p.ignoredByFingerprintCount} 按行=${p.allowedByLineCount}`);
     if (p.ignoreStoreCount != null) lines.push(`忽略表条数: ${p.ignoreStoreCount}`);
+    if (p.ignoreAllowEvents?.length) {
+        lines.push('');
+        lines.push('放行/忽略事件');
+        for (const e of p.ignoreAllowEvents) {
+            if (e.type === 'ignored_by_fingerprint') {
+                lines.push(`  [${e.at}] 忽略(指纹) ${e.file}:${e.line}${e.fingerprint ? ` ${e.fingerprint}` : ''}`);
+            } else {
+                lines.push(`  [${e.at}] 放行(行) ${e.file}:${e.line}`);
+            }
+        }
+    }
     return lines.join('\n');
 };
 

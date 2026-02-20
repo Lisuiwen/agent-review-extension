@@ -27,6 +27,7 @@ import { getAffectedScopeWithDiagnostics, type AffectedScopeResult, type AstFall
 import { RuntimeTraceLogger, type RuntimeTraceSession, type RunSummaryPayload } from '../utils/runtimeTraceLogger';
 import { computeIssueFingerprint } from '../utils/issueFingerprint';
 import { loadIgnoredFingerprints, getIgnoreStoreCount } from '../config/ignoreStore';
+import { formatTimeHms, formatDurationMs } from '../utils/runtimeLogExplainer';
 
 const execAsync = promisify(exec);
 
@@ -146,7 +147,12 @@ export class ReviewEngine {
         session: RuntimeTraceSession,
         result: ReviewResult,
         status: 'success' | 'failed',
-        opts: { errorClass?: string; ignoredByFingerprintCount: number; allowedByLineCount: number },
+        opts: {
+            errorClass?: string;
+            ignoredByFingerprintCount: number;
+            allowedByLineCount: number;
+            ignoreAllowEvents?: RunSummaryPayload['ignoreAllowEvents'];
+        },
         workspaceRoot: string,
         reviewStartAt: number
     ): Promise<RunSummaryPayload> => {
@@ -162,7 +168,10 @@ export class ReviewEngine {
             runId: session.runId,
             startedAt: session.startedAt,
             endedAt,
+            startedAtHms: formatTimeHms(session.startedAt),
+            endedAtHms: formatTimeHms(endedAt),
             durationMs,
+            durationDisplay: formatDurationMs(durationMs),
             trigger: session.trigger,
             projectName: projectName || undefined,
             userName: userName || undefined,
@@ -182,6 +191,7 @@ export class ReviewEngine {
             infoFingerprints: collectFingerprints(result.info),
             status,
             errorClass: opts.errorClass,
+            ignoreAllowEvents: opts.ignoreAllowEvents ?? [],
         };
     };
 
@@ -421,7 +431,7 @@ export class ReviewEngine {
                     }
                 }
             }
-            const { issues: allIssues, ignoredByFingerprintCount, allowedByLineCount } = await this.filterIgnoredIssues(deduplicatedIssues, workspaceRoot);
+            const { issues: allIssues, ignoredByFingerprintCount, allowedByLineCount, ignoreAllowEvents } = await this.filterIgnoredIssues(deduplicatedIssues, workspaceRoot);
             // #region agent log
             fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H1',location:'reviewEngine.ts:399',message:'pre_attach_ast_ranges',data:{useAstScope:!!useAstScope,hasDiffByFile:!!options?.diffByFile,astMapSize:astSnippetsByFile?.size??0,allIssues:allIssues.length,aiIssues:aiIssues.length,ruleIssues:ruleIssues.length},timestamp:Date.now()})}).catch(()=>{});
             // #endregion
@@ -446,7 +456,7 @@ export class ReviewEngine {
                     traceSession,
                     result,
                     'success',
-                    { ignoredByFingerprintCount, allowedByLineCount },
+                    { ignoredByFingerprintCount, allowedByLineCount, ignoreAllowEvents },
                     workspaceRoot,
                     reviewStartAt
                 );
@@ -461,7 +471,7 @@ export class ReviewEngine {
                     traceSession,
                     emptyResult,
                     'failed',
-                    { errorClass, ignoredByFingerprintCount: 0, allowedByLineCount: 0 },
+                    { errorClass, ignoredByFingerprintCount: 0, allowedByLineCount: 0, ignoreAllowEvents: [] },
                     vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '',
                     reviewStartAt
                 );
@@ -728,26 +738,46 @@ export class ReviewEngine {
     /**
      * 识别并过滤已忽略的问题。顺序不可颠倒：
      * 1) 先按项目级忽略指纹过滤；2) 再按 @ai-ignore 行号过滤（标记行及下一非空行）。
-     * 返回过滤后的问题列表及本次因指纹/放行过滤掉的数量，供运行汇总统计用。
+     * 返回过滤后的问题列表、数量及放行/忽略事件列表（每条带时分秒），供运行汇总统计用。
      */
     private filterIgnoredIssues = async (
         issues: ReviewIssue[],
         workspaceRoot: string
-    ): Promise<{ issues: ReviewIssue[]; ignoredByFingerprintCount: number; allowedByLineCount: number }> => {
-        if (issues.length === 0) {
-            return { issues: [], ignoredByFingerprintCount: 0, allowedByLineCount: 0 };
-        }
+    ): Promise<{
+        issues: ReviewIssue[];
+        ignoredByFingerprintCount: number;
+        allowedByLineCount: number;
+        ignoreAllowEvents: NonNullable<RunSummaryPayload['ignoreAllowEvents']>;
+    }> => {
+        const empty = {
+            issues: [] as ReviewIssue[],
+            ignoredByFingerprintCount: 0,
+            allowedByLineCount: 0,
+            ignoreAllowEvents: [] as NonNullable<RunSummaryPayload['ignoreAllowEvents']>,
+        };
+        if (issues.length === 0) return empty;
 
         let afterFingerprint = issues;
         let ignoredByFingerprintCount = 0;
+        const ignoreAllowEvents: NonNullable<RunSummaryPayload['ignoreAllowEvents']> = [];
+
         if (workspaceRoot) {
             const ignoredSet = new Set(await loadIgnoredFingerprints(workspaceRoot));
-            afterFingerprint = issues.filter(
-                i => !(i.fingerprint && ignoredSet.has(i.fingerprint))
-            );
-            ignoredByFingerprintCount = issues.length - afterFingerprint.length;
+            const ignoredByFp = issues.filter(i => i.fingerprint && ignoredSet.has(i.fingerprint));
+            afterFingerprint = issues.filter(i => !(i.fingerprint && ignoredSet.has(i.fingerprint)));
+            ignoredByFingerprintCount = ignoredByFp.length;
             if (ignoredByFingerprintCount > 0) {
                 this.logger.info(`已按指纹过滤 ${ignoredByFingerprintCount} 条项目级忽略问题`);
+                const at = formatTimeHms(Date.now());
+                for (const i of ignoredByFp) {
+                    ignoreAllowEvents.push({
+                        type: 'ignored_by_fingerprint',
+                        at,
+                        file: i.file,
+                        line: i.line,
+                        fingerprint: i.fingerprint,
+                    });
+                }
             }
         }
 
@@ -786,11 +816,19 @@ export class ReviewEngine {
             const ignoredLines = ignoredLinesByFile.get(path.normalize(issue.file));
             return !ignoredLines?.has(issue.line);
         });
-        const allowedByLineCount = afterFingerprint.length - filtered.length;
+        const allowedByLine = afterFingerprint.filter(issue => {
+            const ignoredLines = ignoredLinesByFile.get(path.normalize(issue.file));
+            return ignoredLines?.has(issue.line);
+        });
+        const allowedByLineCount = allowedByLine.length;
         if (allowedByLineCount > 0) {
             this.logger.info(`已过滤 ${allowedByLineCount} 条 @ai-ignore 标记的问题`);
+            const at = formatTimeHms(Date.now());
+            for (const i of allowedByLine) {
+                ignoreAllowEvents.push({ type: 'allowed_by_line', at, file: i.file, line: i.line });
+            }
         }
-        return { issues: filtered, ignoredByFingerprintCount, allowedByLineCount };
+        return { issues: filtered, ignoredByFingerprintCount, allowedByLineCount, ignoreAllowEvents };
     };
 
     /**

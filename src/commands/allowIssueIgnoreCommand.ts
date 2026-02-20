@@ -5,10 +5,14 @@
  * 1. 从 reviewPanel 当前激活的问题读取 file/line
  * 2. 在目标行上方插入注释（保留原缩进）
  * 3. 后续审查由 ReviewEngine.filterIgnoredIssues 按 @ai-ignore 行号过滤（放行仅靠注释拦截）
+ *
+ * Vue 文件：按插入行所在 SFC 块（template/script/style）自动选注释格式：template 用 HTML 注释，script 用双斜线，style 用块注释等；
+ * 解析失败或行不在块内时回退为整文件 languageId（vue 仍用 HTML 注释）。
  */
 
 import * as vscode from 'vscode';
 import type { CommandContext } from './commandContext';
+import { getEffectiveLanguageIdForVueAtLine } from '../utils/vueSfcBlockAtLine';
 
 const commentPrefixByLanguage: Record<string, string> = {
     javascript: '//',
@@ -73,7 +77,12 @@ export const registerAllowIssueIgnoreCommand = (deps: CommandContext): vscode.Di
         const targetLineText = document.lineAt(lineIndex).text;
         const indentMatch = targetLineText.match(/^\s*/);
         const indent = indentMatch ? indentMatch[0] : '';
-        const insertText = buildIgnoreComment(document.languageId, indent, reason.trim());
+        // Vue 文件按插入行所在 SFC 块（template/script/style）选注释格式，避免在 script 里插入 HTML 注释导致语法错误
+        const languageId =
+            document.languageId === 'vue'
+                ? getEffectiveLanguageIdForVueAtLine(document.getText(), issue.line) ?? document.languageId
+                : document.languageId;
+        const insertText = buildIgnoreComment(languageId, indent, reason.trim());
 
         const edit = new vscode.WorkspaceEdit();
         edit.insert(document.uri, new vscode.Position(lineIndex, 0), insertText);

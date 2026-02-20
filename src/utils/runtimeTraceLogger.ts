@@ -21,7 +21,12 @@ export interface RunSummaryPayload {
     runId: string;
     startedAt: number;
     endedAt: number;
+    /** 开始/结束的时分秒，便于直接看出时间段；日期由文件名 YYYYMMDD 体现 */
+    startedAtHms?: string;
+    endedAtHms?: string;
     durationMs: number;
+    /** 运行时长可读串，如 "2.7秒"、"1分2秒"，便于直接看出运行时长 */
+    durationDisplay?: string;
     trigger: 'manual' | 'staged';
     projectName?: string;
     userName?: string;
@@ -41,6 +46,14 @@ export interface RunSummaryPayload {
     infoFingerprints?: string[];
     status: 'success' | 'failed';
     errorClass?: string;
+    /** 放行/忽略事件：按发生顺序，每条带时分秒 HH:mm:ss（日期由文件名 YYYYMMDD.jsonl 体现） */
+    ignoreAllowEvents?: Array<{
+        type: 'ignored_by_fingerprint' | 'allowed_by_line';
+        at: string;
+        file: string;
+        line: number;
+        fingerprint?: string;
+    }>;
 }
 
 interface RuntimeLogConfig {
