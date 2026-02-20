@@ -67,6 +67,7 @@ describe('FileScanner working diff formatOnly', () => {
         const fileDiff = result.get(absolutePath);
         expect(fileDiff).toBeDefined();
         expect(fileDiff?.formatOnly).toBe(true);
+        expect(fileDiff?.commentOnly).toBe(false);
         expect(fileDiff?.addedLines).toBe(1);
         expect(fileDiff?.deletedLines).toBe(1);
         expect(fileDiff?.addedContentLines).toEqual(['<template>']);
@@ -80,9 +81,41 @@ describe('FileScanner working diff formatOnly', () => {
         const fileDiff = result.get(absolutePath);
         expect(fileDiff).toBeDefined();
         expect(fileDiff?.formatOnly).toBe(false);
+        expect(fileDiff?.commentOnly).toBe(false);
         expect(fileDiff?.addedLines).toBe(1);
         expect(fileDiff?.deletedLines).toBe(1);
         expect(fileDiff?.addedContentLines).toEqual(['<template>']);
+    });
+
+    it('仅注释差异时应判定为 commentOnly=true 且 formatOnly=false', async () => {
+        execAsyncMock.mockImplementation(async (command: string) => {
+            if (command.includes(' -I "')) {
+                return { stdout: '', stderr: '' };
+            }
+            return { stdout: createRawDiff(relativePath), stderr: '' };
+        });
+
+        const scanner = new FileScanner();
+        const result = await scanner.getWorkingDiff([absolutePath]);
+        const fileDiff = result.get(absolutePath);
+        expect(fileDiff).toBeDefined();
+        expect(fileDiff?.formatOnly).toBe(false);
+        expect(fileDiff?.commentOnly).toBe(true);
+    });
+
+    it('格式+注释混合噪声变更应至少命中一种噪声标记', async () => {
+        execAsyncMock.mockImplementation(async (command: string) => {
+            if (command.includes('--ignore-blank-lines')) {
+                return { stdout: '', stderr: '' };
+            }
+            return { stdout: createRawDiff(relativePath), stderr: '' };
+        });
+
+        const scanner = new FileScanner();
+        const result = await scanner.getWorkingDiff([absolutePath]);
+        const fileDiff = result.get(absolutePath);
+        expect(fileDiff).toBeDefined();
+        expect(fileDiff?.formatOnly === true || fileDiff?.commentOnly === true).toBe(true);
     });
 
     it('working diff 为空但文件为 untracked 时，应补充该文件的 diff hunk', async () => {
@@ -100,6 +133,7 @@ describe('FileScanner working diff formatOnly', () => {
 
         expect(fileDiff).toBeDefined();
         expect(fileDiff?.formatOnly).toBe(false);
+        expect(fileDiff?.commentOnly).toBe(false);
         expect(fileDiff?.hunks.length).toBe(1);
         expect(fileDiff?.hunks[0].newStart).toBe(1);
         expect(fileDiff?.hunks[0].newCount).toBeGreaterThan(0);

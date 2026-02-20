@@ -346,6 +346,8 @@ export class ReviewPanel {
     private selectionDisposable: vscode.Disposable;
     private hoverProvider: vscode.Disposable;
     private documentChangeDisposable: vscode.Disposable;
+    private treeViewVisibilityDisposable: vscode.Disposable;
+    private activeEditorChangeDisposable: vscode.Disposable;
     private activeIssueForActions: ReviewIssue | null = null;
     private enableLocalRebase = true;
     private largeChangeLineThreshold = 40;
@@ -519,7 +521,12 @@ export class ReviewPanel {
                 this.clearHighlight();
                 return;
             }
-            void this.highlightIssue(selectedItem.issue);
+            void this.highlightIssue(selectedItem.issue, { reveal: true });
+        });
+        this.treeViewVisibilityDisposable = this.treeView.onDidChangeVisibility((event) => {
+            if (!event.visible) {
+                this.clearHighlight();
+            }
         });
 
         const onDidChangeTextDocument = (vscode.workspace as unknown as {
@@ -532,7 +539,23 @@ export class ReviewPanel {
                 void this.syncAfterDocumentChange(event);
             })
             : { dispose: () => {} };
+        this.activeEditorChangeDisposable = vscode.window.onDidChangeActiveTextEditor((editor) => {
+            if (!this.lastHighlightedEditor) {
+                return;
+            }
+            if (!editor) {
+                this.clearHighlight();
+                return;
+            }
+            const activePath = path.normalize(editor.document.uri.fsPath);
+            const highlightedPath = path.normalize(this.lastHighlightedEditor.document.uri.fsPath);
+            if (activePath !== highlightedPath) {
+                this.clearHighlight();
+            }
+        });
         context.subscriptions.push(this.documentChangeDisposable);
+        context.subscriptions.push(this.treeViewVisibilityDisposable);
+        context.subscriptions.push(this.activeEditorChangeDisposable);
     }
 
     /**
@@ -1013,18 +1036,15 @@ export class ReviewPanel {
         this.provider.updateResult(nextResult, this.provider.getStatus(), '已同步位置（待复审）');
         this.syncTreeViewBadgeAndDescription();
 
-        if (
-            this.lastHighlightedEditor
-            && path.normalize(this.lastHighlightedEditor.document.uri.fsPath) === changedFilePath
-            && this.activeIssueForActions
-        ) {
-            void this.highlightIssue(this.activeIssueForActions);
-        }
     };
 
     /** 高亮并定位问题到编辑器中 */
-    private highlightIssue = async (issue: ReviewIssue): Promise<void> => {
+    private highlightIssue = async (issue: ReviewIssue, options?: { reveal?: boolean }): Promise<void> => {
         try {
+            if (!this.treeView.visible) {
+                this.clearHighlight();
+                return;
+            }
             const document = await vscode.workspace.openTextDocument(vscode.Uri.file(issue.file));
             const editor = await vscode.window.showTextDocument(document, {
                 preserveFocus: false,
@@ -1037,12 +1057,11 @@ export class ReviewPanel {
             // 安全校验行序号，避免越界导致异常
             const safeLine = Math.min(Math.max(issue.line, 1), document.lineCount);
             const lineText = document.lineAt(safeLine - 1).text;
-            const safeColumn = Math.min(Math.max(issue.column, 1), lineText.length + 1);
 
-            const position = new vscode.Position(safeLine - 1, safeColumn - 1);
-            const selection = new vscode.Selection(position, position);
-            editor.selection = selection;
-            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+            if (options?.reveal) {
+                const revealRange = new vscode.Range(safeLine - 1, 0, safeLine - 1, lineText.length);
+                editor.revealRange(revealRange, vscode.TextEditorRevealType.InCenter);
+            }
 
             this.clearHighlight();
             const lineRange = new vscode.Range(safeLine - 1, 0, safeLine - 1, lineText.length);
@@ -1207,6 +1226,8 @@ export class ReviewPanel {
         this.hoverProvider.dispose();
         this.documentChangeDisposable.dispose();
         this.selectionDisposable.dispose();
+        this.treeViewVisibilityDisposable.dispose();
+        this.activeEditorChangeDisposable.dispose();
         this.treeView.dispose();
     }
 }

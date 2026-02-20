@@ -30,6 +30,15 @@ import type { FileDiff } from './diffTypes';
 // 将 exec 转换为 Promise 形式，方便使用 async/await
 const execAsync = promisify(exec);
 const EMPTY_TREE_HASH = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const COMMENT_ONLY_IGNORE_REGEX = [
+    '^[[:space:]]*//',
+    '^[[:space:]]*#',
+    '^[[:space:]]*/\\*',
+    '^[[:space:]]*\\*',
+    '^[[:space:]]*\\*/',
+    '^[[:space:]]*<!--',
+    '^[[:space:]]*-->',
+];
 
 /**
  * 文件扫描器类
@@ -220,15 +229,32 @@ export class FileScanner {
                 encoding: 'utf-8',
                 maxBuffer: 10 * 1024 * 1024,
             });
+            const commentInsensitiveIgnoreArgs = COMMENT_ONLY_IGNORE_REGEX
+                .map(pattern => ` -I "${pattern}"`)
+                .join('');
+            const commentInsensitiveCmd = `${diffBase} -U3 --no-color -w --ignore-blank-lines --ignore-cr-at-eol${commentInsensitiveIgnoreArgs}${fileArgs}`;
+            const commentInsensitiveResult = await execAsync(commentInsensitiveCmd, {
+                cwd: this.workspaceRoot,
+                encoding: 'utf-8',
+                maxBuffer: 10 * 1024 * 1024,
+            });
             const semanticDiffSet = new Set<string>(
                 parseUnifiedDiff(whitespaceInsensitiveResult.stdout || '')
                     .map(item => path.isAbsolute(item.path) ? item.path : path.join(this.workspaceRoot!, item.path))
                     .map(item => path.normalize(item))
             );
+            const commentSemanticDiffSet = new Set<string>(
+                parseUnifiedDiff(commentInsensitiveResult.stdout || '')
+                    .map(item => path.isAbsolute(item.path) ? item.path : path.join(this.workspaceRoot!, item.path))
+                    .map(item => path.normalize(item))
+            );
             for (const [filePath, fileDiff] of map.entries()) {
+                const normalizedPath = path.normalize(filePath);
+                const formatOnly = !semanticDiffSet.has(normalizedPath);
                 map.set(filePath, {
                     ...fileDiff,
-                    formatOnly: !semanticDiffSet.has(path.normalize(filePath)),
+                    formatOnly,
+                    commentOnly: !formatOnly && !commentSemanticDiffSet.has(normalizedPath),
                 });
             }
 
@@ -290,6 +316,7 @@ export class FileScanner {
             path: normalizedPath,
             hunks,
             formatOnly: false,
+            commentOnly: false,
             addedLines,
             deletedLines: 0,
             addedContentLines: hunks.flatMap(h => h.lines),

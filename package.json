@@ -317,6 +317,11 @@
           "default": true,
           "description": "忽略仅格式/空白变更的 diff，减少无效 AI 调用"
         },
+        "agentreview.ai.ignoreCommentOnlyDiff": {
+          "type": "boolean",
+          "default": true,
+          "description": "忽略仅注释变更的 diff，减少无效 AI 调用"
+        },
         "agentreview.runtimeLog.enabled": {
           "type": "boolean",
           "default": true,

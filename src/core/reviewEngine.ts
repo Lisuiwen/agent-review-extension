@@ -168,6 +168,7 @@ export class ReviewEngine {
                 aiFunnelLint: config.ai_review?.funnel_lint ?? false,
                 aiFunnelLintSeverity: config.ai_review?.funnel_lint_severity ?? 'error',
                 aiIgnoreFormatOnlyDiff: config.ai_review?.ignore_format_only_diff ?? true,
+                aiIgnoreCommentOnlyDiff: config.ai_review?.ignore_comment_only_diff ?? true,
                 astEnabled: config.ast?.enabled ?? false,
                 astMaxNodeLines: config.ast?.max_node_lines ?? 0,
                 astMaxFileLines: config.ast?.max_file_lines ?? 0,
@@ -238,7 +239,9 @@ export class ReviewEngine {
             let astSnippetsByFile: Map<string, AffectedScopeResult> | undefined =
                 options?.astSnippetsByFileOverride;
 
-            const buildAstSnippetsByFile = async (): Promise<Map<string, AffectedScopeResult> | undefined> => {
+            const buildAstSnippetsByFile = async (
+                targetFiles: string[]
+            ): Promise<Map<string, AffectedScopeResult> | undefined> => {
                 if (hasAstOverride) {
                     return options?.astSnippetsByFileOverride;
                 }
@@ -261,7 +264,7 @@ export class ReviewEngine {
                     fallbackCounts[normalizedReason] += 1;
                 };
 
-                for (const filePath of filteredFiles) {
+                for (const filePath of targetFiles) {
                     const normalizedPath = path.normalize(filePath);
                     const fileDiff = options.diffByFile.get(normalizedPath) ?? options.diffByFile.get(filePath);
                     if (!fileDiff?.hunks?.length) {
@@ -301,6 +304,7 @@ export class ReviewEngine {
                     durationMs: Date.now() - astStartAt,
                     data: {
                         attemptedFiles,
+                        astAttemptedFiles: attemptedFiles,
                         successFiles: snippetsByFile.size,
                         fallbackFiles: attemptedFiles - snippetsByFile.size,
                         totalSnippets: totalAstSnippets,
@@ -323,9 +327,11 @@ export class ReviewEngine {
                 return snippetsByFile.size > 0 ? snippetsByFile : undefined;
             };
 
-            const ensureAstSnippetsByFile = async (): Promise<Map<string, AffectedScopeResult> | undefined> => {
+            const ensureAstSnippetsByFile = async (
+                targetFiles: string[]
+            ): Promise<Map<string, AffectedScopeResult> | undefined> => {
                 if (!astSnippetsByFile) {
-                    astSnippetsByFile = await buildAstSnippetsByFile();
+                    astSnippetsByFile = await buildAstSnippetsByFile(targetFiles);
                 }
                 return astSnippetsByFile;
             };
@@ -333,11 +339,24 @@ export class ReviewEngine {
             const aiErrorIssues: ReviewIssue[] = [];
             const diagnosticsByFile = this.collectDiagnosticsByFile(filteredFiles);
             const ruleSource = this.resolveRuleSource(diagnosticsByFile);
-            const aiInputFiles = this.filterFilesForAiReview({
+            const aiInputFilterResult = this.filterFilesForAiReview({
                 files: filteredFiles,
                 diffByFile: options?.diffByFile,
                 diagnosticsByFile,
                 aiConfig: config.ai_review,
+            });
+            const aiInputFiles = aiInputFilterResult.files;
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'ReviewEngine',
+                event: 'ai_input_filter_summary',
+                phase: 'review',
+                data: {
+                    inputFiles: filteredFiles.length,
+                    aiInputFiles: aiInputFiles.length,
+                    formatOnlySkippedFiles: aiInputFilterResult.formatOnlySkippedFiles,
+                    commentOnlySkippedFiles: aiInputFilterResult.commentOnlySkippedFiles,
+                },
             });
             const runAiReview = async (): Promise<ReviewIssue[]> => {
                 if (!config.ai_review?.enabled) {
@@ -349,7 +368,7 @@ export class ReviewEngine {
                 }
 
                 try {
-                    const astSnippetsByFile = await ensureAstSnippetsByFile();
+                    const astSnippetsByFile = await ensureAstSnippetsByFile(aiInputFiles);
                     const aiRequest = {
                         files: aiInputFiles.map(file => ({ path: file })),
                         diffByFile: useAiDiff ? options!.diffByFile : undefined,
@@ -671,7 +690,7 @@ export class ReviewEngine {
         diffByFile?: Map<string, FileDiff>;
         diagnosticsByFile: Map<string, ProjectDiagnosticItem[]>;
         aiConfig?: ReturnType<ConfigManager['getConfig']>['ai_review'];
-    }): string[] => {
+    }): { files: string[]; formatOnlySkippedFiles: number; commentOnlySkippedFiles: number } => {
         const {
             files,
             diffByFile,
@@ -681,8 +700,12 @@ export class ReviewEngine {
         const enableFunnel = aiConfig?.funnel_lint === true;
         const funnelSeverity = aiConfig?.funnel_lint_severity ?? 'error';
         const ignoreFormatOnlyDiff = aiConfig?.ignore_format_only_diff !== false;
+        const ignoreCommentOnlyDiff = aiConfig?.ignore_comment_only_diff !== false;
+        const outputFiles: string[] = [];
+        let formatOnlySkippedFiles = 0;
+        let commentOnlySkippedFiles = 0;
 
-        return files.filter(filePath => {
+        for (const filePath of files) {
             const normalizedPath = path.normalize(filePath);
 
             if (enableFunnel) {
@@ -694,19 +717,28 @@ export class ReviewEngine {
                     return item.severity === 'error';
                 });
                 if (hasBlockingDiagnostic) {
-                    return false;
+                    continue;
                 }
             }
 
-            if (ignoreFormatOnlyDiff && diffByFile) {
-                const fileDiff = diffByFile.get(normalizedPath) ?? diffByFile.get(filePath);
-                if (fileDiff?.formatOnly === true) {
-                    return false;
-                }
+            const fileDiff = diffByFile?.get(normalizedPath) ?? diffByFile?.get(filePath);
+            if (fileDiff && ignoreFormatOnlyDiff && fileDiff.formatOnly === true) {
+                formatOnlySkippedFiles++;
+                continue;
+            }
+            if (fileDiff && ignoreCommentOnlyDiff && fileDiff.commentOnly === true) {
+                commentOnlySkippedFiles++;
+                continue;
             }
 
-            return true;
-        });
+            outputFiles.push(filePath);
+        }
+
+        return {
+            files: outputFiles,
+            formatOnlySkippedFiles,
+            commentOnlySkippedFiles,
+        };
     };
 
     /**
@@ -908,7 +940,7 @@ export class ReviewEngine {
 
         return {
             diffByFile: new Map<string, FileDiff>([
-                [filePath, { path: filePath, hunks, formatOnly: false }],
+                [filePath, { path: filePath, hunks, formatOnly: false, commentOnly: false }],
             ]),
             astSnippetsByFile: new Map<string, AffectedScopeResult>([
                 [filePath, { snippets }],
@@ -1306,4 +1338,3 @@ export class ReviewEngine {
         }
     }
 }
-

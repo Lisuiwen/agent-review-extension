@@ -57,6 +57,42 @@ describe('autoReviewGate', () => {
         expect(decision.reason).toBe('no_pending_diff');
     });
 
+    it('formatOnly 变更应跳过 noise_only_change', () => {
+        const decision = evaluateAutoReviewGate({
+            trigger: 'save',
+            savedContentHash: 'abc',
+            lastReviewedContentHash: 'def',
+            diff: buildDiff({
+                formatOnly: true,
+                addedLines: 10,
+                deletedLines: 10,
+            }),
+            diagnostics: [],
+            config: baseConfig,
+        });
+
+        expect(decision.skip).toBe(true);
+        expect(decision.reason).toBe('noise_only_change');
+    });
+
+    it('commentOnly 变更应跳过 noise_only_change', () => {
+        const decision = evaluateAutoReviewGate({
+            trigger: 'save',
+            savedContentHash: 'abc',
+            lastReviewedContentHash: 'def',
+            diff: buildDiff({
+                commentOnly: true,
+                addedLines: 12,
+                deletedLines: 6,
+            }),
+            diagnostics: [],
+            config: baseConfig,
+        });
+
+        expect(decision.skip).toBe(true);
+        expect(decision.reason).toBe('noise_only_change');
+    });
+
     it('命中 error 级 diagnostics 漏斗时应跳过 diagnostic_funnel', () => {
         const decision = evaluateAutoReviewGate({
             trigger: 'save',

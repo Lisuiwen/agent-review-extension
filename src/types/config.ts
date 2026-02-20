@@ -65,6 +65,7 @@ export interface AgentReviewConfig {
         funnel_lint?: boolean;              // 漏斗模式：先看 diagnostics，再决定是否发 AI（默认 false）
         funnel_lint_severity?: 'error' | 'warning'; // 漏斗阈值：error=仅错误拦截，warning=警告及以上拦截
         ignore_format_only_diff?: boolean;  // 忽略仅格式/空白变更的 diff（默认 true）
+        ignore_comment_only_diff?: boolean; // 忽略仅注释变更的 diff（默认 true）
         action: 'block_commit' | 'warning' | 'log';  // 违反规则时的行为
     };
     ast?: {

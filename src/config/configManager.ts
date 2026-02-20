@@ -205,6 +205,7 @@ export class ConfigManager implements vscode.Disposable {
             { key: 'ai.funnelLint', configKey: 'funnel_lint' },
             { key: 'ai.funnelLintSeverity', configKey: 'funnel_lint_severity' },
             { key: 'ai.ignoreFormatOnlyDiff', configKey: 'ignore_format_only_diff' },
+            { key: 'ai.ignoreCommentOnlyDiff', configKey: 'ignore_comment_only_diff' },
         ];
         for (const { key, configKey } of mappings) {
             const val = this.getExplicitSetting<unknown>(settings, key);
@@ -424,6 +425,10 @@ export class ConfigManager implements vscode.Disposable {
                     ignore_format_only_diff:
                         settingsAIConfig.ignore_format_only_diff
                         ?? existingAIConfig?.ignore_format_only_diff
+                        ?? true,
+                    ignore_comment_only_diff:
+                        settingsAIConfig.ignore_comment_only_diff
+                        ?? existingAIConfig?.ignore_comment_only_diff
                         ?? true,
                     batching_mode: settingsAIConfig.batching_mode ?? existingAIConfig?.batching_mode ?? 'file_count',
                     ast_snippet_budget: settingsAIConfig.ast_snippet_budget ?? existingAIConfig?.ast_snippet_budget ?? 25,

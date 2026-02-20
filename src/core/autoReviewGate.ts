@@ -4,7 +4,8 @@ export type AutoReviewSkipReason =
     | 'same_content'
     | 'small_low_risk_change'
     | 'diagnostic_funnel'
-    | 'no_pending_diff';
+    | 'no_pending_diff'
+    | 'noise_only_change';
 
 export type AutoReviewFunnelSeverity = 'off' | 'error' | 'warning';
 
@@ -136,6 +137,15 @@ export const evaluateAutoReviewGate = (input: AutoReviewGateInput): AutoReviewGa
         return {
             skip: true,
             reason: 'no_pending_diff',
+            effectiveChangedLines,
+            riskMatched,
+        };
+    }
+
+    if (input.diff.formatOnly === true || input.diff.commentOnly === true) {
+        return {
+            skip: true,
+            reason: 'noise_only_change',
             effectiveChangedLines,
             riskMatched,
         };

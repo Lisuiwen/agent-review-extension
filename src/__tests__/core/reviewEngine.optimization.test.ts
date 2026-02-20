@@ -357,6 +357,148 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(workingDiffMock).toHaveBeenCalledTimes(1);
         expect(aiReviewerReviewMock).not.toHaveBeenCalled();
     });
+
+    it('保存触发路径中，commentOnly 文件应被 AI 过滤', async () => {
+        const configManager = createMockConfigManager({
+            rules: {
+                enabled: false,
+                strict_mode: false,
+                diff_only: true,
+            },
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                timeout: 1000,
+                action: 'warning',
+                diff_only: true,
+                ignore_format_only_diff: true,
+                ignore_comment_only_diff: true,
+            },
+        });
+
+        ruleEngineCheckFilesMock.mockResolvedValue([]);
+        aiReviewerReviewMock.mockResolvedValue([]);
+        const filePath = path.normalize('src/comment-only.ts');
+        workingDiffMock.mockResolvedValue(new Map<string, FileDiff>([
+            [
+                filePath,
+                {
+                    path: filePath,
+                    hunks: [
+                        {
+                            newStart: 1,
+                            newCount: 1,
+                            lines: ['// comment'],
+                        },
+                    ],
+                    formatOnly: false,
+                    commentOnly: true,
+                },
+            ],
+        ]));
+
+        const reviewEngine = new ReviewEngine(configManager);
+        vi.spyOn(reviewEngine as unknown as {
+            collectDiagnosticsByFile: () => Map<string, Array<{ line: number; message: string }>>;
+        }, 'collectDiagnosticsByFile').mockReturnValue(new Map());
+        await reviewEngine.initialize();
+
+        await reviewEngine.reviewFilesWithWorkingDiff([filePath]);
+
+        expect(workingDiffMock).toHaveBeenCalledTimes(1);
+        expect(aiReviewerReviewMock).not.toHaveBeenCalled();
+    });
+
+    it('混合输入时 AST 切片应仅覆盖 AI 输入文件', async () => {
+        const configManager = createMockConfigManager({
+            rules: {
+                enabled: false,
+                strict_mode: false,
+                diff_only: true,
+            },
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                timeout: 1000,
+                action: 'warning',
+                diff_only: true,
+                ignore_format_only_diff: true,
+                ignore_comment_only_diff: true,
+            },
+            ast: {
+                enabled: true,
+                max_node_lines: 200,
+                max_file_lines: 2000,
+            },
+        });
+
+        ruleEngineCheckFilesMock.mockResolvedValue([]);
+        aiReviewerReviewMock.mockResolvedValue([]);
+        const commentOnlyFilePath = path.normalize('src/comment-only.ts');
+        const semanticFilePath = path.normalize('src/semantic.ts');
+        readFileMock.mockImplementation(async (filePath: string) => {
+            if (path.normalize(filePath) === semanticFilePath) {
+                return [
+                    'export function run() {',
+                    '  const x = 1;',
+                    '  return x;',
+                    '}',
+                ].join('\n');
+            }
+            return '/* comment */';
+        });
+        workingDiffMock.mockResolvedValue(new Map<string, FileDiff>([
+            [
+                commentOnlyFilePath,
+                {
+                    path: commentOnlyFilePath,
+                    hunks: [
+                        {
+                            newStart: 1,
+                            newCount: 1,
+                            lines: ['// note'],
+                        },
+                    ],
+                    formatOnly: false,
+                    commentOnly: true,
+                },
+            ],
+            [
+                semanticFilePath,
+                {
+                    path: semanticFilePath,
+                    hunks: [
+                        {
+                            newStart: 2,
+                            newCount: 1,
+                            lines: ['  const x = 1;'],
+                        },
+                    ],
+                    formatOnly: false,
+                    commentOnly: false,
+                },
+            ],
+        ]));
+
+        const reviewEngine = new ReviewEngine(configManager);
+        vi.spyOn(reviewEngine as unknown as {
+            collectDiagnosticsByFile: () => Map<string, Array<{ line: number; message: string }>>;
+        }, 'collectDiagnosticsByFile').mockReturnValue(new Map());
+        await reviewEngine.initialize();
+
+        await reviewEngine.reviewFilesWithWorkingDiff([commentOnlyFilePath, semanticFilePath]);
+
+        expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);
+        const request = aiReviewerReviewMock.mock.calls[0][0] as {
+            files: Array<{ path: string }>;
+        };
+        expect(request.files.map(item => path.normalize(item.path))).toEqual([semanticFilePath]);
+        const readTargets = readFileMock.mock.calls.map(args => path.normalize(args[0]));
+        expect(readTargets).toContain(semanticFilePath);
+        expect(readTargets).not.toContain(commentOnlyFilePath);
+    });
     it('手动 run 应使用 pending diff 作为默认审查范围', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
@@ -686,4 +828,3 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(result.warnings.length).toBe(1);
     });
 });
-

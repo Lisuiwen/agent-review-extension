@@ -15,6 +15,7 @@ export type RuntimeEventName =
     | 'run_start'
     | 'config_snapshot'
     | 'file_filter_summary'
+    | 'ai_input_filter_summary'
     | 'diff_fetch_summary'
     | 'run_end'
     | 'ast_scope_summary'

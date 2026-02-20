@@ -31,6 +31,7 @@ export interface AIReviewConfig {
     funnel_lint?: boolean;
     funnel_lint_severity?: 'error' | 'warning';
     ignore_format_only_diff?: boolean;
+    ignore_comment_only_diff?: boolean;
     action: 'block_commit' | 'warning' | 'log';
 }
 
