@@ -1,5 +1,5 @@
-﻿/**
- * VSCode 鎵╁睍鍏ュ彛鏂囦欢
+/**
+ * VSCode 扩展入口文件
  *
  */
 
@@ -71,7 +71,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
     const normalizeFilePath = (filePath: string): string => path.normalize(filePath);
     const isRuntimeReady = (): boolean => !!(reviewEngine && reviewPanel && statusBar && configManager);
 
-    /** 鑻ュ悇杩愯鏃朵緷璧栧凡灏辩华鍒欒繑鍥炶仛鍚堝璞★紝鍚﹀垯杩斿洖 null */
+    /** 若各运行时依赖已就绪则返回组合对象，否则返回 null */
     const getRuntimeDeps = (): {
         reviewEngine: ReviewEngine;
         reviewPanel: ReviewPanel;
@@ -202,7 +202,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
     const getSaveReviewDoneMessage = (preserveStaleOnEmpty: boolean): string =>
         preserveStaleOnEmpty
             ? 'δУ'
-            : '澶嶅瀹屾垚锛堟渶鏂颁繚瀛橈級';
+            : '复审完成（已最新保存）';
 
     const enqueueTask = (filePath: string, task: QueuedAutoReviewTask): void => {
         const normalizedPath = normalizeFilePath(filePath);
@@ -212,9 +212,9 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             pushReadyPath(normalizedPath);
         }
         if (task.trigger === 'save') {
-            updateQueuedStatus('澶嶅鎺掗槦涓紙宸插悎骞朵繚瀛橈級');
+            updateQueuedStatus('复审排队中（已合并保存）');
         } else if (task.trigger === 'idle') {
-            updateQueuedStatus('缂栬緫鍋滈】鍚庡緟澶嶅');
+            updateQueuedStatus('编辑暂停后待复审');
         } else {
             updateQueuedStatus('立即复审排队中');
         }
@@ -309,9 +309,9 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                                 saveReviewDoneMessage
                             );
                         } catch (error) {
-                            logger.error('鑷姩澶嶅鎵ц澶辫触', error);
-                            readyStatusBar.updateStatus('error', undefined, '鑷姩澶嶅澶辫触');
-                            readyReviewPanel.setStatus('error', '鑷姩澶嶅澶辫触');
+                            logger.error('自动复审执行失败', error);
+                            readyStatusBar.updateStatus('error', undefined, '自动复审失败');
+                            readyReviewPanel.setStatus('error', '自动复审失败');
                         } finally {
                             const latestState = ensureState(nextPath);
                             latestState.inFlight = false;
@@ -395,7 +395,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         const filePath = normalizeFilePath(editor.document.uri.fsPath);
         const options = getRuntimeOptions();
         if (!options.aiEnabled) {
-            vscode.window.showInformationMessage('AI 瀹℃煡鏈惎鐢紝鏃犳硶鎵ц绔嬪嵆澶嶅');
+            vscode.window.showInformationMessage('AI 审查未启用，无法执行立即复审');
             return;
         }
         const state = ensureState(filePath);

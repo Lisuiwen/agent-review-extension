@@ -1,4 +1,4 @@
-﻿/**
+/**
  * AI 审查器主入口
  */
 import * as path from 'path';
@@ -54,20 +54,19 @@ import {
     attachAstRangesForBatch,
     filterIssuesByDiagnostics,
 } from './aiReviewer.issueFilter';
-import { buildOpenAIRequest, buildCustomRequest, buildContinuationOpenAIRequest, getLanguageFromExtension } from './aiReviewer.prompts';
-import { parseOpenAIResponse, parseCustomResponse } from './aiReviewer.responseParser';
 import { transformToReviewIssues, actionToSeverity } from './aiReviewer.transform';
+import { callReviewAPI } from './aiReviewer.api';
 
 /**
- * AI瀹℃煡鍣ㄧ被
- * 
- * 璐熻矗璋冪敤AI API杩涜浠ｇ爜瀹℃煡
- * 鏀寔OpenAI鍏煎鏍煎紡鍜岃嚜瀹氫箟鏍煎紡
- * 
+ * AI 审查器类
+ *
+ * 负责调用 AI API 进行代码审查
+ * 支持 OpenAI 兼容格式和自定义格式
+ *
+ * 使用示例：
  * const aiReviewer = new AIReviewer(configManager);
  * await aiReviewer.initialize();
  * const issues = await aiReviewer.review({ files: [...] });
- * ```
  */
 export class AIReviewer {
     private configManager: ConfigManager;
@@ -85,7 +84,7 @@ export class AIReviewer {
         this.fileScanner = new FileScanner();
         this.runtimeTraceLogger = RuntimeTraceLogger.getInstance();
         
-        // 鍒涘缓axios瀹炰緥锛岀粺涓€閰嶇疆
+        // 单独创建 axios 实例，统一配置
         this.axiosInstance = axios.create({
             timeout: DEFAULT_TIMEOUT,
             headers: {
@@ -93,12 +92,12 @@ export class AIReviewer {
             }
         });
         
-        // 璇锋眰鎷︽埅鍣細娣诲姞璁よ瘉淇℃伅
-        // Moonshot API 浣跨敤 Bearer Token 璁よ瘉锛屾牸寮忥細Authorization: Bearer <api_key>
+        // 请求拦截器：添加认证信息
+        // Moonshot API 使用 Bearer Token 认证，格式：Authorization: Bearer <api_key>
         this.axiosInstance.interceptors.request.use(
             (config) => {
                 if (this.config?.apiKey) {
-                    // 鍙傝€冿細https://platform.moonshot.cn/docs/guide/start-using-kimi-api
+                    // 参考：https://platform.moonshot.cn/docs/guide/start-using-kimi-api
                     config.headers.Authorization = `Bearer ${this.config.apiKey}`;
                 }
                 return config;
@@ -106,15 +105,15 @@ export class AIReviewer {
             (error) => Promise.reject(error)
         );
         
-        // 鍝嶅簲鎷︽埅鍣細缁熶竴閿欒澶勭悊
+        // 响应拦截器：统一错误处理
         this.axiosInstance.interceptors.response.use(
             (response) => response,
             (error: AxiosError) => {
-                this.logger.error(`AI API璋冪敤澶辫触: ${error.message}`);
+                this.logger.error(`AI API 调用失败: ${error.message}`);
                 if (error.response?.status === 404) {
                     const body = error.response?.data as { error?: { message?: string; type?: string } } | undefined;
                     const msg = body?.error?.message ?? '';
-                    this.logger.warn(`404 參原因：① 模型不存在或无权限（厂商文档?04 = 不存在 model ?Permission denied）② 竂地址错。当前使?model 见上方日志响? ${msg || JSON.stringify(body ?? '')}`);
+                    this.logger.warn(`404 可能原因：① 模型不存在或无权限（厂商文档 404 = 不存在 model 或 Permission denied）② API 地址错。当前使用 model 见上方日志响应 ${msg || JSON.stringify(body ?? '')}`);
                 }
                 return Promise.reject(error);
             }
@@ -163,23 +162,23 @@ export class AIReviewer {
         const ep = this.config.apiEndpoint || '';
         const endpointResolved = !!ep && !ep.includes('${');
         if (ep && !endpointResolved) {
-            this.logger.warn(`[竂朧析] 仍含占位符，请?.env 或罸的环境变? ${ep.substring(0, 60)}${ep.length > 60 ? '...' : ''}`);
+            this.logger.warn(`[API 解析] 仍含占位符，请检查 .env 或配置的环境变量 ${ep.substring(0, 60)}${ep.length > 60 ? '...' : ''}`);
         }
         if (!ep) {
             this.logger.warn('⚠️ AI API端点未配置，AI审查将无法执行');
         }
         if (!this.config.apiKey) {
-            this.logger.warn('鈿狅笍 AI API瀵嗛挜鏈厤缃紝鍙兘瀵艰嚧璁よ瘉澶辫触');
+            this.logger.warn('⚠️ AI API 密钥未配置，可能导致认证失败');
         } else if (this.config.apiKey.startsWith('${') && this.config.apiKey.endsWith('}')) {
-            this.logger.warn(`⚠️ AI API密钥变量朧? ${this.config.apiKey}`);
-            this.logger.warn('璇风‘淇濊缃簡 OPENAI_API_KEY 鐜鍙橀噺锛屾垨鍦ㄩ」鐩牴鐩綍鍒涘缓 .env 鏂囦欢');
+            this.logger.warn(`⚠️ AI API 密钥变量未解析: ${this.config.apiKey}`);
+            this.logger.warn('请确保配置了 OPENAI_API_KEY 环境变量，或在项目根目录单独创建 .env 文件');
         }
     }
 
     /**
-     * 鎵цAI瀹℃煡
+     * 执行 AI 审查
      *
-     * @returns 瀹℃煡闂鍒楄〃
+     * @returns 审查问题列表
      */
     async review(
         request: AIReviewRequest & {
@@ -255,7 +254,7 @@ export class AIReviewer {
                                 ? await lspUsagesBuilder(f.path, astSnippets.snippets)
                                 : '';
                             const parts: string[] = [];
-                            if (definitionContext) parts.push(`## 渚濊禆瀹氫箟 (Definitions)\n${definitionContext}`);
+                            if (definitionContext) parts.push(`## 依赖定义 (Definitions)\n${definitionContext}`);
                             if (usagesContext) parts.push(usagesContext);
                             referenceContext = parts.join('\n\n');
                         }
@@ -312,15 +311,15 @@ export class AIReviewer {
             }
         }
 
-        // ---------- 鍔犺浇鏂囦欢鍐呭銆侀瑙堟ā寮忕煭璺€佹瀯寤哄鏌ュ崟鍏冧笌鎵规 ----------
+        // ---------- 加载文件内容、预览模式短路、构建审查单元与批次 ----------
         try {
             const previewOnly = astConfig?.preview_only === true;
             if (previewOnly) {
-                this.logger.info('[ast.preview_only=true] 浠呴瑙堝垏鐗囷紝涓嶈姹傚ぇ妯″瀷');
+                this.logger.info('[ast.preview_only=true] 仅预览切片，不请求大模型');
             }
             const validFiles = await this.loadFilesWithContent(filesToLoad, previewOnly);
             if (validFiles.length === 0) {
-                this.logger.warn('娌℃湁鍙鏌ョ殑鏂囦欢');
+                this.logger.warn('没有可审查的文件');
                 return [];
             }
 
@@ -350,7 +349,7 @@ export class AIReviewer {
                 ? splitUnitsBySnippetBudget(reviewUnits, getAstSnippetBudget(this.config))
                 : splitIntoBatches(reviewUnits, DEFAULT_BATCH_SIZE);
 
-            // 鎵撶偣锛氭湰娆″鏌ョ殑鏂囦欢鏁般€佸崟鍏冩暟銆佹壒娆℃暟銆佸苟鍙戜笌棰勭畻锛屼究浜庢帓鏌ヤ笌璋冧紭
+            // 打点：本次审查的文件数、单元数、批次数、并发与预算，便于排查与调优
             const totalAstSnippetCount = countAstSnippetMap(astSnippetsByFile);
             const totalSnippetCount = countUnitSnippets(reviewUnits);
             this.runtimeTraceLogger.logEvent({
@@ -406,11 +405,11 @@ export class AIReviewer {
     }
 
     /**
-     * 楠岃瘉杈撳叆璇锋眰
-     * 
-     * @param request - 寰呴獙璇佺殑璇锋眰
-     * @returns 楠岃瘉鍚庣殑璇锋眰
-     * @throws 濡傛灉楠岃瘉澶辫触
+     * 验证输入请求
+     *
+     * @param request - 待验证的请求
+     * @returns 验证后的请求
+     * @throws 如果验证失败
      */
     private buildFileHeaderReferenceContext = async (filePath: string): Promise<string> => {
         try {
@@ -445,7 +444,7 @@ export class AIReviewer {
                 return '';
             }
             const joined = selected.join('\n');
-            const clipped = joined.length > 4000 ? `${joined.slice(0, 4000)}\n...ѽضϣ` : joined;
+            const clipped = joined.length > 4000 ? `${joined.slice(0, 4000)}\n...(已截断)` : joined;
             return `## 文件头依赖上下文\n${clipped}`;
         } catch {
             return '';
@@ -455,12 +454,12 @@ export class AIReviewer {
         try {
             return AIReviewRequestSchema.parse(request);
         } catch (error) {
-            handleZodError(error, this.logger, 'AI瀹℃煡璇锋眰');
+            handleZodError(error, this.logger, 'AI 审查请求');
         }
     }
 
     /**
-     * 纭繚閰嶇疆宸插垵濮嬪寲
+     * 确保配置已初始化
      */
     private async ensureInitialized(): Promise<void> {
         await this.configManager.loadConfig();
@@ -469,7 +468,7 @@ export class AIReviewer {
 
     private isConfigValid(): boolean {
         if (!this.config) {
-            this.logger.warn('AI瀹℃煡閰嶇疆涓嶅瓨鍦紝璺宠繃AI瀹℃煡');
+            this.logger.warn('AI 审查配置不存在，跳过 AI 审查');
             return false;
         }
         if (!this.config.enabled) {
@@ -480,7 +479,7 @@ export class AIReviewer {
         if (!ep || ep.includes('${')) {
             this.logger.warn(
                 ep.includes('${')
-                    ? 'AI API˵㻷δ .env ϵͳ'
+                    ? 'AI API 端点依赖 .env 或环境变量未解析'
                     : 'AI API端点未配置'
             );
             return false;
@@ -488,14 +487,14 @@ export class AIReviewer {
         try {
             new URL(ep);
         } catch {
-            this.logger.warn('AI API绔偣URL鏍煎紡鏃犳晥');
+            this.logger.warn('AI API 端点 URL 格式无效');
             return false;
         }
         const model = (this.config.model || '').trim();
         if (!model || model.includes('${')) {
             this.logger.warn(
                 model.includes('${')
-                    ? 'AI ģͻδ'
+                    ? 'AI 模型依赖 .env 或环境变量未解析'
                     : 'AI 模型未配置，请在设置或 .env 中配置 model'
             );
             return false;
@@ -505,7 +504,7 @@ export class AIReviewer {
     }
 
     /**
-     * 楠岃瘉 API 瀵嗛挜
+     * 验证 API 密钥
      */
     private validateApiKey(): void {
         const { apiKey } = this.config!;
@@ -545,7 +544,7 @@ export class AIReviewer {
                 try {
                     const content = await this.fileScanner.readFile(file.path);
                     if (!previewOnly && content.length === 0) {
-                        this.logger.warn(`鏂囦欢涓虹┖: ${file.path}`);
+                        this.logger.warn(`文件为空: ${file.path}`);
                     }
                     return { path: file.path, content };
                 } catch (error) {
@@ -598,7 +597,7 @@ export class AIReviewer {
 
         await Promise.all(workers);
         const flattened = results.flat();
-        // 鎵撶偣锛氭暣涓苟鍙戞睜鑰楁椂銆佹壒娆℃暟銆佸苟鍙戞暟
+        // 打点：整个并发池耗时、批次数、并发数
         this.runtimeTraceLogger.logEvent({
             session: traceSession,
             component: 'AIReviewer',
@@ -630,7 +629,7 @@ export class AIReviewer {
         const batchStartAt = Date.now();
         const batchUnits = batch.filter(unit => {
             if (processedUnitIds.has(unit.unitId)) {
-                this.logger.warn(`鎵瑰鐞嗛噸澶嶅鏌ュ崟鍏冨凡璺宠繃: ${unit.unitId}`);
+                this.logger.warn(`批次处理重复审查单元已跳过: ${unit.unitId}`);
                 return false;
             }
             processedUnitIds.add(unit.unitId);
@@ -712,7 +711,7 @@ export class AIReviewer {
         const estimatedChars = estimateRequestChars(batchFiles);
         const maxRequestChars = getMaxRequestChars(this.config);
         if (allowSplit && batchFiles.length > 1 && estimatedChars > maxRequestChars) {
-            this.logger.warn(`[batch_guard] 鎵规浼扮畻闀垮害 ${estimatedChars} 瓒呰繃涓婇檺 ${maxRequestChars}锛屽皢浜屽垎闄嶈浇`);
+            this.logger.warn(`[batch_guard] 批次预估长度 ${estimatedChars} 超过上限 ${maxRequestChars}，将二分降载`);
             const [leftUnits, rightUnits] = splitUnitsInHalf(batchUnits);
             this.runtimeTraceLogger.logEvent({
                 session: traceSession,
@@ -796,15 +795,15 @@ export class AIReviewer {
         return status === 400 && tooLongPattern.test(`${error.message} ${responseText}`.toLowerCase());
     };
 
-    /** 澶勭悊瀹℃煡閿欒锛歜lock_commit 鏃舵姏鍑猴紝鍚﹀垯杩斿洖鍗曟潯 issue */
+    /** 处理审查错误：block_commit 时抛出，否则返回单条 issue */
     private handleReviewError(error: unknown): ReviewIssue[] {
-        this.logger.error('AI瀹℃煡澶辫触', error);
+        this.logger.error('AI 审查失败', error);
         const action = this.config?.action ?? 'warning';
         const message = error instanceof Error ? error.message : String(error);
         const isTimeout = axios.isAxiosError(error) && (error.code === 'ECONNABORTED' || /timeout/i.test(error.message));
         const userMessage = isTimeout
-            ? `AI鳬ʱ${this.config?.timeout ?? DEFAULT_TIMEOUT}msԺ`
-            : `AI瀹℃煡澶辫触: ${message}`;
+            ? `AI 超时（${this.config?.timeout ?? DEFAULT_TIMEOUT}ms）`
+            : `AI 审查失败: ${message}`;
         const rule = isTimeout ? 'ai_review_timeout' : 'ai_review_error';
 
         if (action === 'block_commit') throw new Error(userMessage);
@@ -817,9 +816,9 @@ export class AIReviewer {
     };
 
     /**
-     * 璋冪敤AI API
+     * 调用 AI API（委托给 aiReviewer.api 模块）
      *
-     * @returns API鍝嶅簲
+     * @returns API 响应
      */
     private async callAPI(
         request: { files: Array<{ path: string; content: string }> },
@@ -830,184 +829,26 @@ export class AIReviewer {
         traceSession?: RuntimeTraceSession | null
     ): Promise<AIReviewResponse> {
         if (!this.config) {
-            throw new Error('AI瀹℃煡閰嶇疆鏈垵濮嬪寲');
+            throw new Error('AI 审查配置未初始化');
         }
-        const url = (this.config.apiEndpoint || '').trim();
-        if (!url || url.includes('${')) {
-            throw new Error('AI API竂朅罈变量朧析，请在 .env ?AGENTREVIEW_AI_API_ENDPOINT 或在设置両写完?URL');
-        }
-        try {
-            new URL(url);
-        } catch {
-            throw new Error(`AI API竂URL无效: ${url.substring(0, 60)}${url.length > 60 ? '...' : ''}`);
-        }
-
-        const requestHash = this.calculateRequestHash(request);
-
-        const requestBody = this.config.api_format === 'custom'
-            ? buildCustomRequest(request)
-            : buildOpenAIRequest(this.config, request, {
-                isDiffContent: options?.isDiffContent,
-                diagnosticsByFile: options?.diagnosticsByFile,
+        return callReviewAPI(
+            {
+                config: this.config,
+                axiosInstance: this.axiosInstance,
                 logger: this.logger,
-            });
-
-        const userMsgForLog = (requestBody as { messages?: Array<{ role: string; content: string }> }).messages?.find(m => m.role === 'user');
-        const inputLen = userMsgForLog?.content?.length ?? estimateRequestChars(request.files);
-        const mode = options?.isDiffContent ? 'diff_or_ast' : 'full';
-        const callStartAt = Date.now();
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'AIReviewer',
-            event: 'llm_call_start',
-            phase: 'ai',
-            data: {
-                mode,
-                files: request.files.length,
-                inputChars: inputLen,
+                runtimeTraceLogger: this.runtimeTraceLogger,
+                calculateRequestHash: this.calculateRequestHash,
+                mergeCachedIssues: this.mergeCachedIssues,
+                baseMessageCache: this.baseMessageCache,
+                shouldRetry: this.shouldRetry.bind(this),
+                getRetryReason: this.getRetryReason,
+                sleep: this.sleep.bind(this),
             },
-        });
-        const logCallSummary = (attempts: number, partial: boolean): void => {
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'AIReviewer',
-                event: 'llm_call_done',
-                phase: 'ai',
-                durationMs: Date.now() - callStartAt,
-                data: {
-                    mode,
-                    files: request.files.length,
-                    attempts,
-                    partial,
-                    inputChars: inputLen,
-                },
-            });
-        };
-
-        if (this.config.api_format !== 'custom') {
-            const baseMessages = (requestBody as { messages: Array<{ role: string; content: string }> }).messages;
-            this.baseMessageCache.set(requestHash, baseMessages);
-        }
-
-        // 瀹炵幇閲嶈瘯鏈哄埗锛堟寚鏁伴€€閬匡級
-        const maxRetries = this.config.retry_count ?? DEFAULT_MAX_RETRIES;
-        const baseDelay = this.config.retry_delay ?? DEFAULT_RETRY_DELAY;
-        let lastError: Error | null = null;
-        let continuationRequestBody: typeof requestBody | null = null;
-
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-            try {
-                const currentRequestBody = continuationRequestBody || requestBody;
-                const response = await this.axiosInstance.post(
-                    url,
-                    currentRequestBody,
-                    { timeout: this.config.timeout }
-                );
-
-                // 鏍规嵁API鏍煎紡瑙ｆ瀽鍝嶅簲
-                if (this.config.api_format === 'custom') {
-                    const parsedResponse = parseCustomResponse(response.data, this.logger);
-                    const mergedResponse = this.mergeCachedIssues(requestHash, parsedResponse, false);
-                    logCallSummary(attempt + 1, false);
-                    return mergedResponse;
-                }
-
-                const parsedResult = parseOpenAIResponse(response.data, this.logger, this.config.max_tokens ?? DEFAULT_MAX_TOKENS);
-                const mergedResponse = this.mergeCachedIssues(requestHash, parsedResult.response, parsedResult.isPartial);
-
-                if (!parsedResult.isPartial) {
-                    logCallSummary(attempt + 1, false);
-                    return mergedResponse;
-                }
-
-                this.logger.warn('AI鍝嶅簲鐤戜技琚埅鏂紝灏濊瘯缁啓琛ュ叏');
-
-                if (attempt === maxRetries) {
-                    this.logger.warn('缁啓閲嶈瘯娆℃暟宸茬敤灏斤紝杩斿洖宸茶В鏋愮殑閮ㄥ垎缁撴灉');
-                    logCallSummary(attempt + 1, true);
-                    return mergedResponse;
-                }
-
-                const baseMessages = this.baseMessageCache.get(requestHash);
-                if (!baseMessages) {
-                    this.logger.warn('缁啓澶辫触锛氭湭鎵惧埌鍩虹鎻愮ず璇嶏紝杩斿洖宸茶В鏋愮殑閮ㄥ垎缁撴灉');
-                    logCallSummary(attempt + 1, true);
-                    return mergedResponse;
-                }
-
-                continuationRequestBody = buildContinuationOpenAIRequest(this.config, {
-                    baseMessages,
-                    partialContent: parsedResult.cleanedContent,
-                    cachedIssues: mergedResponse.issues,
-                });
-                continue;
-            } catch (error) {
-                lastError = error as Error;
-                
-                // 濡傛灉鏄渶鍚庝竴娆″皾璇曪紝鐩存帴鎶涘嚭閿欒
-                if (attempt === maxRetries) {
-                    break;
-                }
-
-                // 鍒ゆ柇鏄惁搴旇閲嶈瘯
-                if (this.shouldRetry(error as AxiosError)) {
-                    const delay = baseDelay * Math.pow(2, attempt);
-                    this.logger.warn(`AI API调用失败?{delay}ms后重?(${attempt + 1}/${maxRetries})`);
-                    this.runtimeTraceLogger.logEvent({
-                        session: traceSession,
-                        component: 'AIReviewer',
-                        event: 'llm_retry_scheduled',
-                        phase: 'ai',
-                        level: 'warn',
-                        data: {
-                            mode,
-                            attempt: attempt + 1,
-                            delayMs: delay,
-                            statusCode: axios.isAxiosError(error) ? (error.response?.status ?? 0) : 0,
-                            reason: this.getRetryReason(error),
-                        },
-                    });
-                    await this.sleep(delay);
-                } else {
-                    this.runtimeTraceLogger.logEvent({
-                        session: traceSession,
-                        component: 'AIReviewer',
-                        event: 'llm_call_abort',
-                        phase: 'ai',
-                        level: 'warn',
-                        durationMs: Date.now() - callStartAt,
-                        data: {
-                            mode,
-                            files: request.files.length,
-                            attempts: attempt + 1,
-                            inputChars: inputLen,
-                            errorClass: error instanceof Error ? error.name : 'UnknownError',
-                        },
-                    });
-                    // 涓嶅簲璇ラ噸璇曠殑閿欒锛堝401璁よ瘉澶辫触锛夛紝鐩存帴鎶涘嚭
-                    throw error;
-                }
-            }
-        }
-
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'AIReviewer',
-            event: 'llm_call_failed',
-            phase: 'ai',
-            level: 'warn',
-            durationMs: Date.now() - callStartAt,
-            data: {
-                mode,
-                files: request.files.length,
-                attempts: maxRetries + 1,
-                inputChars: inputLen,
-                errorClass: lastError?.name ?? 'UnknownError',
-            },
-        });
-        throw new Error(`AI API调用失败（已重试${maxRetries}次）: ${lastError?.message || '期错'}`);
+            request,
+            options,
+            traceSession
+        );
     }
-
 
     /** 生成请求哈希，用于缓存和续写关联 */
     private calculateRequestHash = (request: { files: Array<{ path: string; content: string }> }): string => {
@@ -1042,7 +883,7 @@ export class AIReviewer {
     };
 
     /**
-     * 鍘婚噸 issues锛岄伩鍏嶇画鍐欏甫鏉ョ殑閲嶅缁撴灉
+     * 去重 issues，避免续写带来的重复结果
      */
     private dedupeIssues = (issues: AIReviewResponse['issues']): AIReviewResponse['issues'] => {
         const seen = new Set<string>();
@@ -1063,7 +904,7 @@ export class AIReviewer {
     }
 
     /**
-     * 灏嗛噸璇曞師鍥犲綊涓€鍖栦负鍙垎鏋愬瓧娈碉紝渚夸簬鍚庣画缁熻璋冪敤澶辫触鍒嗗竷
+     * 将重试原因归一化为可分析字段，便于后续统计调用失败分布
      */
     private getRetryReason = (error: unknown): string => {
         if (!axios.isAxiosError(error)) {

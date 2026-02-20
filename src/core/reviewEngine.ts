@@ -1,15 +1,14 @@
-﻿/**
- * 瀹℃煡寮曟搸
- * 
- * 
- * 3. 璋冪敤AI瀹℃煡鍣ㄨ繘琛孉I浠ｇ爜瀹℃煡锛堝鏋滃惎鐢級
- * 6. 鏍规嵁閰嶇疆鍐冲畾鏄惁闃绘鎻愪氦
- * 7. 杩斿洖缁撴瀯鍖栫殑瀹℃煡缁撴灉
- * 
- * 2. 鏍规嵁閰嶇疆杩囨护鎺夋帓闄ょ殑鏂囦欢
- * 7. 鏍规嵁閰嶇疆鍒ゆ柇鏄惁閫氳繃瀹℃煡
- * 
- * - 濡傛灉椤圭洰宸叉湁鑷繁鐨勮鍒欏紩鎿庯紝寤鸿淇濇寔 builtin_rules_enabled: false
+/**
+ * 审查引擎
+ *
+ * 流程概要：
+ * 1. 根据配置过滤、排除的文件
+ * 2. 根据配置过滤排除的文件
+ * 3. 调用 AI 审查器进行 AI 代码审查（若启用）
+ * 6. 根据配置决定是否阻止提交
+ * 7. 返回结构化的审查结果
+ *
+ * - 如果项目已有自己的规则引擎，建议保持 builtin_rules_enabled: false
  */
 
 import * as path from 'path';
@@ -87,15 +86,15 @@ export class ReviewEngine {
     private runtimeTraceLogger: RuntimeTraceLogger;
 
     /**
-     * 鍒濆鍖栧鏌ュ紩鎿庡強鍏朵緷璧栫殑缁勪欢
-     * 
-     * @param configManager - 閰嶇疆绠＄悊鍣紝鐢ㄤ簬璇诲彇瀹℃煡瑙勫垯閰嶇疆
+     * 初始化审查引擎及其依赖的组件
+     *
+     * @param configManager - 配置管理器，用于读取审查规则配置
      */
     constructor(configManager: ConfigManager) {
         this.configManager = configManager;
         this.logger = new Logger('ReviewEngine');
         this.ruleEngine = new RuleEngine(configManager);
-        // AI瀹℃煡鍣細鐢ㄤ簬AI浠ｇ爜瀹℃煡
+        // AI 审查器：用于 AI 代码审查
         this.aiReviewer = new AIReviewer(configManager);
         this.fileScanner = new FileScanner();
         this.runtimeTraceLogger = RuntimeTraceLogger.getInstance();
@@ -120,8 +119,8 @@ export class ReviewEngine {
     /**
      *
      *
-     * @param files - 瑕佸鏌ョ殑鏂囦欢璺緞鏁扮粍
-     * @returns 瀹℃煡缁撴灉瀵硅薄
+     * @param files - 要审查的文件路径数组
+     * @returns 审查结果对象
      */
     async review(
         files: string[],
@@ -343,7 +342,7 @@ export class ReviewEngine {
                     return [];
                 }
                 if (aiInputFiles.length === 0) {
-                    this.logger.info('AI 瀹℃煡宸茶烦杩囷細褰撳墠娌℃湁婊¤冻鏉′欢鐨勬枃浠讹紙鍙兘琚紡鏂楁垨鏍煎紡鍖栭檷鍣繃婊わ級');
+                    this.logger.info('AI 审查已跳过：当前没有满足条件的文件（可能被格式或漏斗过滤掉）');
                     return [];
                 }
 
@@ -357,10 +356,10 @@ export class ReviewEngine {
                     };
                     return await this.aiReviewer.review(aiRequest, traceSession);
                 } catch (error) {
-                    this.logger.error('AI瀹℃煡澶辫触', error);
+                    this.logger.error('AI 审查失败', error);
                     const message = error instanceof Error ? error.message : String(error);
                     const severity = this.actionToSeverity(config.ai_review?.action ?? 'warning');
-                    const isTimeout = /timeout|瓒呮椂/i.test(message);
+                    const isTimeout = /timeout|超时/i.test(message);
                     aiErrorIssues.push({
                         file: '',
                         line: 1,
@@ -414,7 +413,7 @@ export class ReviewEngine {
                         const content = await this.fileScanner.readFile(issue.file);
                         issue.fingerprint = computeIssueFingerprint(issue, content, workspaceRoot);
                     } catch {
-                        // 鏂囦欢璇诲彇澶辫触鍒欒烦杩囪鏉℃寚绾癸紝杩囨护鏃朵笉浼氭寜鎸囩汗鍛戒腑
+                        // 文件读取失败则跳过该条指纹，过滤时不会按指纹去重
                     }
                 }
             }
@@ -437,7 +436,7 @@ export class ReviewEngine {
                 result.passed = !hasBlockingErrors;
             }
 
-            this.logger.info('瀹℃煡娴佺▼瀹屾垚');
+            this.logger.info('审查流程完成');
             this.runtimeTraceLogger.logEvent({
                 session: traceSession,
                 component: 'ReviewEngine',
@@ -473,7 +472,7 @@ export class ReviewEngine {
 
     /**
      *
-     * @param issues - 闂鍒楄〃
+     * @param issues - 问题列表
      */
     private hasBlockingErrors = (
         issues: ReviewIssue[],
@@ -524,7 +523,7 @@ export class ReviewEngine {
 
     /**
      * 
-     * @param issues - 闇€瑕佽ˉ鍏呰寖鍥寸殑闂鍒楄〃
+     * @param issues - 需要补充范围的问题列表
      */
     private attachAstRanges = (
         issues: ReviewIssue[],
@@ -663,8 +662,7 @@ export class ReviewEngine {
     };
 
     /**
-     * AI 瀹℃煡鍓嶈繃婊わ細
-     * 2) 鏍煎紡鍖栭檷鍣細diff 妯″紡涓嬭烦杩囦粎鏍煎紡/绌虹櫧鍙樻洿鏂囦欢
+     * AI 审查前过滤：格式漏斗：diff 模式下跳过仅格式/空白变更文件
      */
     private filterFilesForAiReview = (params: {
         files: string[];
@@ -710,8 +708,8 @@ export class ReviewEngine {
     };
 
     /**
-     * 璇嗗埆骞惰繃婊ゅ凡蹇界暐鐨勯棶棰樸€傞『搴忎笉鍙鍊掞細
-     * 2) 鍐嶆寜 @ai-ignore 琛屽彿杩囨护锛堟爣璁拌鍙婁笅涓€闈炵┖琛岋級
+     * 识别并过滤已忽略的问题。顺序不可颠倒：
+     * 2) 再按 @ai-ignore 行号过滤（标记行及下一非空行）
      */
     private filterIgnoredIssues = async (
         issues: ReviewIssue[],
@@ -728,7 +726,7 @@ export class ReviewEngine {
                 i => !(i.fingerprint && ignoredSet.has(i.fingerprint))
             );
             if (afterFingerprint.length < issues.length) {
-                this.logger.info(`宸叉寜鎸囩汗杩囨护 ${issues.length - afterFingerprint.length} 鏉￠」鐩骇蹇界暐闂`);
+                this.logger.info(`已按指纹过滤 ${issues.length - afterFingerprint.length} 条项目级忽略问题`);
             }
         }
 
@@ -759,7 +757,7 @@ export class ReviewEngine {
                     ignoredLinesByFile.set(filePath, ignoredLines);
                 }
             } catch {
-                // 鏂囦欢璇诲彇澶辫触鏃朵笉鍋氬拷鐣ヨ繃婊わ紝閬垮厤璇悶闂
+                // 文件读取失败时不做过滤，避免误判问题
             }
         }));
 
@@ -825,7 +823,7 @@ export class ReviewEngine {
                 granularity: humanReadable.granularity ?? 'summary_with_key_events',
             });
         } catch (error) {
-            this.logger.warn('鑷姩鐢熸垚杩愯鏃ュ織鎽樿澶辫触', error);
+            this.logger.warn('自动生成运行时日志摘要失败', error);
         }
     };
 
@@ -1081,13 +1079,13 @@ export class ReviewEngine {
     }
 
     /**
-     * 瀹℃煡 Git staged 鏂囦欢
-     * 
-     * 杩欐槸鏈€甯哥敤鐨勫鏌ユ柟娉曪紝浼氳嚜鍔ㄨ幏鍙栨墍鏈夊凡鏆傚瓨锛坰taged锛夌殑鏂囦欢
-     * 閫氬父鍦ㄤ互涓嬪満鏅皟鐢細
-     * - 鐢ㄦ埛鎵嬪姩瑙﹀彂瀹℃煡鍛戒护
-     * 
-     * @returns 瀹℃煡缁撴灉瀵硅薄
+     * 审查 Git staged 文件
+     *
+     * 这是最常用的审查方法，会自动获取所有已暂存（staged）的文件
+     * 通常在以下场景调用：
+     * - 用户手动触发审查命令
+     *
+     * @returns 审查结果对象
      */
     async reviewPendingChangesWithContext(): Promise<PendingReviewContext> {
         this.logger.show();
@@ -1265,8 +1263,8 @@ export class ReviewEngine {
 
     /**
      *
-     * 涓昏鐢ㄤ簬鈥滀繚瀛樿Е鍙戝鏌モ€濓細
-     * - 鏂囦欢灏氭湭 staged 鏃讹紝涔熻兘鍛戒腑 diff_only / formatOnly 闄嶅櫔閫昏緫
+     * 主要用于「保存触发审查」：
+     * - 文件尚未 staged 时，也可能命中 diff_only / formatOnly 降噪逻辑
      */
     async reviewFilesWithWorkingDiff(files: string[]): Promise<ReviewResult> {
         const config = this.configManager.getConfig();

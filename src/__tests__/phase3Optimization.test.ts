@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Phase 3 功能单元测试（Vitest? *
  * 盚? * 1. 覆盖当前已实现的“定?高亮/命令注册”? * 2. 验证关键边界：越界列无效路? *
  * 说明? * - 使用 vi.mock('vscode') 做最小化模拟
@@ -390,7 +390,7 @@ describe('Phase3: 宸︿晶闈㈡澘瀹氫綅鑳藉姏', () => {
         expect(selection?.start.character).toBe(4);
     });
 
-    it('閫変腑闂鑺傜偣鍚庡簲鎵撳紑鏂囦欢骞跺畾浣嶅埌鎸囧畾琛屽垪', async () => {
+    it('选中问题节点后应打开文件并定位到指定行列', async () => {
         openTextDocumentBehavior = async (path: string) => ({
             uri: { fsPath: path },
             lineCount: 3,
@@ -420,13 +420,13 @@ describe('Phase3: 宸︿晶闈㈡澘瀹氫綅鑳藉姏', () => {
     });
 });
 
-describe('Phase3: 鏀捐鍚庢湰鍦板悓姝ヤ笌鏍囪', () => {
-    it('鎻掑叆 @ai-ignore 鍚庡簲鏈湴鍚屾琛屽彿骞舵墦涓婂凡鏀捐鏍囪', async () => {
+describe('Phase3: 放行后本地同步与标记', () => {
+    it('插入 @ai-ignore 后应本地同步行号并打上已放行标记', async () => {
         const lines = [
             '<template>',
             '  <div class="sample">',
-            '    <!-- v-for 缂哄皯 :key -->',
-            '    <!-- @ai-ignore: 褰撳墠杩唬鏆備笉澶勭悊 -->',
+            '    <!-- v-for 缺少 :key -->',
+            '    <!-- @ai-ignore: 当前迭代暂不处理 -->',
             '    <li v-for="item in items">{{ item.name }}</li>',
             '    <p v-if="user">{{ user.name }}</p>',
             '  </div>',
@@ -483,14 +483,14 @@ describe('Phase3: 鏀捐鍚庢湰鍦板悓姝ヤ笌鏍囪', () => {
         expect(issues.length).toBe(3);
         expect(issues[0].line).toBe(5);
         expect(issues[0].ignored).toBe(true);
-        expect(issues[0].ignoreReason).toBe('褰撳墠杩唬鏆備笉澶勭悊');
+        expect(issues[0].ignoreReason).toBe('当前迭代暂不处理');
         expect(issues[1].line).toBe(5);
         expect(issues[1].ignored).toBe(true);
         expect(issues[2].line).toBe(7);
         expect(issues[2].ignored).toBe(false);
     });
 
-    it('TreeView 闂鑺傜偣搴斿睍绀衡€滃凡鏀捐鈥濆墠缂€', () => {
+    it('TreeView 问题节点应展示「已放行」前缀', () => {
         const provider = new ReviewPanelProvider(createContext());
         const filePath = 'd:/demo/sample.vue';
         provider.updateResult({
@@ -506,7 +506,7 @@ describe('Phase3: 鏀捐鍚庢湰鍦板悓姝ヤ笌鏍囪', () => {
                     severity: 'warning',
                     incremental: true,
                     ignored: true,
-                    ignoreReason: '褰撳墠杩唬鏆備笉澶勭悊',
+                    ignoreReason: '当前迭代暂不处理',
                 },
             ],
             info: [],
@@ -630,7 +630,7 @@ describe('Phase3: 保存复审文件级补丁合并', () => {
             },
             replaceMode: 'stale_only',
             status: 'completed',
-            statusMessage: '澶嶅瀹屾垚锛堟渶鏂颁繚瀛橈級',
+            statusMessage: '复审完成（已最新保存）',
             emptyStateHint: '当前保存文件复审未发现问题',
         });
 
@@ -714,7 +714,7 @@ describe('Phase3: 保存复审文件级补丁合并', () => {
         expect(issues.some(issue => issue.file === targetFile && issue.message === 'non stale keep')).toBe(true);
     });
 
-    it('preserveStaleOnEmpty=true 涓旀棤鏂伴棶棰樻椂锛屽簲淇濈暀鐩爣鏂囦欢 stale 闂', () => {
+    it('preserveStaleOnEmpty=true 且无新问题时，应保留目标文件 stale 问题', () => {
         const panel = new ReviewPanel(createContext());
         const targetFile = 'd:/demo/preserve.ts';
         panel.showReviewResult({
@@ -755,7 +755,7 @@ describe('Phase3: 保存复审文件级补丁合并', () => {
 });
 
 describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
-    it('杩炵画閫夋嫨涓や釜闂鑺傜偣锛岄珮浜簲鏇存柊骞舵竻鐞嗘棫楂樹寒', async () => {
+    it('连续选择两个问题节点，高亮应更新并清理旧高亮', async () => {
         openTextDocumentBehavior = async (path: string) => ({
             uri: { fsPath: path },
             lineCount: 2,
@@ -822,7 +822,7 @@ describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
         expect(editorAfterIssue?.decorationCalls.some(call => call.ranges.length === 0)).toBe(true);
     });
 
-    it('鏂囦欢涓嶅瓨鍦ㄦ垨璺緞鏃犳晥鏃舵彁绀哄苟璺宠繃', async () => {
+    it('文件不存在或路径无效时应提示并跳过', async () => {
         openTextDocumentBehavior = async () => {
             throw new Error('not found');
         };
@@ -871,7 +871,7 @@ describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
     });
 });
 
-describe('Phase3: 淇濆瓨瑙﹀彂澶嶅閾捐矾', () => {
+describe('Phase3: 保存触发复审链路', () => {
     it('保存事件应走单文?scope 复入口', async () => {
         mockConfig = {
             ...createMockConfig(),
@@ -912,7 +912,7 @@ describe('Phase3: 淇濆瓨瑙﹀彂澶嶅閾捐矾', () => {
 });
 
 describe('Phase3: 命令与菜单注册', () => {
-    it('鏂板懡浠ゅ湪婵€娲绘椂娉ㄥ唽', async () => {
+    it('新命令在激活时注册', async () => {
         const context = createContext();
         await activate(context as never);
 
@@ -925,7 +925,7 @@ describe('Phase3: 命令与菜单注册', () => {
         expect(commandRegistry.has('agentreview.allowIssueIgnore')).toBe(true);
     });
 
-    it('TreeView 鑿滃崟浠呭闂鑺傜偣鐢熸晥', () => {
+    it('TreeView 菜单仅对问题节点生效', () => {
         const issue = {
             file: 'd:/demo/a.ts',
             line: 1,
@@ -935,7 +935,7 @@ describe('Phase3: 命令与菜单注册', () => {
             severity: 'warning' as const
         };
         const issueItem = new ReviewTreeItem('闂', 0, issue);
-        const fileItem = new ReviewTreeItem('鏂囦欢', 1, undefined, 'd:/demo/a.ts');
+        const fileItem = new ReviewTreeItem('文件', 1, undefined, 'd:/demo/a.ts');
         const statusItem = new ReviewTreeItem('状态', 0);
 
         expect(issueItem.contextValue).toBe('reviewIssue');

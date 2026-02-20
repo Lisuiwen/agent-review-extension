@@ -1,12 +1,12 @@
-﻿/**
- * ConfigManager 鍗曞厓娴嬭瘯
- * 
- * 测试用例覆盖?
- * - 2.1: 榛樿閰嶇疆鍔犺浇
- * - 2.2: YAML 閰嶇疆鏂囦欢璇诲彇
- * - 2.3: 閰嶇疆鍚堝苟锛堥儴鍒嗛厤缃級
- * - 2.4: 閰嶇疆鏂囦欢閿欒澶勭悊
- * - 2.5: 配置重载顺序稳定性（stableStringify?
+/**
+ * ConfigManager 单元测试
+ *
+ * 测试用例覆盖：
+ * - 2.1: 默认配置加载
+ * - 2.2: YAML 配置文件读取
+ * - 2.3: 配置合并（部分配置）
+ * - 2.4: 配置文件错误处理
+ * - 2.5: 配置重载顺序稳定性（stableStringify）
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -22,22 +22,22 @@ describe('ConfigManager', () => {
     let configManager: ConfigManager;
 
     beforeEach(async () => {
-        // 鍒涘缓涓存椂鏂囦欢绯荤粺
+        // 单独创建临时文件系统
         tempFs = await createTempFileSystem();
         
-        // 设置工作区路径（ConfigManager 要工作区跾?
+        // 设置工作区路径（ConfigManager 需要工作区）
         (vscode.workspace as any).workspaceFolders = [{
             uri: { fsPath: tempFs.getTempDir() },
             name: 'test-workspace',
             index: 0,
         }];
         
-        // 鍒涘缓 ConfigManager 瀹炰緥锛堟瘡娆℃祴璇曢兘鍒涘缓鏂扮殑锛岀‘淇濅娇鐢ㄦ纭殑宸ヤ綔鍖鸿矾寰勶級
+        // 单独创建 ConfigManager 实例（每次测试都单独创建新的，确保使用正确的工作区路径）
         configManager = new ConfigManager();
     });
 
     afterEach(async () => {
-        // 娓呯悊涓存椂鏂囦欢
+        // 清理临时文件
         if (tempFs) {
             await tempFs.cleanup();
         }
@@ -46,8 +46,8 @@ describe('ConfigManager', () => {
         }
     });
 
-    describe('娴嬭瘯鐢ㄤ緥 2.1: 榛樿閰嶇疆鍔犺浇', () => {
-        it('搴旇鍦ㄦ病鏈夐厤缃枃浠舵椂浣跨敤榛樿閰嶇疆', async () => {
+    describe('测试用例 2.1: 默认配置加载', () => {
+        it('应在没有配置文件时使用默认配置', async () => {
             // 不创建配罖件，直接初?
             await configManager.initialize();
             
@@ -70,7 +70,7 @@ describe('ConfigManager', () => {
             expect(config.rules.naming_convention?.no_space_in_filename).toBe(true);
             expect(config.rules.naming_convention?.action).toBe('block_commit');
             
-            // 楠岃瘉浠ｇ爜璐ㄩ噺瑙勫垯
+            // 验证代码质量规则
             expect(config.rules.code_quality?.no_todo).toBe(true);
             expect(config.rules.code_quality?.action).toBe('warning');
         });
@@ -95,9 +95,9 @@ rules:
         });
     });
 
-    describe('娴嬭瘯鐢ㄤ緥 2.2: YAML 閰嶇疆鏂囦欢璇诲彇', () => {
-        it('应能正确读取和解?YAML 配置文件', async () => {
-            // 鍒涘缓娴嬭瘯閰嶇疆鏂囦欢
+    describe('测试用例 2.2: YAML 配置文件读取', () => {
+        it('应能正确读取和解析 YAML 配置文件', async () => {
+            // 单独创建测试配置文件
             const yamlContent = createYamlConfig({
                 rules: {
                     enabled: true,
@@ -120,7 +120,7 @@ rules:
             
             const config = configManager.getConfig();
             
-            // 验证配置?
+            // 验证配置
             expect(config.rules.enabled).toBe(true);
             expect(config.rules.strict_mode).toBe(false);
             expect(config.rules.naming_convention?.action).toBe('block_commit');
@@ -147,9 +147,9 @@ git_hooks:
         });
     });
 
-    describe('娴嬭瘯鐢ㄤ緥 2.3: 閰嶇疆鍚堝苟锛堥儴鍒嗛厤缃級', () => {
-        it('', async () => {
-            // 叅网名范则，禁用?
+    describe('测试用例 2.3: 配置合并（部分配置）', () => {
+        it('部分配置时命名规范可单独禁用', async () => {
+            // 仅配置命名规范，禁用
             const yamlContent = `version: "1.0"
 rules:
   naming_convention:
@@ -161,10 +161,10 @@ rules:
             
             const config = configManager.getConfig();
             
-            // 命名规范规则应?
+            // 命名规范规则应被禁用
             expect(config.rules.naming_convention?.enabled).toBe(false);
             
-            // 浠ｇ爜璐ㄩ噺瑙勫垯搴旇浣跨敤榛樿閰嶇疆锛堝惎鐢級
+            // 代码质量规则应使用默认配置（启用）
             expect(config.rules.code_quality?.enabled).toBe(true);
             expect(config.rules.code_quality?.no_todo).toBe(true);
         });
@@ -177,20 +177,20 @@ rules:
             
             const configPath = await tempFs.createFile('.agentreview.yaml', yamlContent);
             
-            // 设置工作区路?
+            // 设置工作区路径
             (vscode.workspace as any).workspaceFolders = [{
                 uri: { fsPath: tempFs.getTempDir() },
                 name: 'test-workspace',
                 index: 0,
             }];
             
-            // 閲嶆柊鍒涘缓 ConfigManager 浠ヤ娇鐢ㄦ柊鐨勫伐浣滃尯璺緞
+            // 重新单独创建 ConfigManager 以使用新的工作区路径
             configManager = new ConfigManager();
             await configManager.initialize();
             
             const config = configManager.getConfig();
             
-            // 朅罚规则应使用默?
+            // 其他规则应使用默认
             expect(config.rules.naming_convention?.enabled).toBe(true);
             expect(config.rules.code_quality?.enabled).toBe(true);
         });
@@ -296,7 +296,7 @@ ai_review:
         });
     });
 
-    describe('娴嬭瘯鐢ㄤ緥 2.4: 閰嶇疆鏂囦欢閿欒澶勭悊', () => {
+    describe('测试用例 2.4: 配置文件错误处理', () => {
         it('应优雅处理格式错?YAML 文件', async () => {
             // 创建格式错?YAML
             const invalidYaml = `version: "1.0"
@@ -312,23 +312,23 @@ rules:
             
             await tempFs.createFile('.agentreview.yaml', invalidYaml);
             
-            // 搴旇涓嶆姏鍑哄紓甯革紝鑰屾槸浣跨敤榛樿閰嶇疆
+            // 应不抛出异常，而是使用默认配置
             await expect(configManager.initialize()).resolves.not.toThrow();
             
             const config = configManager.getConfig();
             
-            // 搴旇浣跨敤榛樿閰嶇疆
+            // 应使用默认配置
             expect(config).toBeDefined();
             expect(config.version).toBe('1.0');
         });
 
-        it('搴旇澶勭悊涓嶅瓨鍦ㄧ殑閰嶇疆鏂囦欢', async () => {
+        it('应处理不存在的配置文件', async () => {
             // 不创建配罖?
             await configManager.initialize();
             
             const config = configManager.getConfig();
             
-            // 搴旇浣跨敤榛樿閰嶇疆
+            // 应使用默认配置
             expect(config).toBeDefined();
             expect(config.rules.enabled).toBe(true);
         });
@@ -339,14 +339,14 @@ rules:
             
             const config = configManager.getConfig();
             
-            // 搴旇浣跨敤榛樿閰嶇疆
+            // 应使用默认配置
             expect(config).toBeDefined();
         });
     });
 
     describe('', () => {
-        it('配置字顺序变化不应该触?加载失败"回', async () => {
-            // 鍒涘缓鍒濆閰嶇疆
+        it('配置字段顺序变化不应该触发加载失败或回退', async () => {
+            // 单独创建初始配置
             const config1 = {
                 version: '1.0',
                 rules: {
@@ -371,7 +371,7 @@ rules:
             
             const configBefore = configManager.getConfig();
             
-            // 鍒涘缓鐩稿悓鍐呭浣嗗瓧娈甸『搴忎笉鍚岀殑閰嶇疆
+            // 单独创建相同内容但字段顺序不同的配置
             const yaml2 = `version: "1.0"
 rules:
   strict_mode: false
@@ -386,18 +386,18 @@ rules:
     enabled: true
 `;
             
-            // 模拟配置文件变更（直接写入新内?
+            // 模拟配置文件变更（直接写入新内容）
             await tempFs.createFile('.agentreview.yaml', yaml2);
             
-            // 鎵嬪姩瑙﹀彂閲嶈浇锛堝湪瀹為檯鍦烘櫙涓敱鏂囦欢鐩戝惉鍣ㄨЕ鍙戯級
-            // 杩欓噷鎴戜滑鐩存帴璋冪敤 loadConfig 鏉ユ祴璇曠ǔ瀹氬簭鍒楀寲
+            // 手动触发重载（在实际场景中由文件监听器触发）
+            // 这里我们直接调用 loadConfig 来测试稳定序列化
             const configAfter = await (configManager as any).loadConfig();
             
-            // 使用稳定序列化比较配?
+            // 使用稳定序列化比较配置
             const beforeStr = (configManager as any).stableStringify(configBefore);
             const afterStr = (configManager as any).stableStringify(configAfter);
             
-            // 配置应为相同（即使字顺序不同?
+            // 配置应为相同（即使字段顺序不同）
             expect(beforeStr).toBe(afterStr);
         });
 
@@ -420,7 +420,7 @@ rules:
             expect(str1).toBe(str2);
         });
 
-        it('stableStringify 搴旇澶勭悊宓屽瀵硅薄', () => {
+        it('stableStringify 应处理嵌套对象', () => {
             const obj1 = {
                 rules: {
                     enabled: true,

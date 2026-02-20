@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockConfigManager } from '../helpers/mockConfigManager';
 import type { AffectedScopeResult } from '../../utils/astScope';
 
@@ -20,7 +20,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         buildLspReferenceContextMock.mockReset();
     });
 
-    it('AST 妯″紡搴斿湪鍙戦€佸唴瀹逛腑鍖哄垎褰撳墠瀹℃煡浠ｇ爜涓庡閮ㄥ紩鐢ㄤ笂涓嬫枃', async () => {
+    it('AST 模式应在发送内容中区分当前审查代码与外部引用上下文', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -67,7 +67,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         const sentContent = callApiSpy.mock.calls[0][0].files[0].content;
         expect(sentContent).toContain('当前审查代码');
         expect(sentContent).toContain('外部引用上下文');
-        expect(sentContent).toContain('绗﹀彿: helper');
+        expect(sentContent).toContain('符号: helper');
     });
 
     it('应过滤与 diagnostics 同?AI ', async () => {
@@ -89,7 +89,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
             .spyOn(aiReviewer as unknown as { callAPI: (input: { files: Array<{ path: string; content: string }> }) => Promise<{ issues: Array<any> }> }, 'callAPI')
             .mockResolvedValue({
                 issues: [
-                    { file: 'src/a.ts', line: 2, column: 1, message: 'x 宸插０鏄庝絾浠庢湭璇诲彇锛堥噸澶嶏級', severity: 'warning' },
+                    { file: 'src/a.ts', line: 2, column: 1, message: 'x 已声明但从未读取（重复）', severity: 'warning' },
                     { file: 'src/a.ts', line: 4, column: 1, message: '鐪熷疄 AI 闂', severity: 'warning' },
                 ],
             });
@@ -97,7 +97,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         const result = await aiReviewer.review({
             files: [{ path: 'src/a.ts', content: 'const a = 1;\nlet x;\nconst b = 2;\nx = b;\n' }],
             diagnosticsByFile: new Map<string, Array<{ line: number; message: string }>>([
-                ['src/a.ts', [{ line: 2, message: 'x 宸插０鏄庝絾浠庢湭璇诲彇' }]],
+                ['src/a.ts', [{ line: 2, message: 'x 已声明但从未读取' }]],
             ]),
         });
 
@@ -126,13 +126,13 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
             callAPI: (input: { files: Array<{ path: string; content: string }> }) => Promise<{ issues: Array<any> }>;
         }, 'callAPI').mockResolvedValue({
             issues: [
-                { file: 'src/a.ts', line: 2, column: 1, message: 'x 宸插０鏄庝絾浠庢湭璇诲彇', severity: 'warning' },
+                { file: 'src/a.ts', line: 2, column: 1, message: 'x 已声明但从未读取', severity: 'warning' },
             ],
         });
         const result = await aiReviewer.review({
             files: [{ path: 'src/a.ts', content: 'const a = 1;\nlet x;\n' }],
             diagnosticsByFile: new Map<string, Array<{ line: number; message: string }>>([
-                ['src/a.ts', [{ line: 2, message: 'x 宸插０鏄庝絾浠庢湭璇诲彇' }]],
+                ['src/a.ts', [{ line: 2, message: 'x 已声明但从未读取' }]],
             ]),
         });
 
@@ -140,7 +140,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         expect(result[0].line).toBe(2);
     });
 
-    it('鏋勫缓璇锋眰鏃跺簲甯︿笂宸茬煡闂鐧藉悕鍗曟彁绀鸿瘝', async () => {
+    it('构建请求时应带上已知问题白名单提示词', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -163,7 +163,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
             {
                 isDiffContent: false,
                 diagnosticsByFile: new Map<string, Array<{ line: number; message: string }>>([
-                    ['src/a.ts', [{ line: 1, message: '缂哄皯鍒嗗彿' }]],
+                    ['src/a.ts', [{ line: 1, message: '缺少分号' }]],
                 ]),
             }
         );

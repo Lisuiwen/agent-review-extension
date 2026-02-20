@@ -1,17 +1,16 @@
-﻿/**
- * 瀹℃煡缁撴灉闈㈡澘
- * 
- * 
- * 2. ReviewPanelProvider: TreeView 鐨勬暟鎹彁渚涜€咃紝璐熻矗鏋勫缓鏍戝舰缁撴瀯
- * 
- * - 鏍硅妭鐐癸細鏄剧ず瀹℃煡鐘舵€佸拰缁熻
- *     - 鏂囦欢鑺傜偣锛氭寜鏂囦欢鍒嗙粍鏄剧ず闂
- *       - 闂鑺傜偣锛氬叿浣撶殑闂椤癸紝鐐瑰嚮鍙烦杞埌浠ｇ爜浣嶇疆
- * 
- * ```typescript
+/**
+ * 审查结果面板
+ *
+ * 1. ReviewPanel: 对外暴露 showReviewResult 等 API
+ * 2. ReviewPanelProvider: TreeView 的数据提供者，负责构建树形结构
+ *
+ * - 根节点：显示审查状态和统计
+ *     - 文件节点：按文件分组显示问题
+ *       - 问题节点：具体的问题项，点击可跳转到代码位置
+ *
+ * 使用示例：
  * const reviewPanel = new ReviewPanel(context);
  * reviewPanel.showReviewResult(result);
- * ```
  */
 
 import * as vscode from 'vscode';
@@ -36,9 +35,9 @@ type ReviewedRange = {
 
 /**
  * 
- * - 鏂囦欢鑺傜偣锛氭樉绀烘枃浠惰矾寰勫拰闂缁熻
- * 
- * VSCode TreeView 瑕佹眰姣忎釜鑺傜偣閮界户鎵胯嚜 vscode.TreeItem
+ * - 文件节点：显示文件路径和问题统计
+ *
+ * VSCode TreeView 要求每个节点均继承自 vscode.TreeItem
  */
 export class ReviewTreeItem extends vscode.TreeItem {
     constructor(
@@ -64,7 +63,7 @@ export class ReviewTreeItem extends vscode.TreeItem {
                 this.description = `行 ${issue.line}, 列 ${issue.column}`;
             }
             
-            // 鏍规嵁涓ラ噸绋嬪害璁剧疆鍥炬爣
+            // 根据严重程度设置图标
             if (issue.ignored) {
                 this.iconPath = new vscode.ThemeIcon('pass', new vscode.ThemeColor('descriptionForeground'));
             } else {
@@ -81,10 +80,10 @@ export class ReviewTreeItem extends vscode.TreeItem {
                 }
             }
 
-            // 璁剧疆鐐瑰嚮鍛戒护锛岃烦杞埌鏂囦欢浣嶇疆
+            // 设置点击命令，跳转到文件位置
             this.command = {
                 command: 'vscode.open',
-                title: '鎵撳紑鏂囦欢',
+                title: '打开文件',
                 arguments: [
                     vscode.Uri.file(issue.file),
                     {
@@ -97,16 +96,16 @@ export class ReviewTreeItem extends vscode.TreeItem {
                     }
                 ]
             };
-            // contextValue 鐢ㄤ簬鎺у埗 TreeView 鑿滃崟鏄剧ず
+            // contextValue 用于控制 TreeView 菜单显示
             this.contextValue = 'reviewIssue';
         } else if (filePath) {
-            // 鏂囦欢椤癸細鏄剧ず鏂囦欢璺緞
+            // 文件项：显示文件路径
             this.tooltip = filePath;
             this.iconPath = vscode.ThemeIcon.File;
             this.resourceUri = vscode.Uri.file(filePath);
             this.contextValue = 'reviewFile';
         } else if (groupKey) {
-            // 鍒嗙粍椤癸細澧為噺 / 瀛橀噺
+            // 分组项：规则量 / 存量
             this.contextValue = 'reviewGroup';
         }
     }
@@ -114,12 +113,12 @@ export class ReviewTreeItem extends vscode.TreeItem {
 
 /**
  * 
- * 杩欎釜绫诲疄鐜颁簡 vscode.TreeDataProvider 鎺ュ彛锛岃礋璐ｏ細
- * 1. 绠＄悊瀹℃煡缁撴灉鏁版嵁
- * 
+ * 此类实现了 vscode.TreeDataProvider 接口，负责：
+ * 1. 管理审查结果数据
+ *
  */
 export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeItem> {
-    // 浜嬩欢鍙戝皠鍣細褰撴暟鎹彉鍖栨椂锛岄€氱煡 TreeView 鍒锋柊
+    // 事件发射器：当数据变化时，通知 TreeView 刷新
     private _onDidChangeTreeData: vscode.EventEmitter<ReviewTreeItem | undefined | null | void> = new vscode.EventEmitter<ReviewTreeItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<ReviewTreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
@@ -192,12 +191,12 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                 return [statusItem];
             }
             if (this.status === 'reviewing') {
-                const loadingItem = new ReviewTreeItem('姝ｅ湪瀹℃煡...', vscode.TreeItemCollapsibleState.None);
+                const loadingItem = new ReviewTreeItem('正在审查...', vscode.TreeItemCollapsibleState.None);
                 loadingItem.iconPath = new vscode.ThemeIcon('sync~spin');
                 loadingItem.description = '请稍候';
                 return [loadingItem];
             }
-            return [new ReviewTreeItem('点击刷新按钮始?', vscode.TreeItemCollapsibleState.None)];
+            return [new ReviewTreeItem('点击刷新按钮开始复审', vscode.TreeItemCollapsibleState.None)];
         }
 
         if (!element) {
@@ -207,31 +206,31 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                 items.push(statusItem);
             }
             
-            // 瀹℃煡杩涜涓椂锛屼紭鍏堟樉绀烘槑鏄剧殑鍔犺浇鎻愮ず
+            // 审查进行时，优先显示明显的加载提示
             if (this.status === 'reviewing') {
-                const loadingItem = new ReviewTreeItem('姝ｅ湪瀹℃煡...', vscode.TreeItemCollapsibleState.None);
+                const loadingItem = new ReviewTreeItem('正在审查...', vscode.TreeItemCollapsibleState.None);
                 loadingItem.iconPath = new vscode.ThemeIcon('sync~spin');
                 loadingItem.description = '请稍候';
                 items.push(loadingItem);
             }
             
-            // 濡傛灉娌℃湁闂涓斿鏌ラ€氳繃锛屾鏌ユ槸鍚︽槸鍥犱负娌℃湁staged鏂囦欢
+            // 如果没有问题且审查通过，检查是否是因为没有 staged 文件
             const totalIssues = this.reviewResult.errors.length + this.reviewResult.warnings.length + this.reviewResult.info.length;
             if (this.reviewResult.passed && totalIssues === 0) {
                 items.push(new ReviewTreeItem(
-                    this.emptyStateHint ?? 'û staged ļҪ',
+                    this.emptyStateHint ?? '无 staged 变更',
                     vscode.TreeItemCollapsibleState.None
                 ));
                 return items;
             }
             
-            // 鐘舵€侀」
+            // 状态项
             const statusText = this.reviewResult.passed
-                ? 'ͨ'
+                ? '通过'
                 : `审查未通过 (${this.reviewResult.errors.length}个错误, ${this.reviewResult.warnings.length}个警告)`;
             items.push(new ReviewTreeItem(statusText, vscode.TreeItemCollapsibleState.None));
 
-            // 鏍硅妭鐐瑰垎涓ょ被锛氫綘鐨勫閲忥紙榛樿灞曞紑锛変笌椤圭洰瀛橀噺锛堥粯璁ゆ姌鍙狅級
+            // 根节点分两类：规则量（默认展开）与项目存量（默认折叠）
                         const allIssues = this.getAllIssues();
             const ruleIssues = allIssues.filter(issue => !this.isAiIssue(issue));
             const aiIssues = allIssues.filter(issue => this.isAiIssue(issue));
@@ -254,7 +253,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
             return items;
         }
 
-        // 鍒嗙粍鑺傜偣锛氬睍绀鸿鍒嗙粍涓嬬殑鏂囦欢鍒楄〃
+        // 分组节点：展示该分组下的文件列表
         if (element.groupKey && !element.filePath) {
             const groupIssues = this.getIssuesByGroup(element.groupKey);
             return this.buildFileItems(groupIssues, element.groupKey);
@@ -277,9 +276,9 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
     }
 
     /**
-     * 鎸夊垎缁勭被鍨嬭幏鍙栭棶棰樺垪琛細
-     * - incremental: 鏈澧為噺
-     * - existing: 椤圭洰瀛橀噺
+     * 按分组类型获取问题列表：
+     * - rule: 规则检测
+     * - ai: AI 检测
      */
     private getIssuesByGroup = (groupKey: 'rule' | 'ai'): ReviewIssue[] => {
         if (!this.reviewResult) {
@@ -292,7 +291,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         return allIssues.filter(issue => !this.isAiIssue(issue));
     };
 
-    /** 灏嗗悓涓€鍒嗙粍涓嬬殑闂鎸夋枃浠惰仛鍚堜负銆屾枃浠惰妭鐐广€峊reeItem 鍒楄〃 */
+    /** 将同一分组下的问题按文件聚合为「文件节点」TreeItem 列表 */
     private buildFileItems = (
         issues: ReviewIssue[],
         groupKey?: 'rule' | 'ai'
@@ -451,7 +450,7 @@ export class ReviewPanel {
             showCollapseAll: true
         });
 
-        // 楂樹寒瑁呴グ锛氱敤浜庢爣璁板綋鍓嶉€変腑鐨勯棶棰樿
+        // 高亮装饰：用于标记当前选中的问题项
         this.highlightDecoration = vscode.window.createTextEditorDecorationType({
             isWholeLine: true,
             backgroundColor: new vscode.ThemeColor('editor.lineHighlightBackground'),
@@ -459,7 +458,7 @@ export class ReviewPanel {
             borderColor: new vscode.ThemeColor('editor.lineHighlightBorder')
         });
         
-        // 閿欒楂樹寒锛氱孩鑹插己璋冿紝鐢ㄤ簬 error 涓ラ噸绾у埆
+        // 错误高亮：红色强调，用于 error 严重级别
         this.errorHighlightDecoration = vscode.window.createTextEditorDecorationType({
             isWholeLine: true,
             backgroundColor: new vscode.ThemeColor('editorError.background'),
@@ -467,7 +466,7 @@ export class ReviewPanel {
             borderColor: new vscode.ThemeColor('errorForeground')
         });
         
-        // 璀﹀憡楂樹寒锛氶粍鑹插己璋冿紝鐢ㄤ簬 warning 涓ラ噸绾у埆
+        // 警告高亮：黄色强调，用于 warning 严重级别
         this.warningHighlightDecoration = vscode.window.createTextEditorDecorationType({
             isWholeLine: true,
             backgroundColor: new vscode.ThemeColor('editorWarning.background'),
@@ -475,7 +474,7 @@ export class ReviewPanel {
             borderColor: new vscode.ThemeColor('editorWarning.foreground')
         });
 
-        // 淇℃伅楂樹寒锛氳摑鑹插己璋冿紝鐢ㄤ簬 info 涓ラ噸绾у埆
+        // 信息高亮：蓝色强调，用于 info 严重级别
         this.infoHighlightDecoration = vscode.window.createTextEditorDecorationType({
             isWholeLine: true,
             backgroundColor: new vscode.ThemeColor('editorInfo.background'),
@@ -576,7 +575,7 @@ export class ReviewPanel {
 
     /**
      * - 浼樺厛浣跨敤 issue.astRange
-     * - 鏈€缁堣繑鍥炲綊骞跺悗鐨勬湁搴忚寖鍥达紝鍑忓皯閲嶅澶嶅
+     * - 最终返回归并后的有序范围，减少重复覆盖
      */
     getStaleScopeHints(filePath: string): Array<{ startLine: number; endLine: number; source: 'ast' | 'line' }> {
         const result = this.provider.getCurrentResult();
@@ -616,7 +615,7 @@ export class ReviewPanel {
     }
 
     /**
-     * - stale_only: 浠呮浛鎹㈣鏂囦欢 stale 闂
+     * - stale_only: 仅替换该文件 stale 问题
      */
     applyFileReviewPatch(params: {
         filePath: string;
@@ -701,7 +700,7 @@ export class ReviewPanel {
     }
 
     /**
-     * 1) 鍚屾枃浠躲€佹彃鍏ヨ鍙婂叾鍚庣画 issue 琛屽彿 +1锛堝洜涓烘彃鍏ヤ簡涓€琛屾敞閲婏級
+     * 1) 同文件、插入点及其后续 issue 行号 +1（因为插入了一行注释）
      *
      */
     async syncAfterIssueIgnore(params: { filePath: string; insertedLine: number }): Promise<void> {
@@ -850,7 +849,7 @@ export class ReviewPanel {
             warnings: mapIssues(currentResult.warnings),
             info: mapIssues(currentResult.info),
         };
-        this.provider.updateResult(nextResult, this.provider.getStatus(), '宸插悓姝ヤ綅缃紙寰呭瀹★級');
+        this.provider.updateResult(nextResult, this.provider.getStatus(), '已同步位置（待复审）');
 
         if (
             this.lastHighlightedEditor
@@ -877,7 +876,7 @@ export class ReviewPanel {
             fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H4',location:'reviewPanel.ts:489',message:'highlight_issue_selected',data:{file:issue.file,line:issue.line,column:issue.column,hasAstRange:!!issue.astRange,astRange:issue.astRange??null},timestamp:Date.now()})}).catch(()=>{});
             // #endregion
 
-            // 瀹夊叏鏍℃琛屽垪鍙凤紝閬垮厤瓒婄晫瀵艰嚧寮傚父
+            // 安全校验行序号，避免越界导致异常
             const safeLine = Math.min(Math.max(issue.line, 1), document.lineCount);
             const lineText = document.lineAt(safeLine - 1).text;
             const safeColumn = Math.min(Math.max(issue.column, 1), lineText.length + 1);
@@ -964,7 +963,7 @@ export class ReviewPanel {
         if (issue.ignored) {
             md.appendMarkdown('\n\n状? 已放行（@ai-ignore?');
             if (issue.ignoreReason) {
-                md.appendMarkdown(`\n鏀捐鍘熷洜: ${issue.ignoreReason}`);
+                md.appendMarkdown(`\n放行原因: ${issue.ignoreReason}`);
             }
         }
         if (issue.stale) {
@@ -980,7 +979,7 @@ export class ReviewPanel {
             md.appendMarkdown(`\nAST: 第 ${issue.astRange.startLine}-${issue.astRange.endLine} 行`);
         }
         md.appendMarkdown('\n\n');
-        md.appendMarkdown('[鏀捐姝ゆ潯](command:agentreview.allowIssueIgnore) 路 [淇](command:agentreview.fixIssue)');
+        md.appendMarkdown('[放行此条](command:agentreview.allowIssueIgnore) · [修复](command:agentreview.fixIssue)');
         return md;
     };
 

@@ -1,12 +1,14 @@
-﻿/**
- * ReviewEngine 浼樺寲鐩稿叧鍗曞厓娴嬭瘯
+/**
+ * ReviewEngine 优化相关单元测试
  *
- * 覆盖功能? * 1. 早期出：blocking 错时跳?AI 审查
- * 2. 鍘婚噸锛氳鍒欏紩鎿庝笌 AI 瀹℃煡閲嶅闂鍚堝苟
- * 3. 骞惰澶勭悊锛氳鍒欏紩鎿庝笌 AI 瀹℃煡骞惰瑙﹀彂
+ * 覆盖功能：
+ * 1. 早期跳出：blocking 错误时跳过 AI 审查
+ * 2. 去重：规则引擎与 AI 审查重复问题合并
+ * 3. 并发处理：规则引擎与 AI 审查并发触发
  *
- * 说明? * - 为了聚焦优化逻辑，这里使?mock ?RuleEngine ?AIReviewer
- * - FileScanner 仅用?shouldExclude，直?mock ?false
+ * 说明：
+ * - 为了聚焦优化逻辑，这里使用 mock 的 RuleEngine 和 AIReviewer
+ * - FileScanner 仅用 shouldExclude，直接 mock 为 false
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -47,7 +49,7 @@ vi.mock('../../utils/fileScanner', () => ({
     },
 }));
 
-describe('ReviewEngine 浼樺寲閫昏緫', () => {
+describe('ReviewEngine 优化逻辑', () => {
     beforeEach(() => {
         ruleEngineCheckFilesMock.mockReset();
         aiReviewerReviewMock.mockReset();
@@ -57,7 +59,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         readFileMock.mockResolvedValue('');
     });
 
-    it('瑙勫垯寮曟搸鍙戠幇 blocking 閿欒鏃跺簲璺宠繃 AI 瀹℃煡', async () => {
+    it('规则引擎发现 blocking 错误时应跳过 AI 审查', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: true,
@@ -306,7 +308,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         expect(issues[1].incremental).toBe(false);
     });
 
-    it('淇濆瓨瑙﹀彂璺緞涓紝formatOnly 鏂囦欢搴旇 AI 杩囨护', async () => {
+    it('保存触发路径中，formatOnly 文件应被 AI 过滤', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: false,

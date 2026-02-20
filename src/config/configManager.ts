@@ -1,17 +1,17 @@
-﻿/**
- * 
- * 杩欎釜鏂囦欢璐熻矗璇诲彇鍜岀鐞嗘彃浠剁殑閰嶇疆鏂囦欢
- * 
- * 4. 鎻愪緵閰嶇疆璁块棶鎺ュ彛
- * 
- * - 椤圭洰鏍圭洰褰曪細.agentreview.yaml
- * 
+/**
+ * 配置管理模块
+ *
+ * 此文件负责读取和管理插件的配置文件
+ * 4. 提供配置访问接口
+ *
+ * - 项目根目录：.agentreview.yaml
+ *
  * ```yaml
  * version: "1.0"
  * rules:
  *   enabled: true
  *   strict_mode: false
- *   builtin_rules_enabled: false  # 鏄惁鍚敤鍐呯疆瑙勫垯寮曟搸锛堣嫢妫€娴嬪埌椤圭洰瑙勫垯鏂囦欢涓旀湭鏄惧紡閰嶇疆锛屼細鑷姩寮€鍚級
+ *   builtin_rules_enabled: false  # 是否启用内置规则引擎（若检测到项目规则文件且未显式配置，会自动开启）
  *   naming_convention:
  *     enabled: true
  *     action: "block_commit"
@@ -20,7 +20,7 @@
  *     enabled: true
  *     action: "warning"
  *     no_todo: true
- *     no_todo_pattern: "(TODO|FIXME|XXX)"  # 鍙€夛細鑷畾涔夋鍒欒〃杈惧紡妯″紡
+ *     no_todo_pattern: "(TODO|FIXME|XXX)"  # 可选：自定义规则表达式模式
  * git_hooks:
  *   auto_install: true
  *   pre_commit_enabled: true
@@ -40,25 +40,24 @@ import { mergeConfig as mergeConfigFn } from './configMerger';
 export type { AgentReviewConfig, RuleConfig } from '../types/config';
 
 /**
- * 閰嶇疆绠＄悊鍣ㄧ被
- * 
- * ```typescript
+ * 配置管理器类
+ *
+ * 使用示例：
  * const configManager = new ConfigManager();
  * await configManager.initialize();
  * const config = configManager.getConfig();
- * ```
  */
 export class ConfigManager implements vscode.Disposable {
-    private logger: Logger;                    // 日志记录?
-    private config: AgentReviewConfig | null = null;  // 缓存的配?
-    private configPath: string;                // 配置文件的完整路?
-    private envPath: string;                   // .env文件的完整路?
-    private extensionPath: string | undefined;  // 扩展安盽（用于单工作区时回加载 .env?
-    private envVars: Map<string, string> = new Map();  // ?env文件加载的环境变?
-    private watcherDisposable: ReturnType<typeof setupConfigWatcher> | undefined;  // 配置?.env 监听（含防抖?
+    private logger: Logger;                    // 日志记录器
+    private config: AgentReviewConfig | null = null;  // 缓存的配置
+    private configPath: string;                // 配置文件的完整路径
+    private envPath: string;                   // .env 文件的完整路径
+    private extensionPath: string | undefined;  // 扩展安装路径（用于单工作区时回退加载 .env）
+    private envVars: Map<string, string> = new Map();  // .env 文件加载的环境变量
+    private watcherDisposable: ReturnType<typeof setupConfigWatcher> | undefined;  // 配置/.env 监听（含防抖）
 
     /**
-     * 鍒濆鍖栭厤缃鐞嗗櫒锛岀‘瀹氶厤缃枃浠剁殑浣嶇疆
+     * 初始化配置管理器，确定配置文件的位置
      */
     constructor() {
         this.logger = new Logger('ConfigManager');
@@ -78,28 +77,28 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
-     * 鍒濆鍖栭厤缃鐞嗗櫒
-     * @param context - 鎵╁睍涓婁笅鏂囷紝浼犲叆鏃剁敤浜庡崟宸ヤ綔鍖轰笅浠庢墿灞曠洰褰曞洖閫€鍔犺浇 .env
+     * 初始化配置管理器
+     * @param context - 扩展上下文，传入时用于单工作区下从扩展目录回退加载 .env
      */
     async initialize(context?: vscode.ExtensionContext): Promise<void> {
         this.extensionPath = context?.extensionPath;
         await this.loadEnvFile();
-        // 鐒跺悗鍔犺浇閰嶇疆鏂囦欢
+        // 然后加载配置文件
         await this.loadConfig();
         this.setupFileWatcher();
     }
 
     /**
-     * 褰撻厤缃枃浠舵垨.env鏂囦欢鍙樻洿鏃讹紝鑷姩閲嶆柊鍔犺浇閰嶇疆
+     * 当配置文件或 .env 文件变更时，自动重新加载配置
      */
     private setupFileWatcher(): void {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
-            this.logger.warn('鏈壘鍒板伐浣滃尯锛屾棤娉曡缃厤缃枃浠剁洃鍚櫒');
+            this.logger.warn('未找到工作区，无法设置配置文件监视器');
             return;
         }
         const onReload = async () => {
-            this.logger.info('测到配置?.env 变更，重新加载配?');
+            this.logger.info('检测到配置/.env 变更，重新加载配置');
             await this.loadEnvFile();
             await this.reloadConfig();
         };
@@ -110,12 +109,12 @@ export class ConfigManager implements vscode.Disposable {
             onReload,
             300
         );
-        this.logger.info('配置文件监听器已设置（包?env文件监听?');
+        this.logger.info('配置文件监听器已设置（含 .env 文件监听）');
     }
 
     /**
-     * 閲嶆柊鍔犺浇閰嶇疆鏂囦欢
-     * - 浼氫繚鐣欐棫閰嶇疆锛屽鏋滄柊閰嶇疆鍔犺浇澶辫触锛岀户缁娇鐢ㄦ棫閰嶇疆
+     * 重新加载配置文件
+     * - 会保留旧配置，如果新配置加载失败，继续使用旧配置
      */
     private async reloadConfig(): Promise<void> {
         const oldConfig = this.config;
@@ -123,44 +122,44 @@ export class ConfigManager implements vscode.Disposable {
         try {
             const fileExists = fs.existsSync(this.configPath);
             
-            // 灏濊瘯閲嶆柊鍔犺浇閰嶇疆
+            // 尝试重新加载配置
             const newConfig = await this.loadConfig();
             
-            // 濡傛灉鏂囦欢瀛樺湪浣嗗姞杞藉悗閰嶇疆涓庨粯璁ら厤缃浉鍚岋紝鍙兘鏄姞杞藉け璐ヤ簡
+            // 如果文件存在但加载后配置与默认配置相同，可能是加载失败了
             if (fileExists && oldConfig) {
                 const defaultConfig = this.getDefaultConfig();
-                // 绠€鍗曟鏌ワ細濡傛灉鏂伴厤缃笌榛樿閰嶇疆瀹屽叏鐩稿悓锛屽彲鑳芥槸鍔犺浇澶辫触
-                // 杩欓噷浣跨敤 JSON 瀛楃涓叉瘮杈冿紝铏界劧涓嶅绮剧‘锛屼絾瀵逛簬 MVP 瓒冲
+                // 简单检查：如果新配置与默认配置完全相同，可能是加载失败
+                // 这里使用 JSON 字符串比较，虽然不精确，但对于 MVP 足够
                 const newConfigStr = this.stableStringify(newConfig);
                 const defaultConfigStr = this.stableStringify(defaultConfig);
                 const oldConfigStr = this.stableStringify(oldConfig);
                 
                 if (newConfigStr === defaultConfigStr && oldConfigStr !== defaultConfigStr) {
                     this.config = oldConfig;
-                    this.logger.warn('閰嶇疆鏂囦欢鍙兘鍔犺浇澶辫触锛屼繚鎸佷娇鐢ㄦ棫閰嶇疆');
+                    this.logger.warn('配置文件可能加载失败，保持使用旧配置');
                     vscode.window.showWarningMessage(
-                        '⚠️ AgentReview 配置加载參失败，已恢使用旧配罂查配罖件格式?'
+                        '⚠️ AgentReview 配置加载可能失败，已恢复使用旧配置。请检查配置文件格式。'
                     );
                     return;
                 }
             }
             
-            // 鍔犺浇鎴愬姛锛屾樉绀洪€氱煡
-            this.logger.info('閰嶇疆鏂囦欢閲嶆柊鍔犺浇鎴愬姛');
-            vscode.window.showInformationMessage('?AgentReview 配置已更?');
+            // 加载成功，显示通知
+            this.logger.info('配置文件重新加载成功');
+            vscode.window.showInformationMessage('AgentReview 配置已更新');
         } catch (error) {
-            // 鍔犺浇澶辫触锛屾仮澶嶆棫閰嶇疆
-            this.logger.error('閰嶇疆鏂囦欢閲嶆柊鍔犺浇澶辫触锛屼繚鎸佷娇鐢ㄦ棫閰嶇疆', error);
+            // 加载失败，恢复旧配置
+            this.logger.error('配置文件重新加载失败，保持使用旧配置', error);
             if (oldConfig) {
                 this.config = oldConfig;
                 vscode.window.showWarningMessage(
-                    '⚠️ AgentReview 配置加载失败，已恢使用旧配罂查配罖件格式?'
+                    '⚠️ AgentReview 配置加载失败，已恢复使用旧配置。请检查配置文件格式。'
                 );
             } else {
-                // 濡傛灉娌℃湁鏃ч厤缃紝浣跨敤榛樿閰嶇疆
+                // 如果没有旧配置，使用默认配置
                 this.config = this.getDefaultConfig();
                 vscode.window.showWarningMessage(
-                    '⚠️ AgentReview 配置加载失败，已使用默配置。查配罖件格式?'
+                    '⚠️ AgentReview 配置加载失败，已使用默认配置。请检查配置文件格式。'
                 );
             }
         }
@@ -287,41 +286,41 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
-     * 鍔犺浇閰嶇疆鏂囦欢
-     * 
-     * 1. 鑾峰彇榛樿閰嶇疆浣滀负鍩虹
-     * 2. 浠嶻AML鏂囦欢鍔犺浇閰嶇疆锛堝鏋滃瓨鍦級
-     * 3. 浠嶸SCode Settings鍔犺浇AI閰嶇疆锛堜紭鍏堢骇鏈€楂橈級
-     * 
-     * @returns 鍔犺浇鍚庣殑閰嶇疆瀵硅薄
+     * 加载配置文件
+     *
+     * 1. 获取默认配置作为基础
+     * 2. 从 YAML 文件加载配置（若存在）
+     * 3. 从 VSCode Settings 加载 AI 配置（优先级最高）
+     *
+     * @returns 加载后的配置对象
      */
     async loadConfig(): Promise<AgentReviewConfig> {
-        this.logger.info(`鍔犺浇閰嶇疆鏂囦欢: ${this.configPath}`);
-        // 姣忔鍔犺浇閰嶇疆鍓嶅厛閲嶆柊鍔犺浇 .env锛屼互渚夸娇鐢ㄦ渶鏂扮殑鐜鍙橀噺锛堝惈浠呯敤 .env 閰嶇疆绔偣鐨勬儏鍐碉級
+        this.logger.info(`加载配置文件: ${this.configPath}`);
+        // 每次加载配置前先重新加载 .env，以便使用最新的环境变量（含仅用 .env 配置端点的情况）
         await this.loadEnvFile();
-        // 鑾峰彇榛樿閰嶇疆浣滀负鍩虹
+        // 获取默认配置作为基础
         const defaultConfig = this.getDefaultConfig();
         
         try {
             let yamlConfig = await loadYamlFromPath(this.configPath);
             if (Object.keys(yamlConfig).length > 0) {
-                this.logger.info('YAML閰嶇疆鏂囦欢鍔犺浇鎴愬姛');
+                this.logger.info('YAML 配置文件加载成功');
             } else {
-                this.logger.info('YAML閰嶇疆鏂囦欢涓嶅瓨鍦紝璺宠繃');
+                this.logger.info('YAML 配置文件不存在，跳过');
             }
 
             if (!yamlConfig.ai_review && this.extensionPath) {
                 const pluginYaml = await loadPluginYaml(this.extensionPath);
                 if (pluginYaml?.ai_review) {
                     yamlConfig = { ...yamlConfig, ai_review: pluginYaml.ai_review };
-                    this.logger.info('已从扩展盽加载 AI 配置（插件侧默?');
+                    this.logger.info('已从扩展目录加载 AI 配置（插件侧默认）');
                 }
             }
 
-            // 姝ラ3锛氫粠VSCode Settings璇诲彇AI閰嶇疆锛堜紭鍏堢骇鏈€楂橈級
+            // 步骤3：从 VSCode Settings 读取 AI 配置（优先级最高）
             const settingsAIConfig = this.loadAIConfigFromSettings();
             if (settingsAIConfig) {
-                this.logger.info('浠嶸SCode Settings鍔犺浇AI閰嶇疆');
+                this.logger.info('从 VSCode Settings 加载 AI 配置');
                 const defaultAIConfig = {
                     enabled: false as boolean,
                     api_endpoint: '' as string,
@@ -334,7 +333,7 @@ export class ConfigManager implements vscode.Disposable {
                 const enabledValue = settingsAIConfig.enabled !== undefined 
                     ? settingsAIConfig.enabled 
                     : (existingAIConfig?.enabled ?? defaultAIConfig.enabled);
-                // 鑻ユ湭閰嶇疆绔偣锛屽皾璇曚娇鐢ㄧ幆澧冨彉閲忓崰浣嶇锛屼究浜庝粠 .env 瑙ｆ瀽
+                // 若未配置端点，尝试使用环境变量占位符，便于从 .env 解析
                 const apiEndpointValue = (settingsAIConfig.api_endpoint ?? existingAIConfig?.api_endpoint ?? defaultAIConfig.api_endpoint)
                     || '${AGENTREVIEW_AI_API_ENDPOINT}';
                 const timeoutValue = settingsAIConfig.timeout !== undefined 
@@ -342,9 +341,9 @@ export class ConfigManager implements vscode.Disposable {
                     : (existingAIConfig?.timeout ?? defaultAIConfig.timeout);
                 const actionValue = settingsAIConfig.action || existingAIConfig?.action || defaultAIConfig.action;
                 
-                // 鏋勫缓鍚堝苟鍚庣殑閰嶇疆瀵硅薄
+                // 构建合并后的配置对象
                 const mergedAIConfig: AgentReviewConfig['ai_review'] = {
-                    // 蹇呴渶瀛楁锛堝凡纭繚鏈夊€硷級
+                    // 必填字段（已确保有值）
                     enabled: enabledValue,
                     api_endpoint: apiEndpointValue,
                     timeout: timeoutValue,
@@ -419,7 +418,7 @@ export class ConfigManager implements vscode.Disposable {
 
             const settingsRuntimeLogConfig = this.loadRuntimeLogConfigFromSettings();
             if (settingsRuntimeLogConfig) {
-                this.logger.info('浠嶸SCode Settings鍔犺浇杩愯鏃ュ織閰嶇疆');
+                this.logger.info('从 VSCode Settings 加载运行时日志配置');
                 const existingRuntimeLog = yamlConfig.runtime_log || null;
                 yamlConfig.runtime_log = {
                     enabled: settingsRuntimeLogConfig.enabled ?? existingRuntimeLog?.enabled ?? true,
@@ -450,22 +449,22 @@ export class ConfigManager implements vscode.Disposable {
                 resolveEnvVariables(s, this.envVars, this.logger)
             );
 
-            this.logger.info('閰嶇疆鏂囦欢鍔犺浇鎴愬姛');
+            this.logger.info('配置文件加载成功');
             
             return this.config;
         } catch (error) {
-            // 姝ラ5锛氬鏋滃嚭閿欙紙鏂囦欢鏍煎紡閿欒銆佹潈闄愰棶棰樼瓑锛夛紝浣跨敤榛樿閰嶇疆
-            this.logger.error('鍔犺浇閰嶇疆鏂囦欢澶辫触', error);
-            this.logger.warn('浣跨敤榛樿閰嶇疆');
+            // 步骤5：如果出错（文件格式错误、权限问题等），使用默认配置
+            this.logger.error('加载配置文件失败', error);
+            this.logger.warn('使用默认配置');
             this.config = defaultConfig;
             return this.config;
         }
     }
 
     /**
-     * 鍔犺浇 .env 鏂囦欢锛氫粠宸ヤ綔鍖烘牴鐩綍锛堝強澶氭牴鏃跺悇鏍癸級璇诲彇骞跺悎骞剁幆澧冨彉閲忥紱
+     * 加载 .env 文件：从工作区根目录（及多根时各根）读取并合并环境变量；
      */
-    private parseAndMergeEnvContent(content: string, envPath: string, logPrefix = '?env文件'): void {
+    private parseAndMergeEnvContent(content: string, envPath: string, logPrefix = '.env 文件'): void {
         const lines = content.split(/\r?\n/);
         let lineNumber = 0;
         for (const line of lines) {
@@ -481,10 +480,10 @@ export class ConfigManager implements vscode.Disposable {
                 }
                 if (!process.env[key] && !this.envVars.has(key)) {
                     this.envVars.set(key, value);
-                    this.logger.debug(`${logPrefix}鍔犺浇鐜鍙橀噺: ${key} (${envPath})`);
+                    this.logger.debug(`${logPrefix} 加载环境变量: ${key} (${envPath})`);
                 }
             } else {
-                this.logger.warn(`.env文件?{lineNumber}行格式不正确，已跳过: ${trimmedLine}`);
+                this.logger.warn(`.env 文件第 ${lineNumber} 行格式不正确，已跳过: ${trimmedLine}`);
             }
         }
     }
@@ -493,11 +492,11 @@ export class ConfigManager implements vscode.Disposable {
         this.envVars.clear();
         const folders = vscode.workspace.workspaceFolders ?? [];
         const envPaths = folders.length > 0 ? folders.map(f => path.join(f.uri.fsPath, '.env')) : [this.envPath || '.env'];
-        this.logger.info(`鍔犺浇.env鏂囦欢: ${envPaths.join(', ')}`);
+        this.logger.info(`加载 .env 文件: ${envPaths.join(', ')}`);
         try {
             for (const envPath of envPaths) {
                 if (!fs.existsSync(envPath)) {
-                    this.logger.debug(`.env鏂囦欢涓嶅瓨鍦紝璺宠繃: ${envPath}`);
+                    this.logger.debug(`.env 文件不存在，跳过: ${envPath}`);
                     continue;
                 }
                 const content = await fs.promises.readFile(envPath, 'utf-8');
@@ -506,14 +505,14 @@ export class ConfigManager implements vscode.Disposable {
             if (this.envVars.size === 0 && this.extensionPath) {
                 const fallbackEnv = path.join(this.extensionPath, '.env');
                 if (fs.existsSync(fallbackEnv)) {
-                    this.logger.info(`宸ヤ綔鍖烘湭鎵惧埌.env锛屼粠鎵╁睍鐩綍鍔犺浇: ${fallbackEnv}`);
+                    this.logger.info(`工作区未找到 .env，从扩展目录加载: ${fallbackEnv}`);
                     const content = await fs.promises.readFile(fallbackEnv, 'utf-8');
-                    this.parseAndMergeEnvContent(content, fallbackEnv, '从扩展目?env');
+                    this.parseAndMergeEnvContent(content, fallbackEnv, '从扩展目录 .env');
                 }
             }
             this.logger.info(`从 .env 文件加载了 ${this.envVars.size} 个环境变量`);
         } catch (error) {
-            this.logger.error('鍔犺浇.env鏂囦欢澶辫触', error);
+            this.logger.error('加载 .env 文件失败', error);
         }
     }
 
@@ -546,7 +545,7 @@ export class ConfigManager implements vscode.Disposable {
 
     /**
      *
-     * 鐢ㄩ€旓細
+     * 用途：检测项目是否有自己的规则文件（如 eslint）
      */
     private detectProjectRuleConfig = (): boolean => {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -578,10 +577,10 @@ export class ConfigManager implements vscode.Disposable {
     };
 
     /**
-     * 鑾峰彇褰撳墠閰嶇疆
-     * 濡傛灉閰嶇疆鏈姞杞斤紝杩斿洖榛樿閰嶇疆
-     * 
-     * @returns 閰嶇疆瀵硅薄
+     * 获取当前配置
+     * 如果配置未加载，返回默认配置
+     *
+     * @returns 配置对象
      */
     getConfig(): AgentReviewConfig {
         return this.config || this.getDefaultConfig();
@@ -594,13 +593,13 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
-     * 鑾峰彇榛樿閰嶇疆
-     * 
-     * 杩欐槸鎻掍欢鐨勯粯璁ら厤缃紝褰撶敤鎴锋病鏈夐厤缃枃浠舵垨閰嶇疆椤圭己澶辨椂浣跨敤
-     * 
-     * - naming_convention: 鍚敤锛岄樆姝㈡彁浜わ紝妫€鏌ユ枃浠跺悕绌烘牸
-     * 
-     * @returns 榛樿閰嶇疆瀵硅薄
+     * 获取默认配置
+     *
+     * 这是插件的默认配置，当用户没有配置文件或配置项缺失时使用
+     *
+     * - naming_convention: 启用，阻止提交，检查文件名空格
+     *
+     * @returns 默认配置对象
      */
     private getDefaultConfig(): AgentReviewConfig {
         return {
@@ -608,8 +607,8 @@ export class ConfigManager implements vscode.Disposable {
             rules: {
                 enabled: true,
                 strict_mode: false,
-                builtin_rules_enabled: false,  // 默值为 false；若探测到项则文件且朘式配罼会自动开?
-                diff_only: true,               // 榛樿浠呮壂鎻忓彉鏇磋
+                builtin_rules_enabled: false,  // 默认值为 false；若探测到项目规则文件且未显式配置会自动开启
+                diff_only: true,               // 默认仅扫描变更
                 naming_convention: {
                     enabled: true,
                     action: 'block_commit',
@@ -653,16 +652,16 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     async saveConfig(config: AgentReviewConfig): Promise<void> {
-        this.logger.info('淇濆瓨閰嶇疆鏂囦欢');
+        this.logger.info('保存配置文件');
     }
 
     /**
-     * 娓呯悊璧勬簮
+     * 清理资源
      */
     dispose(): void {
         this.watcherDisposable?.dispose();
         this.watcherDisposable = undefined;
         this.envVars.clear();
-        this.logger.info('閰嶇疆绠＄悊鍣ㄨ祫婧愬凡娓呯悊');
+        this.logger.info('配置管理器资源已清理');
     }
 }
