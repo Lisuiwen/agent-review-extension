@@ -1,8 +1,8 @@
 ﻿/**
- * Phase 3 鍔熻兘鍗曞厓娴嬭瘯锛圴itest锛? *
- * 鐩殑锛? * 1. 瑕嗙洊褰撳墠宸插疄鐜扮殑鈥滃畾浣?楂樹寒/鍛戒护娉ㄥ唽鈥濊涓? * 2. 楠岃瘉鍏抽敭杈圭晫锛氳秺鐣岃鍒椼€佹棤鏁堣矾寰? *
- * 璇存槑锛? * - 浣跨敤 vi.mock('vscode') 鍋氭渶灏忓寲妯℃嫙
- * - 鍙柇瑷€鍏抽敭璋冪敤涓庡弬鏁帮紝涓嶄緷璧栫湡瀹?VSCode
+ * Phase 3 功能单元测试（Vitest? *
+ * 盚? * 1. 覆盖当前已实现的“定?高亮/命令注册”? * 2. 验证关键边界：越界列无效路? *
+ * 说明? * - 使用 vi.mock('vscode') 做最小化模拟
+ * - 取关键调用与参数，不依赖真?VSCode
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -379,7 +379,7 @@ describe('Phase3: 宸︿晶闈㈡澘瀹氫綅鑳藉姏', () => {
             severity: 'error' as const
         };
 
-        const item = new ReviewTreeItem('闂', 0, issue);
+        const item = new ReviewTreeItem('闂', 0, issue);
 
         expect(item.command?.command).toBe('vscode.open');
         expect(Array.isArray(item.command?.arguments)).toBe(true);
@@ -390,7 +390,7 @@ describe('Phase3: 宸︿晶闈㈡澘瀹氫綅鑳藉姏', () => {
         expect(selection?.start.character).toBe(4);
     });
 
-    it('閫変腑闂鑺傜偣鍚庡簲鎵撳紑鏂囦欢骞跺畾浣嶅埌鎸囧畾琛屽垪', async () => {
+    it('閫変腑闂鑺傜偣鍚庡簲鎵撳紑鏂囦欢骞跺畾浣嶅埌鎸囧畾琛屽垪', async () => {
         openTextDocumentBehavior = async (path: string) => ({
             uri: { fsPath: path },
             lineCount: 3,
@@ -407,7 +407,7 @@ describe('Phase3: 宸︿晶闈㈡澘瀹氫綅鑳藉姏', () => {
             rule: 'r',
             severity: 'error' as const
         };
-        const item = new ReviewTreeItem('闂', 0, issue);
+        const item = new ReviewTreeItem('闂', 0, issue);
 
         lastTreeView?.fireSelection([item]);
 
@@ -420,13 +420,13 @@ describe('Phase3: 宸︿晶闈㈡澘瀹氫綅鑳藉姏', () => {
     });
 });
 
-describe('Phase3: 鏀捐鍚庢湰鍦板悓姝ヤ笌鏍囪', () => {
-    it('鎻掑叆 @ai-ignore 鍚庡簲鏈湴鍚屾琛屽彿骞舵墦涓婂凡鏀捐鏍囪', async () => {
+describe('Phase3: 鏀捐鍚庢湰鍦板悓姝ヤ笌鏍囪', () => {
+    it('鎻掑叆 @ai-ignore 鍚庡簲鏈湴鍚屾琛屽彿骞舵墦涓婂凡鏀捐鏍囪', async () => {
         const lines = [
             '<template>',
             '  <div class="sample">',
             '    <!-- v-for 缂哄皯 :key -->',
-            '    <!-- @ai-ignore: 褰撳墠杩唬鏆備笉澶勭悊 -->',
+            '    <!-- @ai-ignore: 褰撳墠杩唬鏆備笉澶勭悊 -->',
             '    <li v-for="item in items">{{ item.name }}</li>',
             '    <p v-if="user">{{ user.name }}</p>',
             '  </div>',
@@ -483,14 +483,14 @@ describe('Phase3: 鏀捐鍚庢湰鍦板悓姝ヤ笌鏍囪', () => {
         expect(issues.length).toBe(3);
         expect(issues[0].line).toBe(5);
         expect(issues[0].ignored).toBe(true);
-        expect(issues[0].ignoreReason).toBe('褰撳墠杩唬鏆備笉澶勭悊');
+        expect(issues[0].ignoreReason).toBe('褰撳墠杩唬鏆備笉澶勭悊');
         expect(issues[1].line).toBe(5);
         expect(issues[1].ignored).toBe(true);
         expect(issues[2].line).toBe(7);
         expect(issues[2].ignored).toBe(false);
     });
 
-    it('TreeView 闂鑺傜偣搴斿睍绀衡€滃凡鏀捐鈥濆墠缂€', () => {
+    it('TreeView 闂鑺傜偣搴斿睍绀衡€滃凡鏀捐鈥濆墠缂€', () => {
         const provider = new ReviewPanelProvider(createContext());
         const filePath = 'd:/demo/sample.vue';
         provider.updateResult({
@@ -504,17 +504,18 @@ describe('Phase3: 鏀捐鍚庢湰鍦板悓姝ヤ笌鏍囪', () => {
                     message: 'v-for 缂哄皯 :key',
                     rule: 'vue_require_v_for_key',
                     severity: 'warning',
+                    incremental: true,
                     ignored: true,
-                    ignoreReason: '褰撳墠杩唬鏆備笉澶勭悊',
+                    ignoreReason: '褰撳墠杩唬鏆備笉澶勭悊',
                 },
             ],
             info: [],
         }, 'completed');
 
         const rootItems = provider.getChildren();
-        const existingGroup = rootItems.find(item => item.groupKey === 'existing');
-        expect(existingGroup).toBeDefined();
-        const fileItems = provider.getChildren(existingGroup);
+        const ruleGroup = rootItems.find(item => item.groupKey === 'rule');
+        expect(ruleGroup).toBeDefined();
+        const fileItems = provider.getChildren(ruleGroup);
         expect(fileItems.length).toBe(1);
         const issueItems = provider.getChildren(fileItems[0]);
         expect(issueItems.length).toBe(1);
@@ -524,7 +525,7 @@ describe('Phase3: 鏀捐鍚庢湰鍦板悓姝ヤ笌鏍囪', () => {
 });
 
 describe('Phase3: 保存复审文件级补丁合并', () => {
-    it('搴旀彁鍙?stale scope hints锛屽苟浼樺厛鍚堝苟 AST 鑼冨洿', () => {
+    it('应提?stale scope hints，并优先合并 AST 范围', () => {
         const panel = new ReviewPanel(createContext());
         const filePath = 'd:/demo/scope.ts';
         panel.showReviewResult({
@@ -629,7 +630,7 @@ describe('Phase3: 保存复审文件级补丁合并', () => {
             },
             replaceMode: 'stale_only',
             status: 'completed',
-            statusMessage: '澶嶅瀹屾垚锛堟渶鏂颁繚瀛橈級',
+            statusMessage: '澶嶅瀹屾垚锛堟渶鏂颁繚瀛橈級',
             emptyStateHint: '当前保存文件复审未发现问题',
         });
 
@@ -713,7 +714,7 @@ describe('Phase3: 保存复审文件级补丁合并', () => {
         expect(issues.some(issue => issue.file === targetFile && issue.message === 'non stale keep')).toBe(true);
     });
 
-    it('preserveStaleOnEmpty=true 涓旀棤鏂伴棶棰樻椂锛屽簲淇濈暀鐩爣鏂囦欢 stale 闂', () => {
+    it('preserveStaleOnEmpty=true 涓旀棤鏂伴棶棰樻椂锛屽簲淇濈暀鐩爣鏂囦欢 stale 闂', () => {
         const panel = new ReviewPanel(createContext());
         const targetFile = 'd:/demo/preserve.ts';
         panel.showReviewResult({
@@ -754,7 +755,7 @@ describe('Phase3: 保存复审文件级补丁合并', () => {
 });
 
 describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
-    it('杩炵画閫夋嫨涓や釜闂鑺傜偣锛岄珮浜簲鏇存柊骞舵竻鐞嗘棫楂樹寒', async () => {
+    it('杩炵画閫夋嫨涓や釜闂鑺傜偣锛岄珮浜簲鏇存柊骞舵竻鐞嗘棫楂樹寒', async () => {
         openTextDocumentBehavior = async (path: string) => ({
             uri: { fsPath: path },
             lineCount: 2,
@@ -780,11 +781,11 @@ describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
             severity: 'warning' as const
         };
 
-        lastTreeView?.fireSelection([new ReviewTreeItem('闂', 0, firstIssue)]);
+        lastTreeView?.fireSelection([new ReviewTreeItem('', 0, firstIssue)]);
         await flushPromises();
         const firstEditor = lastEditor;
 
-        lastTreeView?.fireSelection([new ReviewTreeItem('闂', 0, secondIssue)]);
+        lastTreeView?.fireSelection([new ReviewTreeItem('', 0, secondIssue)]);
         await flushPromises();
 
         const vscode = await import('vscode');
@@ -811,17 +812,17 @@ describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
             severity: 'error' as const
         };
 
-        lastTreeView?.fireSelection([new ReviewTreeItem('闂', 0, issue)]);
+        lastTreeView?.fireSelection([new ReviewTreeItem('', 0, issue)]);
         await flushPromises();
         const editorAfterIssue = lastEditor;
 
-        lastTreeView?.fireSelection([new ReviewTreeItem('鏂囦欢', 1, undefined, 'd:/demo/a.ts')]);
+        lastTreeView?.fireSelection([new ReviewTreeItem('文件', 1, undefined, 'd:/demo/a.ts')]);
         await flushPromises();
 
         expect(editorAfterIssue?.decorationCalls.some(call => call.ranges.length === 0)).toBe(true);
     });
 
-    it('鏂囦欢涓嶅瓨鍦ㄦ垨璺緞鏃犳晥鏃舵彁绀哄苟璺宠繃', async () => {
+    it('鏂囦欢涓嶅瓨鍦ㄦ垨璺緞鏃犳晥鏃舵彁绀哄苟璺宠繃', async () => {
         openTextDocumentBehavior = async () => {
             throw new Error('not found');
         };
@@ -837,7 +838,7 @@ describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
             severity: 'error' as const
         };
 
-        lastTreeView?.fireSelection([new ReviewTreeItem('闂', 0, issue)]);
+        lastTreeView?.fireSelection([new ReviewTreeItem('', 0, issue)]);
         await flushPromises();
 
         expect(messages.some(message => message.type === 'warning' && message.message.includes('无法打开文件'))).toBe(true);
@@ -861,7 +862,7 @@ describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
             severity: 'info' as const
         };
 
-        lastTreeView?.fireSelection([new ReviewTreeItem('闂', 0, issue)]);
+        lastTreeView?.fireSelection([new ReviewTreeItem('', 0, issue)]);
         await flushPromises();
 
         const selection = lastEditor?.selection as { start: { line: number; character: number } };
@@ -870,8 +871,8 @@ describe('Phase3: 宸︿晶闈㈡澘閫変腑楂樹寒', () => {
     });
 });
 
-describe('Phase3: 淇濆瓨瑙﹀彂澶嶅閾捐矾', () => {
-    it('淇濆瓨浜嬩欢搴旇蛋鍗曟枃浠?scope 澶嶅鍏ュ彛', async () => {
+describe('Phase3: 淇濆瓨瑙﹀彂澶嶅閾捐矾', () => {
+    it('保存事件应走单文?scope 复入口', async () => {
         mockConfig = {
             ...createMockConfig(),
             ai_review: {
@@ -924,7 +925,7 @@ describe('Phase3: 命令与菜单注册', () => {
         expect(commandRegistry.has('agentreview.allowIssueIgnore')).toBe(true);
     });
 
-    it('TreeView 鑿滃崟浠呭闂鑺傜偣鐢熸晥', () => {
+    it('TreeView 鑿滃崟浠呭闂鑺傜偣鐢熸晥', () => {
         const issue = {
             file: 'd:/demo/a.ts',
             line: 1,
@@ -933,7 +934,7 @@ describe('Phase3: 命令与菜单注册', () => {
             rule: 'r',
             severity: 'warning' as const
         };
-        const issueItem = new ReviewTreeItem('闂', 0, issue);
+        const issueItem = new ReviewTreeItem('闂', 0, issue);
         const fileItem = new ReviewTreeItem('鏂囦欢', 1, undefined, 'd:/demo/a.ts');
         const statusItem = new ReviewTreeItem('状态', 0);
 

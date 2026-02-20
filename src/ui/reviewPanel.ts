@@ -1,20 +1,13 @@
-/**
- * 审查结果面板
+﻿/**
+ * 瀹℃煡缁撴灉闈㈡澘
  * 
- * 这个文件实现了 VSCode 的 TreeView，用于在侧边栏显示审查结果
  * 
- * 主要组件：
- * 1. ReviewTreeItem: TreeView 中的每个节点（文件或问题）
- * 2. ReviewPanelProvider: TreeView 的数据提供者，负责构建树形结构
- * 3. ReviewPanel: 面板管理器，负责创建和管理 TreeView
+ * 2. ReviewPanelProvider: TreeView 鐨勬暟鎹彁渚涜€咃紝璐熻矗鏋勫缓鏍戝舰缁撴瀯
  * 
- * TreeView 结构：
- * - 根节点：显示审查状态和统计
- *   - 分组节点：你的增量 / 项目存量
- *     - 文件节点：按文件分组显示问题
- *       - 问题节点：具体的问题项，点击可跳转到代码位置
+ * - 鏍硅妭鐐癸細鏄剧ず瀹℃煡鐘舵€佸拰缁熻
+ *     - 鏂囦欢鑺傜偣锛氭寜鏂囦欢鍒嗙粍鏄剧ず闂
+ *       - 闂鑺傜偣锛氬叿浣撶殑闂椤癸紝鐐瑰嚮鍙烦杞埌浠ｇ爜浣嶇疆
  * 
- * 使用方式：
  * ```typescript
  * const reviewPanel = new ReviewPanel(context);
  * reviewPanel.showReviewResult(result);
@@ -42,13 +35,10 @@ type ReviewedRange = {
 };
 
 /**
- * TreeView 节点类
  * 
- * 这个类表示 TreeView 中的一个节点，可以是：
- * - 文件节点：显示文件路径和问题统计
- * - 问题节点：显示具体的问题信息，点击可跳转到代码位置
+ * - 鏂囦欢鑺傜偣锛氭樉绀烘枃浠惰矾寰勫拰闂缁熻
  * 
- * VSCode TreeView 要求每个节点都继承自 vscode.TreeItem
+ * VSCode TreeView 瑕佹眰姣忎釜鑺傜偣閮界户鎵胯嚜 vscode.TreeItem
  */
 export class ReviewTreeItem extends vscode.TreeItem {
     constructor(
@@ -56,12 +46,11 @@ export class ReviewTreeItem extends vscode.TreeItem {
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
         public readonly issue?: ReviewIssue,
         public readonly filePath?: string,
-        public readonly groupKey?: 'incremental' | 'existing'
+        public readonly groupKey?: 'rule' | 'ai'
     ) {
         super(label, collapsibleState);
 
         if (issue) {
-            // 问题项：显示详细信息并设置点击命令
             const reasonText = issue.reason ? `\n原因: ${issue.reason}` : '';
             const ignoreText = issue.ignored ? '\n状态: 已放行（@ai-ignore）' : '';
             const ignoreReasonText = issue.ignoreReason ? `\n放行原因: ${issue.ignoreReason}` : '';
@@ -75,7 +64,7 @@ export class ReviewTreeItem extends vscode.TreeItem {
                 this.description = `行 ${issue.line}, 列 ${issue.column}`;
             }
             
-            // 根据严重程度设置图标
+            // 鏍规嵁涓ラ噸绋嬪害璁剧疆鍥炬爣
             if (issue.ignored) {
                 this.iconPath = new vscode.ThemeIcon('pass', new vscode.ThemeColor('descriptionForeground'));
             } else {
@@ -92,10 +81,10 @@ export class ReviewTreeItem extends vscode.TreeItem {
                 }
             }
 
-            // 设置点击命令，跳转到文件位置
+            // 璁剧疆鐐瑰嚮鍛戒护锛岃烦杞埌鏂囦欢浣嶇疆
             this.command = {
                 command: 'vscode.open',
-                title: '打开文件',
+                title: '鎵撳紑鏂囦欢',
                 arguments: [
                     vscode.Uri.file(issue.file),
                     {
@@ -108,44 +97,43 @@ export class ReviewTreeItem extends vscode.TreeItem {
                     }
                 ]
             };
-            // contextValue 用于控制 TreeView 菜单显示
+            // contextValue 鐢ㄤ簬鎺у埗 TreeView 鑿滃崟鏄剧ず
             this.contextValue = 'reviewIssue';
         } else if (filePath) {
-            // 文件项：显示文件路径
+            // 鏂囦欢椤癸細鏄剧ず鏂囦欢璺緞
             this.tooltip = filePath;
             this.iconPath = vscode.ThemeIcon.File;
             this.resourceUri = vscode.Uri.file(filePath);
             this.contextValue = 'reviewFile';
         } else if (groupKey) {
-            // 分组项：增量 / 存量
+            // 鍒嗙粍椤癸細澧為噺 / 瀛橀噺
             this.contextValue = 'reviewGroup';
         }
     }
 }
 
 /**
- * TreeView 数据提供者
  * 
- * 这个类实现了 vscode.TreeDataProvider 接口，负责：
- * 1. 管理审查结果数据
- * 2. 构建树形结构（根节点 -> 文件节点 -> 问题节点）
- * 3. 响应数据变化，刷新视图
+ * 杩欎釜绫诲疄鐜颁簡 vscode.TreeDataProvider 鎺ュ彛锛岃礋璐ｏ細
+ * 1. 绠＄悊瀹℃煡缁撴灉鏁版嵁
  * 
- * VSCode 会调用 getChildren 方法来获取子节点，调用 getTreeItem 来获取节点显示信息
  */
 export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeItem> {
-    // 事件发射器：当数据变化时，通知 TreeView 刷新
-    // 这是 VSCode TreeView 的标准模式
+    // 浜嬩欢鍙戝皠鍣細褰撴暟鎹彉鍖栨椂锛岄€氱煡 TreeView 鍒锋柊
     private _onDidChangeTreeData: vscode.EventEmitter<ReviewTreeItem | undefined | null | void> = new vscode.EventEmitter<ReviewTreeItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<ReviewTreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
-    private reviewResult: ReviewResult | null = null;  // 当前的审查结果
-    private status: 'idle' | 'reviewing' | 'completed' | 'error' = 'idle';  // 审查状态
-    private statusMessage: string | null = null; // 子状态文案（排队中/待复审/限频中等）
-    private emptyStateHint: string | null = null; // 无问题时的场景化提示文案
-    private getAllIssues = (): ReviewIssue[] => this.reviewResult
-        ? [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info]
-        : [];
+    private reviewResult: ReviewResult | null = null;
+    private status: 'idle' | 'reviewing' | 'completed' | 'error' = 'idle';
+    private statusMessage: string | null = null;
+    private emptyStateHint: string | null = null;
+    private getAllIssues = (): ReviewIssue[] => {
+        if (!this.reviewResult) {
+            return [];
+        }
+        return [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info]
+            .filter(issue => issue.incremental === true);
+    };
 
     constructor(private context: vscode.ExtensionContext) {}
 
@@ -196,8 +184,6 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
     }
 
     /**
-     * TreeView 核心方法：根据父节点返回子节点。
-     * 根（element 为空）→ 状态/分组（你的增量、项目存量）；分组 → 文件；文件 → 问题列表。
      */
     getChildren(element?: ReviewTreeItem): ReviewTreeItem[] {
         if (!this.reviewResult) {
@@ -206,84 +192,81 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                 return [statusItem];
             }
             if (this.status === 'reviewing') {
-                const loadingItem = new ReviewTreeItem('正在审查...', vscode.TreeItemCollapsibleState.None);
+                const loadingItem = new ReviewTreeItem('姝ｅ湪瀹℃煡...', vscode.TreeItemCollapsibleState.None);
                 loadingItem.iconPath = new vscode.ThemeIcon('sync~spin');
                 loadingItem.description = '请稍候';
                 return [loadingItem];
             }
-            return [new ReviewTreeItem('点击刷新按钮开始审查', vscode.TreeItemCollapsibleState.None)];
+            return [new ReviewTreeItem('点击刷新按钮始?', vscode.TreeItemCollapsibleState.None)];
         }
 
         if (!element) {
-            // 根节点：状态文案、加载中、通过/未通过、你的增量 / 项目存量 分组
             const items: ReviewTreeItem[] = [];
             const statusItem = this.createStatusMessageItem();
             if (statusItem) {
                 items.push(statusItem);
             }
             
-            // 审查进行中时，优先显示明显的加载提示
+            // 瀹℃煡杩涜涓椂锛屼紭鍏堟樉绀烘槑鏄剧殑鍔犺浇鎻愮ず
             if (this.status === 'reviewing') {
-                const loadingItem = new ReviewTreeItem('正在审查...', vscode.TreeItemCollapsibleState.None);
+                const loadingItem = new ReviewTreeItem('姝ｅ湪瀹℃煡...', vscode.TreeItemCollapsibleState.None);
                 loadingItem.iconPath = new vscode.ThemeIcon('sync~spin');
                 loadingItem.description = '请稍候';
                 items.push(loadingItem);
             }
             
-            // 如果没有问题且审查通过，检查是否是因为没有staged文件
+            // 濡傛灉娌℃湁闂涓斿鏌ラ€氳繃锛屾鏌ユ槸鍚︽槸鍥犱负娌℃湁staged鏂囦欢
             const totalIssues = this.reviewResult.errors.length + this.reviewResult.warnings.length + this.reviewResult.info.length;
             if (this.reviewResult.passed && totalIssues === 0) {
                 items.push(new ReviewTreeItem(
-                    this.emptyStateHint ?? '没有staged文件需要审查',
+                    this.emptyStateHint ?? 'û staged ļҪ',
                     vscode.TreeItemCollapsibleState.None
                 ));
                 return items;
             }
             
-            // 状态项
-            const statusText = this.reviewResult.passed 
-                ? '✓ 审查通过' 
-                : `✗ 审查未通过 (${this.reviewResult.errors.length}个错误, ${this.reviewResult.warnings.length}个警告)`;
+            // 鐘舵€侀」
+            const statusText = this.reviewResult.passed
+                ? 'ͨ'
+                : `审查未通过 (${this.reviewResult.errors.length}个错误, ${this.reviewResult.warnings.length}个警告)`;
             items.push(new ReviewTreeItem(statusText, vscode.TreeItemCollapsibleState.None));
 
-            // 根节点分两类：你的增量（默认展开）与项目存量（默认折叠）
-            const allIssues = this.getAllIssues();
-            const incrementalIssues = allIssues.filter(issue => issue.incremental === true);
-            const existingIssues = allIssues.filter(issue => issue.incremental !== true);
+            // 鏍硅妭鐐瑰垎涓ょ被锛氫綘鐨勫閲忥紙榛樿灞曞紑锛変笌椤圭洰瀛橀噺锛堥粯璁ゆ姌鍙狅級
+                        const allIssues = this.getAllIssues();
+            const ruleIssues = allIssues.filter(issue => !this.isAiIssue(issue));
+            const aiIssues = allIssues.filter(issue => this.isAiIssue(issue));
 
-            // 始终显示“你的增量 / 项目存量”两个分栏，数量可为 0，避免用户误以为缺失分栏。
             items.push(new ReviewTreeItem(
-                `你的增量 (${incrementalIssues.length})`,
+                `规则检测错误 (${ruleIssues.length})`,
                 vscode.TreeItemCollapsibleState.Expanded,
                 undefined,
                 undefined,
-                'incremental'
+                'rule'
             ));
             items.push(new ReviewTreeItem(
-                `项目存量 (${existingIssues.length})`,
+                `AI检测错误 (${aiIssues.length})`,
                 vscode.TreeItemCollapsibleState.Collapsed,
                 undefined,
                 undefined,
-                'existing'
+                'ai'
             ));
 
             return items;
         }
 
-        // 分组节点：展示该分组下的文件列表
+        // 鍒嗙粍鑺傜偣锛氬睍绀鸿鍒嗙粍涓嬬殑鏂囦欢鍒楄〃
         if (element.groupKey && !element.filePath) {
             const groupIssues = this.getIssuesByGroup(element.groupKey);
             return this.buildFileItems(groupIssues, element.groupKey);
         }
 
-        // 文件节点：显示该文件的所有问题
         if (element.filePath) {
             const groupIssues = element.groupKey ? this.getIssuesByGroup(element.groupKey) : this.getAllIssues();
             const fileIssues = groupIssues.filter(issue => issue.file === element.filePath);
 
             return fileIssues.map(issue => 
                 new ReviewTreeItem(
-                    `${issue.ignored ? '【已放行】 ' : ''}${issue.stale ? '【待复审】 ' : ''}${issue.message} [${issue.rule}]`,
+                    `${issue.ignored ? '【已放行】' : ''}${issue.stale ? '【待复审】' : ''}${issue.message} [${issue.rule}]`,
                     vscode.TreeItemCollapsibleState.None,
                     issue
                 )
@@ -294,25 +277,25 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
     }
 
     /**
-     * 按分组类型获取问题列表：
-     * - incremental: 本次增量
-     * - existing: 项目存量
+     * 鎸夊垎缁勭被鍨嬭幏鍙栭棶棰樺垪琛細
+     * - incremental: 鏈澧為噺
+     * - existing: 椤圭洰瀛橀噺
      */
-    private getIssuesByGroup = (groupKey: 'incremental' | 'existing'): ReviewIssue[] => {
+    private getIssuesByGroup = (groupKey: 'rule' | 'ai'): ReviewIssue[] => {
         if (!this.reviewResult) {
             return [];
         }
         const allIssues = this.getAllIssues();
-        if (groupKey === 'incremental') {
-            return allIssues.filter(issue => issue.incremental === true);
+        if (groupKey === 'ai') {
+            return allIssues.filter(issue => this.isAiIssue(issue));
         }
-        return allIssues.filter(issue => issue.incremental !== true);
+        return allIssues.filter(issue => !this.isAiIssue(issue));
     };
 
-    /** 将同一分组下的问题按文件聚合为「文件节点」TreeItem 列表 */
+    /** 灏嗗悓涓€鍒嗙粍涓嬬殑闂鎸夋枃浠惰仛鍚堜负銆屾枃浠惰妭鐐广€峊reeItem 鍒楄〃 */
     private buildFileItems = (
         issues: ReviewIssue[],
-        groupKey?: 'incremental' | 'existing'
+        groupKey?: 'rule' | 'ai'
     ): ReviewTreeItem[] => {
         const fileMap = new Map<string, ReviewIssue[]>();
         for (const issue of issues) {
@@ -337,9 +320,9 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                 }
             }
             const countText = [
-                errorCount > 0 ? `${errorCount}个错误` : '',
-                warningCount > 0 ? `${warningCount}个警告` : '',
-                infoCount > 0 ? `${infoCount}个信息` : ''
+                errorCount > 0 ? `${errorCount}` : '',
+                warningCount > 0 ? `${warningCount}` : '',
+                infoCount > 0 ? `${infoCount}ʾ` : '',
             ].filter(Boolean).join(', ');
 
             items.push(new ReviewTreeItem(
@@ -352,6 +335,9 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         }
         return items;
     };
+
+    private isAiIssue = (issue: ReviewIssue): boolean =>
+        issue.rule === 'ai_review' || issue.rule.startsWith('ai_');
 }
 
 export class ReviewPanel {
@@ -366,7 +352,6 @@ export class ReviewPanel {
     private selectionDisposable: vscode.Disposable;
     private hoverProvider: vscode.Disposable;
     private documentChangeDisposable: vscode.Disposable;
-    /** 当前在 Hover 中展示的问题，供「修复」等命令读取 */
     private activeIssueForActions: ReviewIssue | null = null;
     private enableLocalRebase = true;
     private largeChangeLineThreshold = 40;
@@ -466,8 +451,7 @@ export class ReviewPanel {
             showCollapseAll: true
         });
 
-        // 高亮装饰：用于标记当前选中的问题行
-        // 使用主题颜色，保证不同主题下可读性
+        // 楂樹寒瑁呴グ锛氱敤浜庢爣璁板綋鍓嶉€変腑鐨勯棶棰樿
         this.highlightDecoration = vscode.window.createTextEditorDecorationType({
             isWholeLine: true,
             backgroundColor: new vscode.ThemeColor('editor.lineHighlightBackground'),
@@ -475,7 +459,7 @@ export class ReviewPanel {
             borderColor: new vscode.ThemeColor('editor.lineHighlightBorder')
         });
         
-        // 错误高亮：红色强调，用于 error 严重级别
+        // 閿欒楂樹寒锛氱孩鑹插己璋冿紝鐢ㄤ簬 error 涓ラ噸绾у埆
         this.errorHighlightDecoration = vscode.window.createTextEditorDecorationType({
             isWholeLine: true,
             backgroundColor: new vscode.ThemeColor('editorError.background'),
@@ -483,7 +467,7 @@ export class ReviewPanel {
             borderColor: new vscode.ThemeColor('errorForeground')
         });
         
-        // 警告高亮：黄色强调，用于 warning 严重级别
+        // 璀﹀憡楂樹寒锛氶粍鑹插己璋冿紝鐢ㄤ簬 warning 涓ラ噸绾у埆
         this.warningHighlightDecoration = vscode.window.createTextEditorDecorationType({
             isWholeLine: true,
             backgroundColor: new vscode.ThemeColor('editorWarning.background'),
@@ -491,7 +475,7 @@ export class ReviewPanel {
             borderColor: new vscode.ThemeColor('editorWarning.foreground')
         });
 
-        // 信息高亮：蓝色强调，用于 info 严重级别
+        // 淇℃伅楂樹寒锛氳摑鑹插己璋冿紝鐢ㄤ簬 info 涓ラ噸绾у埆
         this.infoHighlightDecoration = vscode.window.createTextEditorDecorationType({
             isWholeLine: true,
             backgroundColor: new vscode.ThemeColor('editorInfo.background'),
@@ -499,7 +483,6 @@ export class ReviewPanel {
             borderColor: new vscode.ThemeColor('editorInfo.foreground')
         });
 
-        // AST 范围高亮：较浅的范围标识，用于二级范围提示
         this.astHighlightDecoration = vscode.window.createTextEditorDecorationType({
             isWholeLine: true,
             backgroundColor: new vscode.ThemeColor('editor.rangeHighlightBackground'),
@@ -507,14 +490,12 @@ export class ReviewPanel {
             borderColor: new vscode.ThemeColor('editor.rangeHighlightBorder')
         });
 
-        // 详情说明：Hover 浮层（类似 TS 报错），不占行号，支持可点击操作
         this.hoverProvider = vscode.languages.registerHoverProvider(
             { scheme: 'file' },
             { provideHover: (document, position) => this.provideIssueHover(document, position) }
         );
         context.subscriptions.push(this.hoverProvider);
 
-        // 监听 TreeView 选择变化，实现“选中即高亮”
         this.selectionDisposable = this.treeView.onDidChangeSelection((event) => {
             const selectedItem = event.selection[0];
             if (!selectedItem || !selectedItem.issue) {
@@ -547,7 +528,6 @@ export class ReviewPanel {
     }
 
     setStatus(status: 'idle' | 'reviewing' | 'completed' | 'error', statusMessage = ''): void {
-        // 保持当前结果，只更新状态
         const currentResult = this.provider.getCurrentResult();
         this.provider.updateResult(currentResult, status, statusMessage);
     }
@@ -561,7 +541,6 @@ export class ReviewPanel {
     }
 
     /**
-     * 设置面板子状态文案，不改变主状态。
      */
     setSubStatus(statusMessage?: string): void {
         const currentResult = this.provider.getCurrentResult();
@@ -569,7 +548,6 @@ export class ReviewPanel {
     }
 
     /**
-     * 配置编辑期本地重映射行为（由 extension 启动时注入）。
      */
     configureLocalRebase(options: { enabled?: boolean; largeChangeLineThreshold?: number }): void {
         if (options.enabled !== undefined) {
@@ -585,7 +563,6 @@ export class ReviewPanel {
     }
 
     /**
-     * 当前结果中某文件是否存在 stale issue，供“编辑停顿复审”策略判断。
      */
     isFileStale(filePath: string): boolean {
         const result = this.provider.getCurrentResult();
@@ -598,10 +575,8 @@ export class ReviewPanel {
     }
 
     /**
-     * 获取某个文件中 stale 问题对应的复审范围提示：
-     * - 优先使用 issue.astRange
-     * - 无 astRange 时回退为 issue.line 单行范围
-     * - 最终返回归并后的有序范围，减少重复复审
+     * - 浼樺厛浣跨敤 issue.astRange
+     * - 鏈€缁堣繑鍥炲綊骞跺悗鐨勬湁搴忚寖鍥达紝鍑忓皯閲嶅澶嶅
      */
     getStaleScopeHints(filePath: string): Array<{ startLine: number; endLine: number; source: 'ast' | 'line' }> {
         const result = this.provider.getCurrentResult();
@@ -641,9 +616,7 @@ export class ReviewPanel {
     }
 
     /**
-     * 将“单文件复审结果”按文件级补丁合并进当前面板：
-     * - stale_only: 仅替换该文件 stale 问题
-     * - all_in_file: 替换该文件所有问题
+     * - stale_only: 浠呮浛鎹㈣鏂囦欢 stale 闂
      */
     applyFileReviewPatch(params: {
         filePath: string;
@@ -697,7 +670,6 @@ export class ReviewPanel {
                 return false;
             }
             if (reviewedRanges.length === 0) {
-                // diff 覆盖范围缺失时采取保守策略，避免误删旧 stale 问题
                 return true;
             }
             return !this.isLineInReviewedRanges(issue.line, reviewedRanges);
@@ -729,12 +701,8 @@ export class ReviewPanel {
     }
 
     /**
-     * 在“放行此条”插入 @ai-ignore 注释后，本地同步当前面板结果：
-     * 1) 同文件、插入行及其后续 issue 行号 +1（因为插入了一行注释）
-     * 2) 重新扫描文件中的 @ai-ignore 覆盖范围并给 issue 打 ignored 标记
-     * 3) 立即刷新 TreeView，并清理旧高亮，避免高亮停留在过期行号
+     * 1) 鍚屾枃浠躲€佹彃鍏ヨ鍙婂叾鍚庣画 issue 琛屽彿 +1锛堝洜涓烘彃鍏ヤ簡涓€琛屾敞閲婏級
      *
-     * 说明：本方法不触发 AI，不会重新走审查引擎，仅做面板内状态同步。
      */
     async syncAfterIssueIgnore(params: { filePath: string; insertedLine: number }): Promise<void> {
         const currentResult = this.provider.getCurrentResult();
@@ -772,15 +740,14 @@ export class ReviewPanel {
     }
 
     reveal(): void {
-        // TreeView 已经在侧边栏显示，无需额外操作
-        // 刷新视图以显示最新内容
+        // TreeView 宸茬粡鍦ㄤ晶杈规爮鏄剧ず锛屾棤闇€棰濆鎿嶄綔
         this.provider.refresh();
     }
 
     /**
-     * 清理当前高亮
+     * 娓呯悊褰撳墠楂樹寒
      * 
-     * 当选中非问题节点或发生异常时，移除旧的高亮
+     * 褰撻€変腑闈為棶棰樿妭鐐规垨鍙戠敓寮傚父鏃讹紝绉婚櫎鏃х殑楂樹寒
      */
     private clearHighlight = (): void => {
         if (this.lastHighlightedEditor) {
@@ -795,11 +762,7 @@ export class ReviewPanel {
     };
 
     /**
-     * 编辑期本地同步：按文本变更重映射 issue 行号并标记 stale。
      *
-     * 注意：
-     * - 仅做 UI 层同步，不触发 AI。
-     * - 检测到 @ai-ignore 注释插入时跳过（避免与 syncAfterIssueIgnore 双重偏移）。
      */
     private syncAfterDocumentChange = async (event: vscode.TextDocumentChangeEvent): Promise<void> => {
         if (!this.enableLocalRebase) {
@@ -887,7 +850,7 @@ export class ReviewPanel {
             warnings: mapIssues(currentResult.warnings),
             info: mapIssues(currentResult.info),
         };
-        this.provider.updateResult(nextResult, this.provider.getStatus(), '已同步位置（待复审）');
+        this.provider.updateResult(nextResult, this.provider.getStatus(), '宸插悓姝ヤ綅缃紙寰呭瀹★級');
 
         if (
             this.lastHighlightedEditor
@@ -899,9 +862,9 @@ export class ReviewPanel {
     };
 
     /**
-     * 高亮并定位问题行
+     * 楂樹寒骞跺畾浣嶉棶棰樿
      * 
-     * @param issue - 需要定位的问题
+     * @param issue - 闇€瑕佸畾浣嶇殑闂
      */
     private highlightIssue = async (issue: ReviewIssue): Promise<void> => {
         try {
@@ -914,7 +877,7 @@ export class ReviewPanel {
             fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H4',location:'reviewPanel.ts:489',message:'highlight_issue_selected',data:{file:issue.file,line:issue.line,column:issue.column,hasAstRange:!!issue.astRange,astRange:issue.astRange??null},timestamp:Date.now()})}).catch(()=>{});
             // #endregion
 
-            // 安全校正行列号，避免越界导致异常
+            // 瀹夊叏鏍℃琛屽垪鍙凤紝閬垮厤瓒婄晫瀵艰嚧寮傚父
             const safeLine = Math.min(Math.max(issue.line, 1), document.lineCount);
             const lineText = document.lineAt(safeLine - 1).text;
             const safeColumn = Math.min(Math.max(issue.column, 1), lineText.length + 1);
@@ -924,11 +887,10 @@ export class ReviewPanel {
             editor.selection = selection;
             editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
 
-            // 先清理旧高亮，再设置新高亮
             this.clearHighlight();
             const lineRange = new vscode.Range(safeLine - 1, 0, safeLine - 1, lineText.length);
             
-            // 按严重程度选择高亮样式
+            // 鎸変弗閲嶇▼搴﹂€夋嫨楂樹寒鏍峰紡
             if (issue.severity === 'error') {
                 editor.setDecorations(this.errorHighlightDecoration, [lineRange]);
             } else if (issue.severity === 'warning') {
@@ -939,7 +901,6 @@ export class ReviewPanel {
                 editor.setDecorations(this.highlightDecoration, [lineRange]);
             }
 
-            // AST 范围高亮：用于二级范围提示
             if (issue.astRange) {
                 const astStartLine = Math.max(1, issue.astRange.startLine);
                 const astEndLine = Math.min(document.lineCount, issue.astRange.endLine);
@@ -972,8 +933,6 @@ export class ReviewPanel {
     };
 
     /**
-     * 提供问题详情的 Hover 浮层（仅通过悬停触发，与 TS/ESLint 报错样式一致、内容自适应）
-     * 仅当光标所在行属于当前审查结果中的问题时返回内容；点击 Tree 节点不触发浮层
      */
     private provideIssueHover = (
         document: vscode.TextDocument,
@@ -994,25 +953,25 @@ export class ReviewPanel {
     };
 
     /**
-     * 构建 Hover 浮层内容：紧凑、自适应，风格与 TS/ESLint 报错一致（无厚重边框）
+     * 鏋勫缓 Hover 娴眰鍐呭锛氱揣鍑戙€佽嚜閫傚簲锛岄鏍间笌 TS/ESLint 鎶ラ敊涓€鑷达紙鏃犲帤閲嶈竟妗嗭級
      */
     private buildIssueHoverMarkdown = (issue: ReviewIssue): vscode.MarkdownString => {
         const md = new vscode.MarkdownString();
         md.isTrusted = true;
-        const severityLabel = issue.severity === 'error' ? '错误' : issue.severity === 'warning' ? '警告' : '信息';
+        const severityLabel = issue.severity === 'error' ? '错' : issue.severity === 'warning' ? '警告' : '信息';
         md.appendMarkdown(`${severityLabel}: `);
         md.appendText(issue.message);
         if (issue.ignored) {
-            md.appendMarkdown('\n\n状态: 已放行（@ai-ignore）');
+            md.appendMarkdown('\n\n状? 已放行（@ai-ignore?');
             if (issue.ignoreReason) {
-                md.appendMarkdown(`\n放行原因: ${issue.ignoreReason}`);
+                md.appendMarkdown(`\n鏀捐鍘熷洜: ${issue.ignoreReason}`);
             }
         }
         if (issue.stale) {
-            md.appendMarkdown('\n\n状态: 已同步位置（待复审，语义可能过期）');
+            md.appendMarkdown('\n\n状? 已同步位罼待审，诹參过期?');
         }
         md.appendMarkdown('\n\n');
-        md.appendMarkdown(`规则: ${issue.rule}`);
+        md.appendMarkdown(`瑙勫垯: ${issue.rule}`);
         if (issue.reason && issue.reason !== issue.message) {
             md.appendMarkdown('\n');
             md.appendText(issue.reason);
@@ -1021,19 +980,16 @@ export class ReviewPanel {
             md.appendMarkdown(`\nAST: 第 ${issue.astRange.startLine}-${issue.astRange.endLine} 行`);
         }
         md.appendMarkdown('\n\n');
-        md.appendMarkdown('[放行此条](command:agentreview.allowIssueIgnore) · [修复](command:agentreview.fixIssue)');
+        md.appendMarkdown('[鏀捐姝ゆ潯](command:agentreview.allowIssueIgnore) 路 [淇](command:agentreview.fixIssue)');
         return md;
     };
 
-    /** 供「修复」等命令读取当前 Hover 对应的问题 */
     getActiveIssueForActions(): ReviewIssue | null {
         return this.activeIssueForActions;
     }
 
     /**
-     * 收集当前文件中 @ai-ignore 的覆盖行与原因：
-     * - 注释所在行：忽略
-     * - 注释后的首个非空行：忽略（与 ReviewEngine.filterIgnoredIssues 保持一致）
+     * - 娉ㄩ噴鍚庣殑棣栦釜闈炵┖琛岋細蹇界暐锛堜笌 ReviewEngine.filterIgnoredIssues 淇濇寔涓€鑷达級
      */
     private collectIgnoredLineMeta = async (filePath: string): Promise<IgnoreLineMeta> => {
         const meta: IgnoreLineMeta = {
@@ -1066,13 +1022,11 @@ export class ReviewPanel {
                 }
             }
         } catch {
-            // 本地同步阶段若读取失败，回退为“不打 ignored 标记”，避免影响正常编辑流程。
         }
         return meta;
     };
 
     /**
-     * 从注释行提取 @ai-ignore 后的原因文本，兼容 //、#、<!-- -->、块注释等常见格式。
      */
     private extractIgnoreReason = (lineText: string): string | undefined => {
         const match = lineText.match(/@ai-ignore(?:\s*:\s*|\s+)?(.*)$/i);
@@ -1099,3 +1053,5 @@ export class ReviewPanel {
         this.treeView.dispose();
     }
 }
+
+

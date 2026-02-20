@@ -1,8 +1,6 @@
 ﻿/**
  * VSCode 鎵╁睍鍏ュ彛鏂囦欢
  *
- * 鑱岃矗锛氭彃浠舵縺娲讳笌鍋滅敤銆佸垵濮嬪寲鍚勭粍浠躲€佹敞鍐屽懡浠わ紙鍏蜂綋閫昏緫鍦?src/commands/锛夈€?
- * VSCode 鍦ㄦ彃浠堕娆″姞杞芥垨鎵ц鐩稿叧鍛戒护鏃惰皟鐢?activate銆?
  */
 
 import * as vscode from 'vscode';
@@ -58,10 +56,7 @@ type AutoReviewController = vscode.Disposable & {
 };
 
 /**
- * 娉ㄥ唽銆屼繚瀛樺嵆瀹℃煡銆嶇洃鍚櫒锛坉ebounce / 闄愰 / 骞跺彂鎺у埗锛夈€?
  *
- * 瑙﹀彂鏉′欢锛歛i_review.enabled=true 涓?ai_review.run_on_save=true銆?
- * 缁撴灉鍥炲啓閫氳繃 editRevision / saveRevision / requestSeq 闂ㄦ帶锛岄伩鍏嶆棫缁撴灉瑕嗙洊鏂扮姸鎬併€?
  */
 const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController => {
     const { reviewEngine, reviewPanel, statusBar, logger, configManager } = deps;
@@ -76,7 +71,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
     const normalizeFilePath = (filePath: string): string => path.normalize(filePath);
     const isRuntimeReady = (): boolean => !!(reviewEngine && reviewPanel && statusBar && configManager);
 
-    /** 鑻ュ悇杩愯鏃朵緷璧栧凡灏辩华鍒欒繑鍥炶仛鍚堝璞★紝鍚﹀垯杩斿洖 null */
+    /** 鑻ュ悇杩愯鏃朵緷璧栧凡灏辩华鍒欒繑鍥炶仛鍚堝璞★紝鍚﹀垯杩斿洖 null */
     const getRuntimeDeps = (): {
         reviewEngine: ReviewEngine;
         reviewPanel: ReviewPanel;
@@ -206,20 +201,20 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
 
     const getSaveReviewDoneMessage = (preserveStaleOnEmpty: boolean): string =>
         preserveStaleOnEmpty
-            ? '复审未命中，保留待复审问题'
-            : '澶嶅瀹屾垚锛堟渶鏂颁繚瀛橈級';
+            ? 'δУ'
+            : '澶嶅瀹屾垚锛堟渶鏂颁繚瀛橈級';
 
     const enqueueTask = (filePath: string, task: QueuedAutoReviewTask): void => {
         const normalizedPath = normalizeFilePath(filePath);
         const state = ensureState(normalizedPath);
-        state.queuedTask = task; // coalesce锛氬悓鏂囦欢浠呬繚鐣欐渶鍚庝竴娆′换鍔?
+        state.queuedTask = task; // coalesce：同文件仅保留最后一次任?
         if (!state.inFlight) {
             pushReadyPath(normalizedPath);
         }
         if (task.trigger === 'save') {
-            updateQueuedStatus('澶嶅鎺掗槦涓紙宸插悎骞朵繚瀛橈級');
+            updateQueuedStatus('澶嶅鎺掗槦涓紙宸插悎骞朵繚瀛橈級');
         } else if (task.trigger === 'idle') {
-            updateQueuedStatus('缂栬緫鍋滈】鍚庡緟澶嶅');
+            updateQueuedStatus('缂栬緫鍋滈】鍚庡緟澶嶅');
         } else {
             updateQueuedStatus('立即复审排队中');
         }
@@ -314,9 +309,9 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                                 saveReviewDoneMessage
                             );
                         } catch (error) {
-                            logger.error('鑷姩澶嶅鎵ц澶辫触', error);
-                            readyStatusBar.updateStatus('error', undefined, '鑷姩澶嶅澶辫触');
-                            readyReviewPanel.setStatus('error', '鑷姩澶嶅澶辫触');
+                            logger.error('鑷姩澶嶅鎵ц澶辫触', error);
+                            readyStatusBar.updateStatus('error', undefined, '鑷姩澶嶅澶辫触');
+                            readyReviewPanel.setStatus('error', '鑷姩澶嶅澶辫触');
                         } finally {
                             const latestState = ensureState(nextPath);
                             latestState.inFlight = false;
@@ -400,7 +395,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         const filePath = normalizeFilePath(editor.document.uri.fsPath);
         const options = getRuntimeOptions();
         if (!options.aiEnabled) {
-            vscode.window.showInformationMessage('AI 瀹℃煡鏈惎鐢紝鏃犳硶鎵ц绔嬪嵆澶嶅');
+            vscode.window.showInformationMessage('AI 瀹℃煡鏈惎鐢紝鏃犳硶鎵ц绔嬪嵆澶嶅');
             return;
         }
         const state = ensureState(filePath);
@@ -489,7 +484,6 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
     };
 };
 
-/** 浠庡伐浣滃尯鏍圭洰褰曞悜涓婃煡鎵?.git 鎵€鍦ㄧ洰褰曪紝鐢ㄤ簬瀹夎 Git Hooks 绛?*/
 const getGitRoot = (): string | null => {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceRoot) return null;
@@ -504,7 +498,7 @@ const getGitRoot = (): string | null => {
 
 export const activate = async (context: vscode.ExtensionContext) => {
     const logger = new Logger('AgentReview');
-    logger.info('AgentReview鎻掍欢姝ｅ湪婵€娲?..');
+    logger.info('AgentReview插件正在?..');
 
     try {
         configManager = new ConfigManager();
@@ -532,7 +526,7 @@ export const activate = async (context: vscode.ExtensionContext) => {
         if (config.git_hooks?.auto_install && config.git_hooks?.pre_commit_enabled) {
             const isInstalled = await gitHookManager.isHookInstalled();
             if (!isInstalled) {
-                logger.info('鑷姩瀹夎 pre-commit hook');
+                logger.info('鑷姩瀹夎 pre-commit hook');
                 await gitHookManager.installPreCommitHook();
             }
         }

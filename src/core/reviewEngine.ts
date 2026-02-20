@@ -1,29 +1,15 @@
-/**
- * 审查引擎
+﻿/**
+ * 瀹℃煡寮曟搸
  * 
- * 这是整个插件的核心组件，负责协调各个子系统完成代码审查
  * 
- * 主要职责：
- * 1. 接收文件列表，执行代码审查
- * 2. 根据配置决定是否调用内置规则引擎检查代码问题
- * 3. 调用AI审查器进行AI代码审查（如果启用）
- * 4. 读取编辑器 Diagnostics，供 AI 白名单与后置去重使用
- * 5. 根据 diff 给问题打“增量/存量”标签，驱动侧边栏分栏展示
- * 6. 根据配置决定是否阻止提交
- * 7. 返回结构化的审查结果
+ * 3. 璋冪敤AI瀹℃煡鍣ㄨ繘琛孉I浠ｇ爜瀹℃煡锛堝鏋滃惎鐢級
+ * 6. 鏍规嵁閰嶇疆鍐冲畾鏄惁闃绘鎻愪氦
+ * 7. 杩斿洖缁撴瀯鍖栫殑瀹℃煡缁撴灉
  * 
- * 工作流程：
- * 1. 获取需要审查的文件列表（通常是 git staged 文件）
- * 2. 根据配置过滤掉排除的文件
- * 3. 如果启用内置规则引擎（rules.builtin_rules_enabled），调用规则引擎检查每个文件
- * 4. 如果启用AI审查（ai_review.enabled），调用AI审查器
- * 5. 合并规则引擎和AI审查的结果，并去重
- * 6. 将问题按严重程度分类（error/warning/info）
- * 7. 根据配置判断是否通过审查
+ * 2. 鏍规嵁閰嶇疆杩囨护鎺夋帓闄ょ殑鏂囦欢
+ * 7. 鏍规嵁閰嶇疆鍒ゆ柇鏄惁閫氳繃瀹℃煡
  * 
- * 注意：
- * - 内置规则引擎默认禁用（builtin_rules_enabled: false），避免与项目自有规则冲突
- * - 如果项目已有自己的规则引擎，建议保持 builtin_rules_enabled: false
+ * - 濡傛灉椤圭洰宸叉湁鑷繁鐨勮鍒欏紩鎿庯紝寤鸿淇濇寔 builtin_rules_enabled: false
  */
 
 import * as path from 'path';
@@ -42,7 +28,6 @@ import { generateRuntimeSummaryForFile } from '../utils/runtimeLogExplainer';
 import { computeIssueFingerprint } from '../utils/issueFingerprint';
 import { loadIgnoredFingerprints } from '../config/ignoreStore';
 
-// 为保持向后兼容，从 reviewEngine 继续 export 类型（实际定义在 types/review）
 export type { ReviewIssue, ReviewResult } from '../types/review';
 
 type ReviewScopeHint = {
@@ -75,15 +60,21 @@ type SavedFileReviewContext = {
     reason: 'reviewed' | 'fallback_full' | 'no_target_diff';
 };
 
+type ProjectDiagnosticItem = {
+    line: number;
+    column: number;
+    message: string;
+    severity: 'error' | 'warning' | 'info' | 'hint';
+    code?: string;
+    range?: { startLine: number; endLine: number };
+};
+
 /**
- * 审查引擎类
  * 
- * 使用方式：
  * ```typescript
  * const reviewEngine = new ReviewEngine(configManager);
  * const result = await reviewEngine.reviewStagedFiles();
  * if (!result.passed) {
- *     console.log('审查未通过，发现', result.errors.length, '个错误');
  * }
  * ```
  */
@@ -96,26 +87,21 @@ export class ReviewEngine {
     private runtimeTraceLogger: RuntimeTraceLogger;
 
     /**
-     * 构造函数
-     * 初始化审查引擎及其依赖的组件
+     * 鍒濆鍖栧鏌ュ紩鎿庡強鍏朵緷璧栫殑缁勪欢
      * 
-     * @param configManager - 配置管理器，用于读取审查规则配置
+     * @param configManager - 閰嶇疆绠＄悊鍣紝鐢ㄤ簬璇诲彇瀹℃煡瑙勫垯閰嶇疆
      */
     constructor(configManager: ConfigManager) {
         this.configManager = configManager;
         this.logger = new Logger('ReviewEngine');
-        // 规则引擎：负责执行具体的规则检查
         this.ruleEngine = new RuleEngine(configManager);
-        // AI审查器：用于AI代码审查
+        // AI瀹℃煡鍣細鐢ㄤ簬AI浠ｇ爜瀹℃煡
         this.aiReviewer = new AIReviewer(configManager);
-        // 文件扫描器：用于获取文件列表和读取文件内容
         this.fileScanner = new FileScanner();
         this.runtimeTraceLogger = RuntimeTraceLogger.getInstance();
     }
 
     /**
-     * 初始化审查引擎
-     * 初始化AI审查器（如果启用）
      */
     async initialize(): Promise<void> {
         const config = this.configManager.getConfig();
@@ -125,7 +111,6 @@ export class ReviewEngine {
     }
 
     /**
-     * 应用运行链路日志配置，并同步控制台输出策略
      */
     private applyRuntimeTraceConfig = (config: ReturnType<ConfigManager['getConfig']>): void => {
         this.runtimeTraceLogger.applyConfig(config.runtime_log);
@@ -133,13 +118,10 @@ export class ReviewEngine {
     };
 
     /**
-     * 审查指定的文件列表
      *
-     * 当 options.diffByFile 存在且配置启用时，规则引擎仅扫描变更行、AI 仅审查变更片段。
      *
-     * @param files - 要审查的文件路径数组
-     * @param options - 可选；diffByFile 为 staged 文件的 diff 映射，由 reviewStagedFiles 注入
-     * @returns 审查结果对象
+     * @param files - 瑕佸鏌ョ殑鏂囦欢璺緞鏁扮粍
+     * @returns 瀹℃煡缁撴灉瀵硅薄
      */
     async review(
         files: string[],
@@ -349,6 +331,7 @@ export class ReviewEngine {
 
             const aiErrorIssues: ReviewIssue[] = [];
             const diagnosticsByFile = this.collectDiagnosticsByFile(filteredFiles);
+            const ruleSource = this.resolveRuleSource(diagnosticsByFile);
             const aiInputFiles = this.filterFilesForAiReview({
                 files: filteredFiles,
                 diffByFile: options?.diffByFile,
@@ -360,7 +343,7 @@ export class ReviewEngine {
                     return [];
                 }
                 if (aiInputFiles.length === 0) {
-                    this.logger.info('AI 审查已跳过：当前没有满足条件的文件（可能被漏斗或格式化降噪过滤）');
+                    this.logger.info('AI 瀹℃煡宸茶烦杩囷細褰撳墠娌℃湁婊¤冻鏉′欢鐨勬枃浠讹紙鍙兘琚紡鏂楁垨鏍煎紡鍖栭檷鍣繃婊わ級');
                     return [];
                 }
 
@@ -374,10 +357,10 @@ export class ReviewEngine {
                     };
                     return await this.aiReviewer.review(aiRequest, traceSession);
                 } catch (error) {
-                    this.logger.error('AI审查失败', error);
+                    this.logger.error('AI瀹℃煡澶辫触', error);
                     const message = error instanceof Error ? error.message : String(error);
                     const severity = this.actionToSeverity(config.ai_review?.action ?? 'warning');
-                    const isTimeout = /timeout|超时/i.test(message);
+                    const isTimeout = /timeout|瓒呮椂/i.test(message);
                     aiErrorIssues.push({
                         file: '',
                         line: 1,
@@ -393,7 +376,6 @@ export class ReviewEngine {
             let ruleIssues: ReviewIssue[] = [];
             let aiIssues: ReviewIssue[] = [];
 
-            const builtinRulesEnabled = config.rules.builtin_rules_enabled !== false && config.rules.enabled;
             const skipOnBlocking = config.ai_review?.skip_on_blocking_errors !== false;
             const aiEnabled = config.ai_review?.enabled ?? false;
 
@@ -403,26 +385,24 @@ export class ReviewEngine {
                     useRuleDiff ? options?.diffByFile : undefined,
                     traceSession
                 );
-
-            // 规则引擎与 AI 审查执行顺序：若启用「遇阻止提交错误则跳过 AI」，则先跑规则再决定是否跑 AI；否则并行
-            if (!aiEnabled) {
-                if (builtinRulesEnabled) ruleIssues = await runRuleEngine();
-            } else if (skipOnBlocking && builtinRulesEnabled) {
-                ruleIssues = await runRuleEngine();
-                if (!this.hasBlockingErrors(ruleIssues, ruleActionMap)) {
-                    aiIssues = await runAiReview();
-                } else {
-                    this.logger.warn('检测到阻止提交错误，已跳过AI审查');
+            const runProjectRuleChecks = (): ReviewIssue[] => this.buildProjectRuleIssues(diagnosticsByFile);
+            const runRules = async (): Promise<ReviewIssue[]> => {
+                if (!config.rules.enabled) {
+                    return [];
                 }
-            } else if (skipOnBlocking) {
-                aiIssues = await runAiReview();
-            } else {
-                const [ruleResult, aiResult] = await Promise.all([
-                    builtinRulesEnabled ? runRuleEngine() : Promise.resolve([]),
-                    runAiReview(),
-                ]);
-                ruleIssues = ruleResult;
-                aiIssues = aiResult;
+                return ruleSource === 'project'
+                    ? runProjectRuleChecks()
+                    : runRuleEngine();
+            };
+
+            // 固定顺序：规则阶段 ->（硬跳过判断）-> AI 阶段
+            ruleIssues = await runRules();
+            if (aiEnabled) {
+                if (skipOnBlocking && this.hasBlockingErrors(ruleIssues, ruleActionMap)) {
+                    this.logger.warn('检测到阻断级规则问题，已跳过AI审查');
+                } else {
+                    aiIssues = await runAiReview();
+                }
             }
 
             const deduplicatedIssues = IssueDeduplicator.mergeAndDeduplicate(ruleIssues, aiIssues, aiErrorIssues);
@@ -434,7 +414,7 @@ export class ReviewEngine {
                         const content = await this.fileScanner.readFile(issue.file);
                         issue.fingerprint = computeIssueFingerprint(issue, content, workspaceRoot);
                     } catch {
-                        // 文件读取失败则跳过该条指纹，过滤时不会按指纹命中
+                        // 鏂囦欢璇诲彇澶辫触鍒欒烦杩囪鏉℃寚绾癸紝杩囨护鏃朵笉浼氭寜鎸囩汗鍛戒腑
                     }
                 }
             }
@@ -457,7 +437,7 @@ export class ReviewEngine {
                 result.passed = !hasBlockingErrors;
             }
 
-            this.logger.info('审查流程完成');
+            this.logger.info('瀹℃煡娴佺▼瀹屾垚');
             this.runtimeTraceLogger.logEvent({
                 session: traceSession,
                 component: 'ReviewEngine',
@@ -492,18 +472,18 @@ export class ReviewEngine {
     }
 
     /**
-     * 判断是否存在阻止提交的错误
      *
-     * @param issues - 问题列表
-     * @param ruleActionMap - 规则与 action 的映射
-     * @returns 是否存在阻止提交的错误
+     * @param issues - 闂鍒楄〃
      */
     private hasBlockingErrors = (
         issues: ReviewIssue[],
         ruleActionMap: Map<string, 'block_commit' | 'warning' | 'log' | undefined>
-    ): boolean => issues.some(issue => ruleActionMap.get(issue.rule) === 'block_commit');
+    ): boolean => issues.some(issue =>
+        issue.rule.startsWith('project_rule/')
+            ? issue.severity === 'error'
+            : ruleActionMap.get(issue.rule) === 'block_commit'
+    );
 
-    /** 将规则 action 配置映射为 ReviewIssue 的 severity */
     private actionToSeverity = (action: 'block_commit' | 'warning' | 'log'): 'error' | 'warning' | 'info' => {
         switch (action) {
             case 'block_commit': return 'error';
@@ -512,11 +492,39 @@ export class ReviewEngine {
         }
     };
 
+    private resolveRuleSource = (
+        diagnosticsByFile: Map<string, ProjectDiagnosticItem[]>
+    ): 'project' | 'builtin' => {
+        const source = this.configManager.getRuleSource();
+        return source === 'project' && diagnosticsByFile.size > 0 ? 'project' : 'builtin';
+    };
+
+    private buildProjectRuleIssues = (
+        diagnosticsByFile: Map<string, ProjectDiagnosticItem[]>
+    ): ReviewIssue[] => {
+        const issues: ReviewIssue[] = [];
+        for (const [filePath, diagnostics] of diagnosticsByFile.entries()) {
+            for (const item of diagnostics) {
+                if (item.severity === 'hint') {
+                    continue;
+                }
+                const ruleSuffix = item.code?.trim() || 'diagnostic';
+                issues.push({
+                    file: filePath,
+                    line: item.line,
+                    column: item.column,
+                    message: item.message,
+                    rule: `project_rule/${ruleSuffix}`,
+                    severity: item.severity,
+                });
+            }
+        }
+        return issues;
+    };
+
     /**
-     * 根据 AST 片段结果补充问题的范围信息
      * 
-     * @param issues - 需要补充范围的问题列表
-     * @param astSnippetsByFile - AST 片段结果（按文件）
+     * @param issues - 闇€瑕佽ˉ鍏呰寖鍥寸殑闂鍒楄〃
      */
     private attachAstRanges = (
         issues: ReviewIssue[],
@@ -579,16 +587,12 @@ export class ReviewEngine {
     };
 
     /**
-     * 读取当前文件的 VSCode diagnostics，并按文件归档。
      *
-     * 说明：
-     * - 这里的数据用于 AI 去重白名单与后置过滤，不影响规则引擎本身。
-     * - 读取失败或 API 不可用时返回空映射，主流程不受影响。
      */
     private collectDiagnosticsByFile = (
         files: string[]
-    ): Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint'; range?: { startLine: number; endLine: number } }>> => {
-        const map = new Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint'; range?: { startLine: number; endLine: number } }>>();
+    ): Map<string, ProjectDiagnosticItem[]> => {
+        const map = new Map<string, ProjectDiagnosticItem[]>();
         try {
             const diagnosticsGetter = (vscode as unknown as {
                 languages?: { getDiagnostics?: (uri?: vscode.Uri) => ReadonlyArray<vscode.Diagnostic> };
@@ -606,8 +610,10 @@ export class ReviewEngine {
                         path.normalize(filePath),
                         diagnostics.map(item => ({
                             line: item.range.start.line + 1,
+                            column: item.range.start.character + 1,
                             message: item.message,
                             severity: this.toDiagnosticSeverity(item.severity),
+                            code: typeof item.code === 'string' ? item.code : undefined,
                             range: {
                                 startLine: item.range.start.line + 1,
                                 endLine: item.range.end.line + 1,
@@ -615,7 +621,6 @@ export class ReviewEngine {
                         }))
                     );
                 } catch {
-                    // diagnostics 读取失败时忽略，避免影响主流程
                 }
             }
             return map;
@@ -624,7 +629,6 @@ export class ReviewEngine {
         }
     };
 
-    /** 将 VSCode DiagnosticSeverity 转为 'error' | 'warning' | 'info' | 'hint'，供 AI 白名单与去重使用 */
     private toDiagnosticSeverity = (
         severity: vscode.DiagnosticSeverity | undefined
     ): 'error' | 'warning' | 'info' | 'hint' => {
@@ -635,7 +639,7 @@ export class ReviewEngine {
     };
 
     private pickDiagnosticsForFiles = (
-        diagnosticsByFile: Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint'; range?: { startLine: number; endLine: number } }>>,
+        diagnosticsByFile: Map<string, ProjectDiagnosticItem[]>,
         filePaths: string[]
     ): Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>> => {
         const picked = new Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>();
@@ -659,14 +663,13 @@ export class ReviewEngine {
     };
 
     /**
-     * AI 审查前过滤：
-     * 1) 漏斗式检测：按 diagnostics 严重级别跳过文件
-     * 2) 格式化降噪：diff 模式下跳过仅格式/空白变更文件
+     * AI 瀹℃煡鍓嶈繃婊わ細
+     * 2) 鏍煎紡鍖栭檷鍣細diff 妯″紡涓嬭烦杩囦粎鏍煎紡/绌虹櫧鍙樻洿鏂囦欢
      */
     private filterFilesForAiReview = (params: {
         files: string[];
         diffByFile?: Map<string, FileDiff>;
-        diagnosticsByFile: Map<string, Array<{ line: number; message: string; severity: 'error' | 'warning' | 'info' | 'hint' }>>;
+        diagnosticsByFile: Map<string, ProjectDiagnosticItem[]>;
         aiConfig?: ReturnType<ConfigManager['getConfig']>['ai_review'];
     }): string[] => {
         const {
@@ -707,9 +710,8 @@ export class ReviewEngine {
     };
 
     /**
-     * 识别并过滤已忽略的问题。顺序不可颠倒：
-     * 1) 先按项目级指纹过滤（.vscode/agentreview-ignore.json）
-     * 2) 再按 @ai-ignore 行号过滤（标记行及下一非空行）
+     * 璇嗗埆骞惰繃婊ゅ凡蹇界暐鐨勯棶棰樸€傞『搴忎笉鍙鍊掞細
+     * 2) 鍐嶆寜 @ai-ignore 琛屽彿杩囨护锛堟爣璁拌鍙婁笅涓€闈炵┖琛岋級
      */
     private filterIgnoredIssues = async (
         issues: ReviewIssue[],
@@ -726,7 +728,7 @@ export class ReviewEngine {
                 i => !(i.fingerprint && ignoredSet.has(i.fingerprint))
             );
             if (afterFingerprint.length < issues.length) {
-                this.logger.info(`已按指纹过滤 ${issues.length - afterFingerprint.length} 条项目级忽略问题`);
+                this.logger.info(`宸叉寜鎸囩汗杩囨护 ${issues.length - afterFingerprint.length} 鏉￠」鐩骇蹇界暐闂`);
             }
         }
 
@@ -757,7 +759,7 @@ export class ReviewEngine {
                     ignoredLinesByFile.set(filePath, ignoredLines);
                 }
             } catch {
-                // 文件读取失败时不做忽略过滤，避免误吞问题
+                // 鏂囦欢璇诲彇澶辫触鏃朵笉鍋氬拷鐣ヨ繃婊わ紝閬垮厤璇悶闂
             }
         }));
 
@@ -772,13 +774,11 @@ export class ReviewEngine {
     };
 
     /**
-     * 基于 diff 行集合给 issue 打「增量 / 存量」标签，用于侧边栏分栏显示。
      */
     private markIncrementalIssues = (issues: ReviewIssue[], diffByFile?: Map<string, FileDiff>): void => {
         if (issues.length === 0) {
             return;
         }
-        // 无 diff 场景（如整文件手动审查）默认都视为本次增量，避免全部落入“存量”分栏。
         if (!diffByFile || diffByFile.size === 0) {
             issues.forEach(issue => {
                 issue.incremental = true;
@@ -803,7 +803,6 @@ export class ReviewEngine {
     };
 
     /**
-     * 按配置自动生成可读运行摘要（失败不影响主流程）
      */
     private generateRuntimeSummaryIfEnabled = async (
         session: RuntimeTraceSession | null | undefined,
@@ -826,7 +825,7 @@ export class ReviewEngine {
                 granularity: humanReadable.granularity ?? 'summary_with_key_events',
             });
         } catch (error) {
-            this.logger.warn('自动生成运行日志摘要失败', error);
+            this.logger.warn('鑷姩鐢熸垚杩愯鏃ュ織鎽樿澶辫触', error);
         }
     };
 
@@ -1006,9 +1005,6 @@ export class ReviewEngine {
     };
 
     /**
-     * 保存触发的单文件复审入口：
-     * - 优先使用 stale issue 提供的 scope hints 做“切片复审”
-     * - scope hints 不可用时回退为该文件整文件复审
      */
     async reviewSavedFileWithScopeHints(
         filePath: string,
@@ -1067,7 +1063,6 @@ export class ReviewEngine {
                     return scopeResult;
                 }
 
-                // 切片复审未命中问题时，回退整文件复审，避免误清空旧问题。
                 return await this.fallbackToFullFileReview(
                     normalizedFilePath,
                     traceSession,
@@ -1086,14 +1081,13 @@ export class ReviewEngine {
     }
 
     /**
-     * 审查 Git staged 文件
+     * 瀹℃煡 Git staged 鏂囦欢
      * 
-     * 这是最常用的审查方法，会自动获取所有已暂存（staged）的文件
-     * 通常在以下场景调用：
-     * - 用户手动触发审查命令
-     * - Git pre-commit hook 执行时
+     * 杩欐槸鏈€甯哥敤鐨勫鏌ユ柟娉曪紝浼氳嚜鍔ㄨ幏鍙栨墍鏈夊凡鏆傚瓨锛坰taged锛夌殑鏂囦欢
+     * 閫氬父鍦ㄤ互涓嬪満鏅皟鐢細
+     * - 鐢ㄦ埛鎵嬪姩瑙﹀彂瀹℃煡鍛戒护
      * 
-     * @returns 审查结果对象
+     * @returns 瀹℃煡缁撴灉瀵硅薄
      */
     async reviewPendingChangesWithContext(): Promise<PendingReviewContext> {
         this.logger.show();
@@ -1270,11 +1264,9 @@ export class ReviewEngine {
     }
 
     /**
-     * 审查指定文件，并使用 working diff（未暂存变更）作为增量范围。
      *
-     * 主要用于“保存触发审查”：
-     * - 文件尚未 staged 时，也能命中 diff_only / formatOnly 降噪逻辑
-     * - 不触发新的 staged 扫描，避免保存场景拉入无关文件
+     * 涓昏鐢ㄤ簬鈥滀繚瀛樿Е鍙戝鏌モ€濓細
+     * - 鏂囦欢灏氭湭 staged 鏃讹紝涔熻兘鍛戒腑 diff_only / formatOnly 闄嶅櫔閫昏緫
      */
     async reviewFilesWithWorkingDiff(files: string[]): Promise<ReviewResult> {
         const config = this.configManager.getConfig();
@@ -1312,3 +1304,5 @@ export class ReviewEngine {
         }
     }
 }
+
+

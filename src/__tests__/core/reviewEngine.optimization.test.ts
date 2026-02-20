@@ -1,12 +1,12 @@
 ﻿/**
  * ReviewEngine 浼樺寲鐩稿叧鍗曞厓娴嬭瘯
  *
- * 瑕嗙洊鍔熻兘锛? * 1. 鏃╂湡閫€鍑猴細blocking 閿欒鏃惰烦杩?AI 瀹℃煡
- * 2. 鍘婚噸锛氳鍒欏紩鎿庝笌 AI 瀹℃煡閲嶅闂鍚堝苟
- * 3. 骞惰澶勭悊锛氳鍒欏紩鎿庝笌 AI 瀹℃煡骞惰瑙﹀彂
+ * 覆盖功能? * 1. 早期出：blocking 错时跳?AI 审查
+ * 2. 鍘婚噸锛氳鍒欏紩鎿庝笌 AI 瀹℃煡閲嶅闂鍚堝苟
+ * 3. 骞惰澶勭悊锛氳鍒欏紩鎿庝笌 AI 瀹℃煡骞惰瑙﹀彂
  *
- * 璇存槑锛? * - 涓轰簡鑱氱劍浼樺寲閫昏緫锛岃繖閲屼娇鐢?mock 鐨?RuleEngine 涓?AIReviewer
- * - FileScanner 浠呯敤浜?shouldExclude锛岀洿鎺?mock 涓?false
+ * 说明? * - 为了聚焦优化逻辑，这里使?mock ?RuleEngine ?AIReviewer
+ * - FileScanner 仅用?shouldExclude，直?mock ?false
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -57,7 +57,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         readFileMock.mockResolvedValue('');
     });
 
-    it('瑙勫垯寮曟搸鍙戠幇 blocking 閿欒鏃跺簲璺宠繃 AI 瀹℃煡', async () => {
+    it('瑙勫垯寮曟搸鍙戠幇 blocking 閿欒鏃跺簲璺宠繃 AI 瀹℃煡', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: true,
@@ -81,7 +81,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
             file: 'test file.ts',
             line: 1,
             column: 1,
-            message: '鏂囦欢鍚嶅寘鍚┖鏍? test file.ts',
+            message: '文件名包吩? test file.ts',
             rule: 'no_space_in_filename',
             severity: 'error',
         };
@@ -98,7 +98,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         expect(aiReviewerReviewMock).not.toHaveBeenCalled();
     });
 
-    it('鏃?blocking 閿欒鏃跺簲鎵ц AI 瀹℃煡', async () => {
+    it('?blocking 错时应执 AI 审查', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: true,
@@ -141,7 +141,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);
     });
 
-    it('瑙勫垯寮曟搸涓?AI 瀹℃煡閲嶅闂搴斿幓閲?', async () => {
+    it('规则引擎?AI 审查重应去?', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: true,
@@ -160,7 +160,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
             file: 'src/app.ts',
             line: 10,
             column: 1,
-            message: '鍙橀噺 userName 鏈畾涔?',
+            message: '变量 userName 朮?',
             rule: 'no_todo',
             severity: 'error',
         };
@@ -169,7 +169,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
             file: 'src/app.ts',
             line: 10,
             column: 1,
-            message: '鍙橀噺 userName 鏈畾涔?',
+            message: '变量 userName 朮?',
             rule: 'ai_review',
             severity: 'error',
         };
@@ -188,7 +188,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         expect(result.errors.length).toBe(1);
     });
 
-    it('瑙勫垯寮曟搸涓?AI 瀹℃煡搴斿苟琛岃Е鍙?', async () => {
+    it('规则阶段应先于 AI 阶段执行', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: true,
@@ -217,17 +217,18 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
 
         const reviewPromise = reviewEngine.review(['src/app.ts']);
 
-        // 绛夊緟 runAiReview 鍐呴儴鎵ц鍒?aiReviewer.review锛堝杞井浠诲姟锛?
+        // 规则阶段未完成前，AI 不应开始执行
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);
+        expect(aiReviewerReviewMock).not.toHaveBeenCalled();
 
         resolveRule([]);
         await reviewPromise;
+        expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);
     });
 
-    it('AI 瀹℃煡璋冪敤搴旀惡甯?diagnosticsByFile锛岀敤浜庡幓閲嶇櫧鍚嶅崟', async () => {
+    it('AI 审查调用应携?diagnosticsByFile，用于去重白名单', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: false,
@@ -263,7 +264,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         expect(diagnostics[0].line).toBe(2);
     });
 
-    it('搴斿熀浜?diff 琛屽彿姝ｇ‘鏍囪 incremental', async () => {
+    it('应基?diff 行号正确标 incremental', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
         const issues: ReviewIssue[] = [
@@ -271,7 +272,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
                 file: 'src/demo.ts',
                 line: 5,
                 column: 1,
-                message: '澧為噺琛岄棶棰?',
+                message: '增量行问?',
                 rule: 'ai_review',
                 severity: 'warning',
             },
@@ -279,7 +280,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
                 file: 'src/demo.ts',
                 line: 20,
                 column: 1,
-                message: '瀛橀噺琛岄棶棰?',
+                message: '存量行问?',
                 rule: 'ai_review',
                 severity: 'warning',
             },
@@ -305,7 +306,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         expect(issues[1].incremental).toBe(false);
     });
 
-    it('淇濆瓨瑙﹀彂璺緞涓紝formatOnly 鏂囦欢搴旇 AI 杩囨护', async () => {
+    it('淇濆瓨瑙﹀彂璺緞涓紝formatOnly 鏂囦欢搴旇 AI 杩囨护', async () => {
         const configManager = createMockConfigManager({
             rules: {
                 enabled: false,
@@ -566,7 +567,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         expect(result).toEqual(expectedResult);
     });
 
-    it('淇濆瓨澶嶅鏈?scope hints 鏃讹紝搴旀瀯閫犲垏鐗?diff 涓?AST override', async () => {
+    it('保存复?scope hints 时，应构造切?diff ?AST override', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
         const filePath = path.normalize('src/scope.ts');
@@ -609,7 +610,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         expect(options.astSnippetsByFileOverride?.get(filePath)?.snippets[0].startLine).toBe(2);
     });
 
-    it('淇濆瓨澶嶅鏃犳湁鏁?scope hints 鏃讹紝搴斿洖閫€鏁存枃浠跺瀹?', async () => {
+    it('保存复无有?scope hints 时，应回整文件?', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
         const filePath = path.normalize('src/fallback.ts');
@@ -632,7 +633,7 @@ describe('ReviewEngine 浼樺寲閫昏緫', () => {
         expect(options.astSnippetsByFileOverride).toBeUndefined();
     });
 
-    it('鍒囩墖澶嶅杩斿洖绌虹粨鏋滄椂锛屽簲鑷姩鍥為€€鏁存枃浠跺瀹?', async () => {
+    it('切片复返回空结果时，应臊回整文件?', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
         const filePath = path.normalize('src/empty-scope.ts');

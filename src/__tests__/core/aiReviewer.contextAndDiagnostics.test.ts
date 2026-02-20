@@ -20,7 +20,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         buildLspReferenceContextMock.mockReset();
     });
 
-    it('AST 妯″紡搴斿湪鍙戦€佸唴瀹逛腑鍖哄垎褰撳墠瀹℃煡浠ｇ爜涓庡閮ㄥ紩鐢ㄤ笂涓嬫枃', async () => {
+    it('AST 妯″紡搴斿湪鍙戦€佸唴瀹逛腑鍖哄垎褰撳墠瀹℃煡浠ｇ爜涓庡閮ㄥ紩鐢ㄤ笂涓嬫枃', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -52,7 +52,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
             }],
         ]);
 
-        buildLspReferenceContextMock.mockResolvedValue('绗﹀彿: helper\n瀹氫箟: src/utils.ts:2\n浠ｇ爜:\n# 琛?2\nexport const helper = () => 1;');
+        buildLspReferenceContextMock.mockResolvedValue('符号: helper\n定义: src/utils.ts:2\n代码:\n# ?2\nexport const helper = () => 1;');
 
         const callApiSpy = vi
             .spyOn(aiReviewer as unknown as { callAPI: (input: { files: Array<{ path: string; content: string }> }) => Promise<{ issues: Array<any> }> }, 'callAPI')
@@ -70,7 +70,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         expect(sentContent).toContain('绗﹀彿: helper');
     });
 
-    it('搴旇繃婊や笌 diagnostics 鍚岃鐨?AI 闂', async () => {
+    it('应过滤与 diagnostics 同?AI ', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -90,7 +90,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
             .mockResolvedValue({
                 issues: [
                     { file: 'src/a.ts', line: 2, column: 1, message: 'x 宸插０鏄庝絾浠庢湭璇诲彇锛堥噸澶嶏級', severity: 'warning' },
-                    { file: 'src/a.ts', line: 4, column: 1, message: '鐪熷疄 AI 闂', severity: 'warning' },
+                    { file: 'src/a.ts', line: 4, column: 1, message: '鐪熷疄 AI 闂', severity: 'warning' },
                 ],
             });
 
@@ -104,10 +104,10 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         expect(callApiSpy).toHaveBeenCalledTimes(1);
         expect(result.length).toBe(1);
         expect(result[0].line).toBe(4);
-        expect(result[0].message).toContain('鐪熷疄 AI 闂');
+        expect(result[0].message).toContain('鐪熷疄 AI 闂');
     });
 
-    it('diagnostics 杩囨护鍚庤嫢鍙樹负 0锛屽簲鍥為€€淇濈暀鍘?AI 缁撴灉', async () => {
+    it('diagnostics 过滤后若变为 0，应回保留?AI 结果', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,
@@ -140,7 +140,7 @@ describe('AIReviewer 涓婁笅鏂囪ˉ鍏ㄤ笌 Diagnostics 鍘婚噸', () => {
         expect(result[0].line).toBe(2);
     });
 
-    it('鏋勫缓璇锋眰鏃跺簲甯︿笂宸茬煡闂鐧藉悕鍗曟彁绀鸿瘝', async () => {
+    it('鏋勫缓璇锋眰鏃跺簲甯︿笂宸茬煡闂鐧藉悕鍗曟彁绀鸿瘝', async () => {
         const configManager = createMockConfigManager({
             ai_review: {
                 enabled: true,

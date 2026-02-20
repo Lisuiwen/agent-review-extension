@@ -1,7 +1,6 @@
 ﻿/**
- * AI 瀹℃煡鍣ㄤ富鍏ュ彛
- *
- * 璐熻矗閰嶇疆鍔犺浇銆乺eview 娴佺▼缂栨帓銆丠TTP 璋冪敤涓庨噸璇曘€佺紦瀛樹笌缁啓锛涘叿浣撻€昏緫濮旀墭缁?aiReviewer.* 瀛愭ā鍧椼€? */
+ * AI 审查器主入口
+ */
 import * as path from 'path';
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { ConfigManager } from '../config/configManager';
@@ -62,10 +61,9 @@ import { transformToReviewIssues, actionToSeverity } from './aiReviewer.transfor
 /**
  * AI瀹℃煡鍣ㄧ被
  * 
- * 璐熻矗璋冪敤AI API杩涜浠ｇ爜瀹℃煡
- * 鏀寔OpenAI鍏煎鏍煎紡鍜岃嚜瀹氫箟鏍煎紡
+ * 璐熻矗璋冪敤AI API杩涜浠ｇ爜瀹℃煡
+ * 鏀寔OpenAI鍏煎鏍煎紡鍜岃嚜瀹氫箟鏍煎紡
  * 
- * 浣跨敤鏂瑰紡锛? * ```typescript
  * const aiReviewer = new AIReviewer(configManager);
  * await aiReviewer.initialize();
  * const issues = await aiReviewer.review({ files: [...] });
@@ -88,7 +86,6 @@ export class AIReviewer {
         this.runtimeTraceLogger = RuntimeTraceLogger.getInstance();
         
         // 鍒涘缓axios瀹炰緥锛岀粺涓€閰嶇疆
-        // Moonshot API 浣跨敤 OpenAI 鍏煎鏍煎紡锛岃璇佹柟寮忎篃鏄?Bearer Token
         this.axiosInstance = axios.create({
             timeout: DEFAULT_TIMEOUT,
             headers: {
@@ -96,12 +93,11 @@ export class AIReviewer {
             }
         });
         
-        // 璇锋眰鎷︽埅鍣細娣诲姞璁よ瘉淇℃伅
+        // 璇锋眰鎷︽埅鍣細娣诲姞璁よ瘉淇℃伅
         // Moonshot API 浣跨敤 Bearer Token 璁よ瘉锛屾牸寮忥細Authorization: Bearer <api_key>
         this.axiosInstance.interceptors.request.use(
             (config) => {
                 if (this.config?.apiKey) {
-                    // Moonshot API 浣跨敤鏍囧噯鐨?Bearer Token 璁よ瘉
                     // 鍙傝€冿細https://platform.moonshot.cn/docs/guide/start-using-kimi-api
                     config.headers.Authorization = `Bearer ${this.config.apiKey}`;
                 }
@@ -110,7 +106,7 @@ export class AIReviewer {
             (error) => Promise.reject(error)
         );
         
-        // 鍝嶅簲鎷︽埅鍣細缁熶竴閿欒澶勭悊
+        // 鍝嶅簲鎷︽埅鍣細缁熶竴閿欒澶勭悊
         this.axiosInstance.interceptors.response.use(
             (response) => response,
             (error: AxiosError) => {
@@ -118,7 +114,7 @@ export class AIReviewer {
                 if (error.response?.status === 404) {
                     const body = error.response?.data as { error?: { message?: string; type?: string } } | undefined;
                     const msg = body?.error?.message ?? '';
-                    this.logger.warn(`404 鍙兘鍘熷洜锛氣憼 妯″瀷涓嶅瓨鍦ㄦ垨鏃犳潈闄愶紙鍘傚晢鏂囨。锛?04 = 涓嶅瓨鍦ㄨ model 鎴?Permission denied锛夆憽 绔偣鍦板潃閿欒銆傚綋鍓嶄娇鐢?model 瑙佷笂鏂规棩蹇椼€傚搷搴? ${msg || JSON.stringify(body ?? '')}`);
+                    this.logger.warn(`404 參原因：① 模型不存在或无权限（厂商文档?04 = 不存在 model ?Permission denied）② 竂地址错。当前使?model 见上方日志响? ${msg || JSON.stringify(body ?? '')}`);
                 }
                 return Promise.reject(error);
             }
@@ -126,7 +122,6 @@ export class AIReviewer {
     }
 
     /**
-     * 鍒濆鍖朅I瀹℃煡鍣?     * 浠嶤onfigManager鍔犺浇AI瀹℃煡閰嶇疆
      */
     async initialize(): Promise<void> {
         const config = this.configManager.getConfig();
@@ -135,7 +130,6 @@ export class AIReviewer {
             return;
         }
 
-        // 杞崲閰嶇疆鏍煎紡锛汷penAI 鍏煎鏍煎紡涓嬭嫢鍙～浜?base URL锛堝 https://api.moonshot.cn/v1锛夛紝鑷姩琛ュ叏 /chat/completions锛屼笌瀹樻柟鏂囨。涓€鑷?
         const rawEndpoint = (config.ai_review.api_endpoint || '').trim().replace(/\/+$/, '');
         const apiEndpoint =
             config.ai_review.api_format === 'custom'
@@ -164,34 +158,28 @@ export class AIReviewer {
             action: config.ai_review.action
         };
 
-        // 鏇存柊axios瀹炰緥鐨勮秴鏃舵椂闂?
         this.axiosInstance.defaults.timeout = this.config.timeout;
 
         const ep = this.config.apiEndpoint || '';
         const endpointResolved = !!ep && !ep.includes('${');
         if (ep && !endpointResolved) {
-            this.logger.warn(`[绔偣鏈В鏋怾 浠嶅惈鍗犱綅绗︼紝璇锋鏌?.env 鎴栬缃腑鐨勭幆澧冨彉閲? ${ep.substring(0, 60)}${ep.length > 60 ? '...' : ''}`);
+            this.logger.warn(`[竂朧析] 仍含占位符，请?.env 或罸的环境变? ${ep.substring(0, 60)}${ep.length > 60 ? '...' : ''}`);
         }
-        // 妫€鏌ュ叧閿厤缃?
         if (!ep) {
             this.logger.warn('⚠️ AI API端点未配置，AI审查将无法执行');
         }
-        // 妫€鏌?apiKey 鏄惁閰嶇疆涓斿凡姝ｇ‘瑙ｆ瀽锛堜笉鏄幆澧冨彉閲忓崰浣嶇锛?
         if (!this.config.apiKey) {
-            this.logger.warn('鈿狅笍 AI API瀵嗛挜鏈厤缃紝鍙兘瀵艰嚧璁よ瘉澶辫触');
+            this.logger.warn('鈿狅笍 AI API瀵嗛挜鏈厤缃紝鍙兘瀵艰嚧璁よ瘉澶辫触');
         } else if (this.config.apiKey.startsWith('${') && this.config.apiKey.endsWith('}')) {
-            this.logger.warn(`鈿狅笍 AI API瀵嗛挜鐜鍙橀噺鏈В鏋? ${this.config.apiKey}`);
-            this.logger.warn('璇风‘淇濊缃簡 OPENAI_API_KEY 鐜鍙橀噺锛屾垨鍦ㄩ」鐩牴鐩綍鍒涘缓 .env 鏂囦欢');
+            this.logger.warn(`⚠️ AI API密钥变量朧? ${this.config.apiKey}`);
+            this.logger.warn('璇风‘淇濊缃簡 OPENAI_API_KEY 鐜鍙橀噺锛屾垨鍦ㄩ」鐩牴鐩綍鍒涘缓 .env 鏂囦欢');
         }
     }
 
     /**
-     * 鎵цAI瀹℃煡
+     * 鎵цAI瀹℃煡
      *
-     * 褰?request.diffByFile 瀛樺湪涓旈厤缃?diff_only 鍚敤鏃讹紝浠呭彂閫佸彉鏇寸墖娈碉紱
-     * 褰?request.astSnippetsByFile 瀛樺湪鏃讹紝浼樺厛鍙戦€?AST 鐗囨銆傝繑鍥炵殑 line 鍧囦负鏂版枃浠惰鍙枫€?     * 褰?request.diagnosticsByFile 瀛樺湪鏃讹紝浼氬皢鍏朵綔涓恒€屽凡鐭ラ棶棰樼櫧鍚嶅崟銆嶆敞鍏ユ彁绀鸿瘝锛屽苟鍦ㄧ粨鏋滃悗缃繃婊ら噸澶嶉棶棰樸€?     *
-     * @param request - 瀹℃煡璇锋眰锛涘彲鍚?diffByFile 鐢ㄤ簬澧為噺瀹℃煡
-     * @returns 瀹℃煡闂鍒楄〃
+     * @returns 瀹℃煡闂鍒楄〃
      */
     async review(
         request: AIReviewRequest & {
@@ -214,7 +202,6 @@ export class AIReviewer {
 
         this.resetReviewCache();
 
-        // 鍐冲畾瀹℃煡鑼冨洿锛氫粎鍙樻洿(diff)銆佷粎 AST 鐗囨銆佹垨鏁存枃浠?
         const useDiffMode = this.config?.diff_only !== false && diffByFile && diffByFile.size > 0;
         const useAstSnippets = !!astSnippetsByFile && astSnippetsByFile.size > 0;
         const useDiffContent = useDiffMode || useAstSnippets;
@@ -240,7 +227,6 @@ export class AIReviewer {
                 return null;
             }
         })();
-        // 鑻ヤ负 diff/AST 妯″紡锛氫负姣忎釜鏂囦欢鏋勫缓瑕佸彂閫佺殑鍐呭锛堢墖娈?+ 鍙€?LSP 涓婁笅鏂囷級锛涘惁鍒欐部鐢ㄨ姹備腑鐨勬枃浠跺垪琛?
         const headerContextCache = new Map<string, string>();
         const getHeaderReferenceContext = async (filePath: string): Promise<string> => {
             const normalizedPath = path.normalize(filePath);
@@ -300,7 +286,6 @@ export class AIReviewer {
             }))
             : validatedRequest.files;
 
-        // ---------- 鏋勫缓銆屽厑璁告姤鍛婇棶棰樼殑琛屻€嶉泦鍚堬紙diff/AST 妯″紡涓嬪彧鎺ュ彈杩欎簺琛屼笂鐨?issue锛岄伩鍏嶆ā鍨嬬寽鏈彂閫佽锛?---------
         const allowedLinesByFile = new Map<string, Set<number>>();
         const addAllowedLine = (filePath: string, line: number): void => {
             const normalizedPath = path.normalize(filePath);
@@ -327,15 +312,15 @@ export class AIReviewer {
             }
         }
 
-        // ---------- 鍔犺浇鏂囦欢鍐呭銆侀瑙堟ā寮忕煭璺€佹瀯寤哄鏌ュ崟鍏冧笌鎵规 ----------
+        // ---------- 鍔犺浇鏂囦欢鍐呭銆侀瑙堟ā寮忕煭璺€佹瀯寤哄鏌ュ崟鍏冧笌鎵规 ----------
         try {
             const previewOnly = astConfig?.preview_only === true;
             if (previewOnly) {
-                this.logger.info('[ast.preview_only=true] 浠呴瑙堝垏鐗囷紝涓嶈姹傚ぇ妯″瀷');
+                this.logger.info('[ast.preview_only=true] 浠呴瑙堝垏鐗囷紝涓嶈姹傚ぇ妯″瀷');
             }
             const validFiles = await this.loadFilesWithContent(filesToLoad, previewOnly);
             if (validFiles.length === 0) {
-                this.logger.warn('娌℃湁鍙鏌ョ殑鏂囦欢');
+                this.logger.warn('娌℃湁鍙鏌ョ殑鏂囦欢');
                 return [];
             }
 
@@ -349,7 +334,6 @@ export class AIReviewer {
                 return [];
             }
 
-            // 灏嗐€屽甫鍐呭鐨勬枃浠躲€嶆墦鎴愬鏌ュ崟鍏冿紙鎸?batching_mode 鍙兘鎸夋枃浠舵垨鎸?AST snippet 鎷嗗垎锛?
             const reviewUnits = buildReviewUnits(this.config, validFiles, {
                 useAstSnippets,
                 astSnippetsByFile,
@@ -361,13 +345,12 @@ export class AIReviewer {
                 return [];
             }
 
-            // 鎸夐厤缃€夋嫨鎵规绛栫暐锛歛st_snippet 鎸夌墖娈甸绠楀垏鎵癸紝鍚﹀垯鎸夋枃浠舵暟閲忓垏鎵?
             const useAstSnippetBatching = useAstSnippets && this.config?.batching_mode === 'ast_snippet';
             const batches = useAstSnippetBatching
                 ? splitUnitsBySnippetBudget(reviewUnits, getAstSnippetBudget(this.config))
                 : splitIntoBatches(reviewUnits, DEFAULT_BATCH_SIZE);
 
-            // 鎵撶偣锛氭湰娆″鏌ョ殑鏂囦欢鏁般€佸崟鍏冩暟銆佹壒娆℃暟銆佸苟鍙戜笌棰勭畻锛屼究浜庢帓鏌ヤ笌璋冧紭
+            // 鎵撶偣锛氭湰娆″鏌ョ殑鏂囦欢鏁般€佸崟鍏冩暟銆佹壒娆℃暟銆佸苟鍙戜笌棰勭畻锛屼究浜庢帓鏌ヤ笌璋冧紭
             const totalAstSnippetCount = countAstSnippetMap(astSnippetsByFile);
             const totalSnippetCount = countUnitSnippets(reviewUnits);
             this.runtimeTraceLogger.logEvent({
@@ -462,7 +445,7 @@ export class AIReviewer {
                 return '';
             }
             const joined = selected.join('\n');
-            const clipped = joined.length > 4000 ? `${joined.slice(0, 4000)}\n...（已截断）` : joined;
+            const clipped = joined.length > 4000 ? `${joined.slice(0, 4000)}\n...ѽضϣ` : joined;
             return `## 文件头依赖上下文\n${clipped}`;
         } catch {
             return '';
@@ -477,18 +460,16 @@ export class AIReviewer {
     }
 
     /**
-     * 纭繚閰嶇疆宸插垵濮嬪寲
-     * 姣忔瀹℃煡鍓嶉噸鏂板姞杞介厤缃紝浠ヤ究璇诲彇鏈€鏂扮殑 .env 鍜?VSCode 璁剧疆
+     * 纭繚閰嶇疆宸插垵濮嬪寲
      */
     private async ensureInitialized(): Promise<void> {
         await this.configManager.loadConfig();
         await this.initialize();
     }
 
-    /** 妫€鏌?AI 閰嶇疆鏄惁鏈夋晥锛堝瓨鍦ㄣ€佸惎鐢ㄣ€佺鐐?妯″瀷鍙В鏋愩€丄PI Key 宸叉彁绀猴級 */
     private isConfigValid(): boolean {
         if (!this.config) {
-            this.logger.warn('AI瀹℃煡閰嶇疆涓嶅瓨鍦紝璺宠繃AI瀹℃煡');
+            this.logger.warn('AI瀹℃煡閰嶇疆涓嶅瓨鍦紝璺宠繃AI瀹℃煡');
             return false;
         }
         if (!this.config.enabled) {
@@ -499,7 +480,7 @@ export class AIReviewer {
         if (!ep || ep.includes('${')) {
             this.logger.warn(
                 ep.includes('${')
-                    ? 'AI API端点环境变量未解析，请检查 .env 或系统环境变量'
+                    ? 'AI API˵㻷δ .env ϵͳ'
                     : 'AI API端点未配置'
             );
             return false;
@@ -507,14 +488,14 @@ export class AIReviewer {
         try {
             new URL(ep);
         } catch {
-            this.logger.warn('AI API绔偣URL鏍煎紡鏃犳晥');
+            this.logger.warn('AI API绔偣URL鏍煎紡鏃犳晥');
             return false;
         }
         const model = (this.config.model || '').trim();
         if (!model || model.includes('${')) {
             this.logger.warn(
                 model.includes('${')
-                    ? 'AI 模型环境变量未解析'
+                    ? 'AI ģͻδ'
                     : 'AI 模型未配置，请在设置或 .env 中配置 model'
             );
             return false;
@@ -541,7 +522,6 @@ export class AIReviewer {
     }
 
     /**
-     * 妫€鏌ユ槸鍚︽湁鏈夋晥鐨?API 瀵嗛挜
      */
     private hasValidApiKey(): boolean {
         const { apiKey } = this.config!;
@@ -552,29 +532,16 @@ export class AIReviewer {
             normalizedKey.length >= 8;
     }
 
-    /**
-     * 鏍规嵁 FileDiff 鏋勫缓甯﹁鍙锋爣娉ㄧ殑鍙樻洿鐗囨锛屼緵 AI 瀹℃煡浣跨敤
-     * 杩斿洖鏍煎紡鍚?"# 琛?N"锛屼究浜?AI 杩斿洖姝ｇ‘鐨勬柊鏂囦欢琛屽彿
-     */
-    /**
-     * 鏋勯€犵粨鏋勫寲瀹℃煡鍐呭锛氭樉寮忓尯鍒嗗綋鍓嶅鏌ョ墖娈典笌澶栭儴鍙傝€冧笂涓嬫枃銆?     *
-     * 杩欐牱鍙互鍦ㄦ彁绀鸿瘝灞傞潰闄嶄綆鈥滃閮ㄧ鍙锋湭瀹氫箟鈥濈被璇姤銆?     */
-    /**
-     * 鍔犺浇鏂囦欢鍐呭
-     *
-     * @param files - 鏂囦欢鍒楄〃锛堝彲鑳藉彧鏈夎矾寰勬垨宸插甫 content 鐨?diff 鐗囨锛?     * @returns 鍖呭惈鍐呭鐨勬枃浠跺垪琛?     */
+    /** 加载文件内容（必要时从磁盘读取） */
     private async loadFilesWithContent(
         files: Array<{ path: string; content?: string }>,
         previewOnly = false
     ): Promise<Array<{ path: string; content: string }>> {
         const filesWithContent = await Promise.all(
             files.map(async (file) => {
-                // 濡傛灉鏂囦欢宸叉湁鍐呭涓斾笉涓虹┖锛岀洿鎺ヤ娇鐢紙diff/AST 妯″紡涓嬩负鍙樻洿鐗囨锛?
-                // 娉ㄦ剰锛氬鏋?content 鏄┖瀛楃涓诧紝涔熼渶瑕佽鍙栨枃浠?
                 if (file.content !== undefined && file.content.trim().length > 0) {
                     return { path: file.path, content: file.content };
                 }
-                // 鍚﹀垯璇诲彇鏁存枃浠讹紙diff 妯″紡涓嬩笉搴旇蛋鍒拌繖閲岋紝鑻ヨ蛋鍒拌鏄庤鏂囦欢鏈尮閰嶅埌 diff锛?
                 try {
                     const content = await this.fileScanner.readFile(file.path);
                     if (!previewOnly && content.length === 0) {
@@ -591,7 +558,6 @@ export class AIReviewer {
         return filesWithContent.filter((f): f is { path: string; content: string } => f !== null);
     }
 
-    /** 骞跺彂鎵ц澶氭壒瀹℃煡锛氱敤鍥哄畾鏁伴噺鐨?worker 杞祦鍙栨壒娆′笅鏍囷紝鍚勮嚜璋冪敤 processSingleReviewBatch锛屾渶鍚庡悎骞剁粨鏋?*/
     private processReviewUnitBatches = async (
         batches: ReviewUnit[][],
         options: {
@@ -612,7 +578,6 @@ export class AIReviewer {
         const processedUnitIds = new Set<string>();
         let nextBatchIndex = 0;
 
-        // 澶氫釜 worker 骞跺彂锛氭瘡涓惊鐜彇涓€涓?batch 涓嬫爣锛屾墽琛屽畬鍐嶅彇涓嬩竴涓紝鐩村埌娌℃湁鏇村鎵规
         const workers = Array.from({ length: maxConcurrency }, async () => {
             while (true) {
                 const currentIndex = nextBatchIndex;
@@ -633,7 +598,7 @@ export class AIReviewer {
 
         await Promise.all(workers);
         const flattened = results.flat();
-        // 鎵撶偣锛氭暣涓苟鍙戞睜鑰楁椂銆佹壒娆℃暟銆佸苟鍙戞暟
+        // 鎵撶偣锛氭暣涓苟鍙戞睜鑰楁椂銆佹壒娆℃暟銆佸苟鍙戞暟
         this.runtimeTraceLogger.logEvent({
             session: traceSession,
             component: 'AIReviewer',
@@ -665,7 +630,7 @@ export class AIReviewer {
         const batchStartAt = Date.now();
         const batchUnits = batch.filter(unit => {
             if (processedUnitIds.has(unit.unitId)) {
-                this.logger.warn(`鎵瑰鐞嗛噸澶嶅鏌ュ崟鍏冨凡璺宠繃: ${unit.unitId}`);
+                this.logger.warn(`鎵瑰鐞嗛噸澶嶅鏌ュ崟鍏冨凡璺宠繃: ${unit.unitId}`);
                 return false;
             }
             processedUnitIds.add(unit.unitId);
@@ -747,7 +712,7 @@ export class AIReviewer {
         const estimatedChars = estimateRequestChars(batchFiles);
         const maxRequestChars = getMaxRequestChars(this.config);
         if (allowSplit && batchFiles.length > 1 && estimatedChars > maxRequestChars) {
-            this.logger.warn(`[batch_guard] 鎵规浼扮畻闀垮害 ${estimatedChars} 瓒呰繃涓婇檺 ${maxRequestChars}锛屽皢浜屽垎闄嶈浇`);
+            this.logger.warn(`[batch_guard] 鎵规浼扮畻闀垮害 ${estimatedChars} 瓒呰繃涓婇檺 ${maxRequestChars}锛屽皢浜屽垎闄嶈浇`);
             const [leftUnits, rightUnits] = splitUnitsInHalf(batchUnits);
             this.runtimeTraceLogger.logEvent({
                 session: traceSession,
@@ -820,7 +785,6 @@ export class AIReviewer {
         }
     };
 
-    /** 鍒ゆ柇鏄惁涓轰笂涓嬫枃瓒呴暱绫婚敊璇紙413 鎴?400+鐩稿叧娑堟伅锛?*/
     private isContextTooLongError = (error: unknown): boolean => {
         if (!axios.isAxiosError(error)) return false;
         const status = error.response?.status;
@@ -832,14 +796,14 @@ export class AIReviewer {
         return status === 400 && tooLongPattern.test(`${error.message} ${responseText}`.toLowerCase());
     };
 
-    /** 澶勭悊瀹℃煡閿欒锛歜lock_commit 鏃舵姏鍑猴紝鍚﹀垯杩斿洖鍗曟潯 issue */
+    /** 澶勭悊瀹℃煡閿欒锛歜lock_commit 鏃舵姏鍑猴紝鍚﹀垯杩斿洖鍗曟潯 issue */
     private handleReviewError(error: unknown): ReviewIssue[] {
         this.logger.error('AI瀹℃煡澶辫触', error);
         const action = this.config?.action ?? 'warning';
         const message = error instanceof Error ? error.message : String(error);
         const isTimeout = axios.isAxiosError(error) && (error.code === 'ECONNABORTED' || /timeout/i.test(error.message));
         const userMessage = isTimeout
-            ? `AI审查超时（${this.config?.timeout ?? DEFAULT_TIMEOUT}ms），请稍后重试`
+            ? `AI鳬ʱ${this.config?.timeout ?? DEFAULT_TIMEOUT}msԺ`
             : `AI瀹℃煡澶辫触: ${message}`;
         const rule = isTimeout ? 'ai_review_timeout' : 'ai_review_error';
 
@@ -847,9 +811,7 @@ export class AIReviewer {
         return [{ file: '', line: 1, column: 1, message: userMessage, rule, severity: actionToSeverity(action) }];
     }
 
-    /**
-     * 閲嶇疆瀹℃煡缂撳瓨
-     * 鍙湪鍗曟瀹℃煡鐢熷懡鍛ㄦ湡鍐呭鐢ㄧ紦瀛橈紝閬垮厤璺ㄥ鏌ユ薄鏌撶粨鏋?     */
+    /** 重置审查缓存 */
     private resetReviewCache = (): void => {
         this.baseMessageCache.clear();
     };
@@ -857,7 +819,6 @@ export class AIReviewer {
     /**
      * 璋冪敤AI API
      *
-     * @param request - 瀹℃煡璇锋眰锛堟枃浠跺繀椤诲寘鍚?content锛?     * @param options - isDiffContent 涓?true 鏃舵彁绀鸿瘝涓鏄庝粎瀹℃煡鍙樻洿涓?line 涓烘柊鏂囦欢琛屽彿
      * @returns API鍝嶅簲
      */
     private async callAPI(
@@ -869,27 +830,25 @@ export class AIReviewer {
         traceSession?: RuntimeTraceSession | null
     ): Promise<AIReviewResponse> {
         if (!this.config) {
-            throw new Error('AI瀹℃煡閰嶇疆鏈垵濮嬪寲');
+            throw new Error('AI瀹℃煡閰嶇疆鏈垵濮嬪寲');
         }
         const url = (this.config.apiEndpoint || '').trim();
         if (!url || url.includes('${')) {
-            throw new Error('AI API绔偣鏈厤缃垨鐜鍙橀噺鏈В鏋愶紝璇峰湪 .env 涓缃?AGENTREVIEW_AI_API_ENDPOINT 鎴栧湪璁剧疆涓～鍐欏畬鏁?URL');
+            throw new Error('AI API竂朅罈变量朧析，请在 .env ?AGENTREVIEW_AI_API_ENDPOINT 或在设置両写完?URL');
         }
         try {
             new URL(url);
         } catch {
-            throw new Error(`AI API绔偣URL鏃犳晥: ${url.substring(0, 60)}${url.length > 60 ? '...' : ''}`);
+            throw new Error(`AI API竂URL无效: ${url.substring(0, 60)}${url.length > 60 ? '...' : ''}`);
         }
 
         const requestHash = this.calculateRequestHash(request);
-        const projectRulesSummary = await this.configManager.getProjectRulesSummary();
 
         const requestBody = this.config.api_format === 'custom'
             ? buildCustomRequest(request)
             : buildOpenAIRequest(this.config, request, {
                 isDiffContent: options?.isDiffContent,
                 diagnosticsByFile: options?.diagnosticsByFile,
-                projectRulesSummary,
                 logger: this.logger,
             });
 
@@ -961,17 +920,17 @@ export class AIReviewer {
                     return mergedResponse;
                 }
 
-                this.logger.warn('AI鍝嶅簲鐤戜技琚埅鏂紝灏濊瘯缁啓琛ュ叏');
+                this.logger.warn('AI鍝嶅簲鐤戜技琚埅鏂紝灏濊瘯缁啓琛ュ叏');
 
                 if (attempt === maxRetries) {
-                    this.logger.warn('缁啓閲嶈瘯娆℃暟宸茬敤灏斤紝杩斿洖宸茶В鏋愮殑閮ㄥ垎缁撴灉');
+                    this.logger.warn('缁啓閲嶈瘯娆℃暟宸茬敤灏斤紝杩斿洖宸茶В鏋愮殑閮ㄥ垎缁撴灉');
                     logCallSummary(attempt + 1, true);
                     return mergedResponse;
                 }
 
                 const baseMessages = this.baseMessageCache.get(requestHash);
                 if (!baseMessages) {
-                    this.logger.warn('缁啓澶辫触锛氭湭鎵惧埌鍩虹鎻愮ず璇嶏紝杩斿洖宸茶В鏋愮殑閮ㄥ垎缁撴灉');
+                    this.logger.warn('缁啓澶辫触锛氭湭鎵惧埌鍩虹鎻愮ず璇嶏紝杩斿洖宸茶В鏋愮殑閮ㄥ垎缁撴灉');
                     logCallSummary(attempt + 1, true);
                     return mergedResponse;
                 }
@@ -985,15 +944,15 @@ export class AIReviewer {
             } catch (error) {
                 lastError = error as Error;
                 
-                // 濡傛灉鏄渶鍚庝竴娆″皾璇曪紝鐩存帴鎶涘嚭閿欒
+                // 濡傛灉鏄渶鍚庝竴娆″皾璇曪紝鐩存帴鎶涘嚭閿欒
                 if (attempt === maxRetries) {
                     break;
                 }
 
-                // 鍒ゆ柇鏄惁搴旇閲嶈瘯
+                // 鍒ゆ柇鏄惁搴旇閲嶈瘯
                 if (this.shouldRetry(error as AxiosError)) {
                     const delay = baseDelay * Math.pow(2, attempt);
-                    this.logger.warn(`AI API璋冪敤澶辫触锛?{delay}ms鍚庨噸璇?(${attempt + 1}/${maxRetries})`);
+                    this.logger.warn(`AI API调用失败?{delay}ms后重?(${attempt + 1}/${maxRetries})`);
                     this.runtimeTraceLogger.logEvent({
                         session: traceSession,
                         component: 'AIReviewer',
@@ -1025,13 +984,12 @@ export class AIReviewer {
                             errorClass: error instanceof Error ? error.name : 'UnknownError',
                         },
                     });
-                    // 涓嶅簲璇ラ噸璇曠殑閿欒锛堝401璁よ瘉澶辫触锛夛紝鐩存帴鎶涘嚭
+                    // 涓嶅簲璇ラ噸璇曠殑閿欒锛堝401璁よ瘉澶辫触锛夛紝鐩存帴鎶涘嚭
                     throw error;
                 }
             }
         }
 
-        // 鎵€鏈夐噸璇曢兘澶辫触锛屾姏鍑烘渶鍚庝竴涓敊璇?
         this.runtimeTraceLogger.logEvent({
             session: traceSession,
             component: 'AIReviewer',
@@ -1047,15 +1005,11 @@ export class AIReviewer {
                 errorClass: lastError?.name ?? 'UnknownError',
             },
         });
-        throw new Error(`AI API璋冪敤澶辫触锛堝凡閲嶈瘯${maxRetries}娆★級: ${lastError?.message || '鏈煡閿欒'}`);
+        throw new Error(`AI API调用失败（已重试${maxRetries}次）: ${lastError?.message || '期错'}`);
     }
 
 
-    /**
-     * 鐢熸垚璇锋眰鍝堝笇锛岀敤浜庣紦瀛樹笌缁啓鍏宠仈
-     * 
-     * 閫氳繃鏂囦欢璺緞涓庡唴瀹圭敓鎴愮ǔ瀹氬搱甯岋紝纭繚鍚屾壒娆¤姹傚彲澶嶇敤缂撳瓨
-     */
+    /** 生成请求哈希，用于缓存和续写关联 */
     private calculateRequestHash = (request: { files: Array<{ path: string; content: string }> }): string => {
         const raw = request.files
             .map(file => `${file.path}:${file.content}`)
@@ -1063,10 +1017,7 @@ export class AIReviewer {
         return this.simpleHash(raw);
     };
 
-    /**
-     * 绠€鍗曞瓧绗︿覆鍝堝笇
-     * 
-     * 閬垮厤寮曞叆棰濆渚濊禆锛屾弧瓒崇紦瀛橀敭鐨勭ǔ瀹氭€ч渶姹?     */
+    /** 简单字符串哈希 */
     private simpleHash = (input: string): string => {
         let hash = 0;
         for (let i = 0; i < input.length; i++) {
@@ -1076,9 +1027,7 @@ export class AIReviewer {
         return `${hash}`;
     };
 
-    /**
-     * 鍚堝苟骞跺幓閲嶇紦瀛橀棶棰?     * 
-     * 鐢ㄤ簬缁啓鍦烘櫙锛屽皢宸茶В鏋愮殑闂涓庣画鍐欑粨鏋滃悎骞?     */
+    /** 合并缓存中的 issues，避免续写场景重复 */
     private mergeCachedIssues = (requestHash: string, response: AIReviewResponse, isPartial: boolean): AIReviewResponse => {
         const existing = this.responseCache.get(requestHash);
         const mergedIssues = existing
@@ -1093,7 +1042,7 @@ export class AIReviewer {
     };
 
     /**
-     * 鍘婚噸 issues锛岄伩鍏嶇画鍐欏甫鏉ョ殑閲嶅缁撴灉
+     * 鍘婚噸 issues锛岄伩鍏嶇画鍐欏甫鏉ョ殑閲嶅缁撴灉
      */
     private dedupeIssues = (issues: AIReviewResponse['issues']): AIReviewResponse['issues'] => {
         const seen = new Set<string>();
@@ -1107,7 +1056,6 @@ export class AIReviewer {
         });
     };
 
-    /** 鏄惁搴旈噸璇曪細鏃犲搷搴?缃戠粶/瓒呮椂)銆?xx銆?29 鍙噸璇曪紱鍏朵綑(401/400绛?涓嶉噸璇?*/
     private shouldRetry(error: AxiosError): boolean {
         if (!error.response) return true;
         const status = error.response.status;
@@ -1115,7 +1063,7 @@ export class AIReviewer {
     }
 
     /**
-     * 灏嗛噸璇曞師鍥犲綊涓€鍖栦负鍙垎鏋愬瓧娈碉紝渚夸簬鍚庣画缁熻璋冪敤澶辫触鍒嗗竷
+     * 灏嗛噸璇曞師鍥犲綊涓€鍖栦负鍙垎鏋愬瓧娈碉紝渚夸簬鍚庣画缁熻璋冪敤澶辫触鍒嗗竷
      */
     private getRetryReason = (error: unknown): string => {
         if (!axios.isAxiosError(error)) {
@@ -1137,12 +1085,8 @@ export class AIReviewer {
         return `http_${status}`;
     };
 
-    /**
-     * 寤惰繜鍑芥暟
-     * 
-     * @param ms - 寤惰繜姣鏁?     */
+    /** 延迟函数 */
     private sleep(ms: number): Promise<void> {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 }
-
