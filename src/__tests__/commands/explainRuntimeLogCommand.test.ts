@@ -51,7 +51,6 @@ describe('explainRuntimeLogCommand', () => {
                     },
                 }),
             },
-            gitHookManager: undefined,
             reviewPanel: undefined,
             statusBar: undefined,
             logger: { error: vi.fn() },
@@ -72,4 +71,3 @@ describe('explainRuntimeLogCommand', () => {
         expect(showInfoSpy).toHaveBeenCalled();
     });
 });
-

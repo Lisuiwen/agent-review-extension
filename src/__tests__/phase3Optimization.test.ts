@@ -25,10 +25,6 @@ const reviewSavedFileWithPendingDiffContextMock = vi.fn(async () => ({
     reason: 'fallback_full' as const,
 }));
 const createMockConfig = () => ({
-    git_hooks: {
-        auto_install: false,
-        pre_commit_enabled: false,
-    },
     ai_review: {
         enabled: false,
         run_on_save: false,
@@ -283,16 +279,6 @@ vi.mock('../core/reviewEngine', () => {
             reviewStagedFiles = reviewStagedFilesMock;
             reviewSavedFileWithPendingDiff = reviewSavedFileWithPendingDiffMock;
             reviewSavedFileWithPendingDiffContext = reviewSavedFileWithPendingDiffContextMock;
-        }
-    };
-});
-
-vi.mock('../hooks/gitHookManager', () => {
-    return {
-        GitHookManager: class {
-            constructor() {}
-            isHookInstalled = vi.fn(async () => true);
-            installPreCommitHook = vi.fn(async () => true);
         }
     };
 });
@@ -920,7 +906,6 @@ describe('Phase3: 命令与菜单注册', () => {
         expect(commandRegistry.has('agentreview.runStaged')).toBe(true);
         expect(commandRegistry.has('agentreview.review')).toBe(true);
         expect(commandRegistry.has('agentreview.showReport')).toBe(true);
-        expect(commandRegistry.has('agentreview.installHooks')).toBe(true);
         expect(commandRegistry.has('agentreview.refresh')).toBe(true);
         expect(commandRegistry.has('agentreview.allowIssueIgnore')).toBe(true);
     });

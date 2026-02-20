@@ -241,5 +241,28 @@ describe('ReviewEngine', () => {
             expect(result.passed).toBe(true);
             expect(result.errors.length).toBe(0);
         });
+
+        it('no_debugger 为 block_commit 时应阻止提交', async () => {
+            const configManager = createMockConfigManager({
+                rules: {
+                    enabled: true,
+                    strict_mode: false,
+                    code_quality: {
+                        enabled: true,
+                        action: 'block_commit',
+                        no_todo: false,
+                        no_debugger: true,
+                    },
+                },
+            });
+            reviewEngine = new ReviewEngine(configManager);
+            await reviewEngine.initialize();
+
+            const file = await tempFs.createFile('debug.ts', 'function x(){\n  debugger;\n}\n');
+            const result = await reviewEngine.review([file]);
+
+            expect(result.errors.some(e => e.rule === 'no_debugger')).toBe(true);
+            expect(result.passed).toBe(false);
+        });
     });
 });

@@ -46,7 +46,6 @@ describe('runReviewCommand', () => {
             statusBar,
             logger,
             configManager: undefined,
-            gitHookManager: undefined,
             getGitRoot: () => null,
         } as any;
     };

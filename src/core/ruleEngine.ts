@@ -14,6 +14,8 @@
  * - no_todo: 检查代码中是否包含 TODO/FIXME/XXX 注释
  *   - 配置路径：rules.code_quality.no_todo
  *   - 可配置参数：no_todo_pattern（正则表达式模式，默认：'(TODO|FIXME|XXX)'）
+ * - no_debugger: 检查代码中是否包含 debugger 语句
+ *   - 配置路径：rules.code_quality.no_debugger
  * 
  * 规则检查流程：
  * 1. 读取文件内容
@@ -31,7 +33,7 @@ import { ConfigManager } from '../config/configManager';
 import { Logger } from '../utils/logger';
 import type { ReviewIssue } from '../types/review';
 import type { FileDiff } from '../utils/diffTypes';
-import { checkNoSpaceInFilename, checkNoTodo } from '../shared/ruleChecks';
+import { checkNoSpaceInFilename, checkNoTodo, checkNoDebugger } from '../shared/ruleChecks';
 import * as path from 'path';
 import * as fs from 'fs';
 import { RuntimeTraceLogger, type RuntimeTraceSession } from '../utils/runtimeTraceLogger';
@@ -124,8 +126,11 @@ export class RuleEngine {
             );
         }
 
-        // 规则2：no_todo；有 fileDiff 时仅扫描变更行
-        if (config.rules.code_quality?.enabled && config.rules.code_quality.no_todo) {
+        // 规则2：code_quality；有 fileDiff 时仅扫描变更行
+        if (
+            config.rules.code_quality?.enabled
+            && (config.rules.code_quality.no_todo || config.rules.code_quality.no_debugger)
+        ) {
             let changedLineNumbers: Set<number> | undefined;
             candidateLines = content.split('\n').length;
             if (fileDiff?.hunks?.length) {
@@ -137,12 +142,21 @@ export class RuleEngine {
                 }
             }
             checkedLines = changedLineNumbers?.size ?? candidateLines;
-            issues.push(
-                ...checkNoTodo(filePath, content, {
-                    action: config.rules.code_quality.action,
-                    pattern: config.rules.code_quality.no_todo_pattern as string | undefined,
-                }, changedLineNumbers)
-            );
+            if (config.rules.code_quality.no_todo) {
+                issues.push(
+                    ...checkNoTodo(filePath, content, {
+                        action: config.rules.code_quality.action,
+                        pattern: config.rules.code_quality.no_todo_pattern as string | undefined,
+                    }, changedLineNumbers)
+                );
+            }
+            if (config.rules.code_quality.no_debugger) {
+                issues.push(
+                    ...checkNoDebugger(filePath, content, {
+                        action: config.rules.code_quality.action,
+                    }, changedLineNumbers)
+                );
+            }
         }
 
         return {

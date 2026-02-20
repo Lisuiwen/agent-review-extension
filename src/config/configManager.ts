@@ -18,12 +18,10 @@
  *     no_space_in_filename: true
  *   code_quality:
  *     enabled: true
- *     action: "warning"
+ *     action: "block_commit"
  *     no_todo: true
+ *     no_debugger: true
  *     no_todo_pattern: "(TODO|FIXME|XXX)"  # 可选：自定义规则表达式模式
- * git_hooks:
- *   auto_install: true
- *   pre_commit_enabled: true
  * ```
  */
 
@@ -616,8 +614,9 @@ export class ConfigManager implements vscode.Disposable {
                 },
                 code_quality: {
                     enabled: true,
-                    action: 'warning',
+                    action: 'block_commit',
                     no_todo: true,
+                    no_debugger: true,
                 },
             },
             ast: {
@@ -626,10 +625,6 @@ export class ConfigManager implements vscode.Disposable {
                 max_file_lines: 2000,
                 include_lsp_context: true, // 榛樿鍚敤锛氫负 AST 鐗囨琛ュ厖涓€灞傚閮ㄥ畾涔変笂涓嬫枃
                 preview_only: false,  // 默 false：常求大模型；true 时仅打印切片不?
-            },
-            git_hooks: {
-                auto_install: true,
-                pre_commit_enabled: true,
             },
             exclusions: {
                 files: [],

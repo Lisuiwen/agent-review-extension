@@ -6,7 +6,6 @@
 
 import type { ReviewEngine } from '../core/reviewEngine';
 import type { ConfigManager } from '../config/configManager';
-import type { GitHookManager } from '../hooks/gitHookManager';
 import type { ReviewPanel } from '../ui/reviewPanel';
 import type { StatusBar } from '../ui/statusBar';
 import type { Logger } from '../utils/logger';
@@ -17,7 +16,6 @@ export type GetGitRoot = () => string | null;
 export interface CommandContext {
     reviewEngine: ReviewEngine | undefined;
     configManager: ConfigManager | undefined;
-    gitHookManager: GitHookManager | undefined;
     reviewPanel: ReviewPanel | undefined;
     statusBar: StatusBar | undefined;
     logger: Logger;

@@ -227,6 +227,7 @@ export class ReviewEngine {
                 ['ai_review_error', config.ai_review?.action],
                 ['no_space_in_filename', config.rules.naming_convention?.action],
                 ['no_todo', config.rules.code_quality?.action],
+                ['no_debugger', config.rules.code_quality?.action],
             ]);
 
             const useRuleDiff = config.rules.diff_only !== false && options?.diffByFile;
@@ -1302,5 +1303,4 @@ export class ReviewEngine {
         }
     }
 }
-
 

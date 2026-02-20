@@ -70,10 +70,6 @@ export interface AgentReviewConfig {
         include_lsp_context?: boolean; // 是否通过 LSP 补充外部定义上下文（默认 true）
         preview_only?: boolean;     // 为 true 时不调用大模型，仅打印将发送的 AST/变更切片内容
     };
-    git_hooks?: {
-        auto_install: boolean;
-        pre_commit_enabled: boolean;
-    };
     exclusions?: {
         files?: string[];
         directories?: string[];

@@ -72,7 +72,8 @@ describe('ConfigManager', () => {
             
             // 验证代码质量规则
             expect(config.rules.code_quality?.no_todo).toBe(true);
-            expect(config.rules.code_quality?.action).toBe('warning');
+            expect(config.rules.code_quality?.no_debugger).toBe(true);
+            expect(config.rules.code_quality?.action).toBe('block_commit');
         });
 
         it('测到项目规则文件且用户未显式配置时，应默认开?builtin_rules_enabled', async () => {
@@ -109,8 +110,9 @@ rules:
                     },
                     code_quality: {
                         enabled: true,
-                        action: 'warning',
+                        action: 'block_commit',
                         no_todo: true,
+                        no_debugger: true,
                     },
                 },
             });
@@ -124,7 +126,7 @@ rules:
             expect(config.rules.enabled).toBe(true);
             expect(config.rules.strict_mode).toBe(false);
             expect(config.rules.naming_convention?.action).toBe('block_commit');
-            expect(config.rules.code_quality?.action).toBe('warning');
+            expect(config.rules.code_quality?.action).toBe('block_commit');
         });
 
         it('', async () => {
@@ -132,9 +134,11 @@ rules:
 rules:
   enabled: true
   strict_mode: false
-git_hooks:
-  auto_install: true
-  pre_commit_enabled: true
+  code_quality:
+    enabled: true
+    action: "block_commit"
+    no_todo: true
+    no_debugger: true
 `;
             
             await tempFs.createFile('.agentreview.yaml', yamlContent);
@@ -142,8 +146,8 @@ git_hooks:
             
             const config = configManager.getConfig();
             
-            expect(config.git_hooks?.auto_install).toBe(true);
-            expect(config.git_hooks?.pre_commit_enabled).toBe(true);
+            expect(config.rules.code_quality?.no_todo).toBe(true);
+            expect(config.rules.code_quality?.no_debugger).toBe(true);
         });
     });
 
@@ -359,8 +363,9 @@ rules:
                     },
                     code_quality: {
                         enabled: true,
-                        action: 'warning' as const,
+                        action: 'block_commit' as const,
                         no_todo: true,
+                        no_debugger: true,
                     },
                 },
             };
@@ -378,8 +383,9 @@ rules:
   enabled: true
   code_quality:
     no_todo: true
+    no_debugger: true
     enabled: true
-    action: "warning"
+    action: "block_commit"
   naming_convention:
     no_space_in_filename: true
     action: "block_commit"
@@ -442,5 +448,4 @@ rules:
         });
     });
 });
-
 

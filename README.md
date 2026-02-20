@@ -6,8 +6,12 @@ VSCode扩展插件，用于代码提交前的自动化代码审查。
 
 - 规则引擎：支持自定义业务规则检查
 - AI审查：集成公司内部AI服务进行代码审查
-- Git Hooks：自动安装pre-commit hook
 - VSCode集成：拦截Source Control操作
+
+## 迁移说明
+
+- 已移除内置 Git Hook 管理能力，插件不再自动安装或管理 pre-commit hook。
+- 若历史 `.agentreview.yaml` 中存在 `git_hooks` 配置段，请删除该配置段。
 
 ## 开发
 

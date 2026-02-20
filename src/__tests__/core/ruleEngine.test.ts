@@ -153,6 +153,35 @@ describe('RuleEngine', () => {
             // 应该检测到所有变体
             expect(issues.length).toBeGreaterThanOrEqual(5);
         });
+
+        it('应该检测变更行中的 debugger 语句', async () => {
+            const configManager = createMockConfigManager({
+                rules: {
+                    enabled: true,
+                    strict_mode: false,
+                    code_quality: {
+                        enabled: true,
+                        action: 'block_commit',
+                        no_todo: false,
+                        no_debugger: true,
+                    },
+                },
+            });
+            ruleEngine = new RuleEngine(configManager);
+
+            const filePath = tempFs.getPath('test.ts');
+            const content = `function test() {\n  debugger;\n  return 1;\n}`;
+            const issues = await ruleEngine.checkFile(filePath, content, {
+                path: filePath,
+                hunks: [{ newStart: 2, newCount: 1, lines: ['  debugger;'] }],
+                formatOnly: false,
+            });
+
+            expect(issues.length).toBe(1);
+            expect(issues[0].rule).toBe('no_debugger');
+            expect(issues[0].severity).toBe('error');
+            expect(issues[0].line).toBe(2);
+        });
     });
 
     describe('测试用例 3.4: 规则禁用', () => {

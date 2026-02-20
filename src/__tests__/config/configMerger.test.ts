@@ -8,10 +8,6 @@ const createBaseConfig = (): AgentReviewConfig => ({
         enabled: true,
         strict_mode: false,
     },
-    git_hooks: {
-        auto_install: true,
-        pre_commit_enabled: true,
-    },
     exclusions: {
         files: [],
         directories: [],

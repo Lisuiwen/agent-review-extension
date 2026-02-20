@@ -8,6 +8,7 @@ rules:
     enabled: true
     max_complexity: 10
     action: "block_commit"
+    no_debugger: true
   
   security:
     enabled: true
@@ -97,10 +98,6 @@ ai_review:
   retry_count: 3                  # API请求失败时的重试次数
   retry_delay: 1000               # 重试延迟时间（毫秒）
   action: "warning"               # 发现问题时的行为：block_commit（阻止提交）、warning（警告但允许）、log（仅记录）
-
-git_hooks:
-  auto_install: true
-  pre_commit_enabled: true
 
 runtime_log:
   enabled: false

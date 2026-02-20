@@ -21,13 +21,10 @@ export const createDefaultConfig = (): AgentReviewConfig => ({
         },
         code_quality: {
             enabled: true,
-            action: 'warning',
+            action: 'block_commit',
             no_todo: true,
+            no_debugger: true,
         },
-    },
-    git_hooks: {
-        auto_install: true,
-        pre_commit_enabled: true,
     },
 });
 
@@ -49,7 +46,7 @@ export const createNamingConventionConfig = (action: 'block_commit' | 'warning' 
 /**
  * 创建包含代码质量规则的配置
  */
-export const createCodeQualityConfig = (action: 'block_commit' | 'warning' | 'log' = 'warning'): AgentReviewConfig => ({
+export const createCodeQualityConfig = (action: 'block_commit' | 'warning' | 'log' = 'block_commit'): AgentReviewConfig => ({
     ...createDefaultConfig(),
     rules: {
         ...createDefaultConfig().rules,
@@ -57,6 +54,7 @@ export const createCodeQualityConfig = (action: 'block_commit' | 'warning' | 'lo
             enabled: true,
             action,
             no_todo: true,
+            no_debugger: true,
         },
     },
 });
@@ -175,11 +173,9 @@ rules:
     no_space_in_filename: ${fullConfig.rules.naming_convention?.no_space_in_filename ?? true}
   code_quality:
     enabled: ${fullConfig.rules.code_quality?.enabled ?? true}
-    action: "${fullConfig.rules.code_quality?.action ?? 'warning'}"
+    action: "${fullConfig.rules.code_quality?.action ?? 'block_commit'}"
     no_todo: ${fullConfig.rules.code_quality?.no_todo ?? true}
-${fullConfig.git_hooks ? `git_hooks:
-  auto_install: ${fullConfig.git_hooks.auto_install}
-  pre_commit_enabled: ${fullConfig.git_hooks.pre_commit_enabled}` : ''}
+    no_debugger: ${fullConfig.rules.code_quality?.no_debugger ?? true}
 ${fullConfig.exclusions ? `exclusions:
   files: ${JSON.stringify(fullConfig.exclusions.files || [])}
   directories: ${JSON.stringify(fullConfig.exclusions.directories || [])}` : ''}`;

@@ -5,11 +5,6 @@
 
 import type { AgentReviewConfig } from '../types/config';
 
-const DEFAULT_GIT_HOOKS = {
-    auto_install: true,
-    pre_commit_enabled: true,
-} as const;
-
 const DEFAULT_RUNTIME_LOG = {
     enabled: true,
     level: 'info' as const,
@@ -34,7 +29,6 @@ export const mergeConfig = (
 ): AgentReviewConfig => {
     const defaultRules = defaultConfig.rules;
     const userRules = resolvedUserConfig.rules;
-    const defaultHooks = defaultConfig.git_hooks ?? DEFAULT_GIT_HOOKS;
     const defaultAst = defaultConfig.ast ?? { enabled: false, max_node_lines: 200, max_file_lines: 2000, preview_only: false };
     const defaultRuntimeLog = defaultConfig.runtime_log ?? DEFAULT_RUNTIME_LOG;
     const userRuntime = resolvedUserConfig.runtime_log;
@@ -50,12 +44,6 @@ export const mergeConfig = (
             security: userRules?.security ? { ...defaultRules.security, ...userRules.security } : defaultRules.security,
             business_logic: userRules?.business_logic ? { ...defaultRules.business_logic, ...userRules.business_logic } : defaultRules.business_logic,
         },
-        git_hooks: resolvedUserConfig.git_hooks
-            ? {
-                auto_install: resolvedUserConfig.git_hooks.auto_install ?? defaultHooks.auto_install,
-                pre_commit_enabled: resolvedUserConfig.git_hooks.pre_commit_enabled ?? defaultHooks.pre_commit_enabled,
-            }
-            : defaultHooks,
         exclusions: {
             files: resolvedUserConfig.exclusions?.files ?? defaultConfig.exclusions?.files ?? [],
             directories: resolvedUserConfig.exclusions?.directories ?? defaultConfig.exclusions?.directories ?? [],

@@ -8,7 +8,6 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ReviewEngine } from './core/reviewEngine';
 import { ConfigManager } from './config/configManager';
-import { GitHookManager } from './hooks/gitHookManager';
 import { ReviewPanel } from './ui/reviewPanel';
 import { StatusBar } from './ui/statusBar';
 import { Logger } from './utils/logger';
@@ -16,7 +15,6 @@ import { registerRunReviewCommand } from './commands/runReviewCommand';
 import { registerRunStagedReviewCommand } from './commands/runStagedReviewCommand';
 import { registerReviewCommand } from './commands/reviewCommand';
 import { registerShowReportCommand } from './commands/showReportCommand';
-import { registerInstallHooksCommand } from './commands/installHooksCommand';
 import { registerRefreshCommand } from './commands/refreshCommand';
 import { registerAllowIssueIgnoreCommand } from './commands/allowIssueIgnoreCommand';
 import { registerFixIssueCommand } from './commands/fixIssueCommand';
@@ -27,7 +25,6 @@ import { resolveRuntimeLogBaseDir } from './utils/runtimeLogPath';
 
 let reviewEngine: ReviewEngine | undefined;
 let configManager: ConfigManager | undefined;
-let gitHookManager: GitHookManager | undefined;
 let reviewPanel: ReviewPanel | undefined;
 let statusBar: StatusBar | undefined;
 
@@ -514,7 +511,6 @@ export const activate = async (context: vscode.ExtensionContext) => {
         reviewEngine = new ReviewEngine(configManager);
         await reviewEngine.initialize();
 
-        gitHookManager = new GitHookManager(context);
         reviewPanel = new ReviewPanel(context);
         statusBar = new StatusBar();
         reviewPanel.configureLocalRebase({
@@ -522,19 +518,9 @@ export const activate = async (context: vscode.ExtensionContext) => {
             largeChangeLineThreshold: configManager.getConfig().ai_review?.large_change_line_threshold ?? 40,
         });
 
-        const config = configManager.getConfig();
-        if (config.git_hooks?.auto_install && config.git_hooks?.pre_commit_enabled) {
-            const isInstalled = await gitHookManager.isHookInstalled();
-            if (!isInstalled) {
-                logger.info('鑷姩瀹夎 pre-commit hook');
-                await gitHookManager.installPreCommitHook();
-            }
-        }
-
         const commandDeps: CommandContext = {
             reviewEngine,
             configManager,
-            gitHookManager,
             reviewPanel,
             statusBar,
             logger,
@@ -554,7 +540,6 @@ export const activate = async (context: vscode.ExtensionContext) => {
             registerRunStagedReviewCommand(commandDeps),
             registerReviewCommand(),
             registerShowReportCommand(commandDeps),
-            registerInstallHooksCommand(commandDeps),
             registerRefreshCommand(),
             registerAllowIssueIgnoreCommand(commandDeps),
             registerFixIssueCommand(commandDeps),
@@ -581,8 +566,6 @@ export const deactivate = async (): Promise<void> => {
     Logger.disposeSharedOutputChannel();
     reviewEngine = undefined;
     configManager = undefined;
-    gitHookManager = undefined;
     reviewPanel = undefined;
     statusBar = undefined;
 };
-
