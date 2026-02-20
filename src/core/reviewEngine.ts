@@ -922,6 +922,31 @@ export class ReviewEngine {
         info: [],
     });
 
+    private completeEmptyRun = async (
+        traceSession: RuntimeTraceSession | null,
+        config: ReturnType<ConfigManager['getConfig']>,
+        phase: 'manual' | 'staged',
+        trigger: 'manual' | 'staged' | 'save'
+    ): Promise<ReviewResult> => {
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'ReviewEngine',
+            event: 'run_start',
+            phase,
+            data: { inputFiles: 0, trigger },
+        });
+        this.runtimeTraceLogger.logEvent({
+            session: traceSession,
+            component: 'ReviewEngine',
+            event: 'run_end',
+            phase,
+            durationMs: 0,
+            data: { status: 'success' },
+        });
+        await this.generateRuntimeSummaryIfEnabled(traceSession, config);
+        return this.createEmptyReviewResult();
+    };
+
     private countReviewIssues = (result: ReviewResult): number =>
         result.errors.length + result.warnings.length + result.info.length;
 
@@ -1097,24 +1122,8 @@ export class ReviewEngine {
             });
 
             if (pendingFiles.length === 0) {
-                this.runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'ReviewEngine',
-                    event: 'run_start',
-                    phase: 'manual',
-                    data: { inputFiles: 0, trigger: 'manual' },
-                });
-                this.runtimeTraceLogger.logEvent({
-                    session: traceSession,
-                    component: 'ReviewEngine',
-                    event: 'run_end',
-                    phase: 'manual',
-                    durationMs: 0,
-                    data: { status: 'success' },
-                });
-                await this.generateRuntimeSummaryIfEnabled(traceSession, config);
                 return {
-                    result: this.createEmptyReviewResult(),
+                    result: await this.completeEmptyRun(traceSession, config, 'manual', 'manual'),
                     pendingFiles: [],
                     reason: 'no_pending_changes',
                 };
@@ -1229,53 +1238,31 @@ export class ReviewEngine {
         this.applyRuntimeTraceConfig(config);
         const traceSession = this.runtimeTraceLogger.startRunSession('staged');
 
-        const stagedFiles = await this.fileScanner.getStagedFiles();
-        if (stagedFiles.length === 0) {
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'run_start',
-                phase: 'staged',
-                data: { inputFiles: 0, trigger: 'staged' },
-            });
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'run_end',
-                phase: 'staged',
-                durationMs: 0,
-                data: { status: 'success' },
-            });
-            await this.generateRuntimeSummaryIfEnabled(traceSession, config);
-            this.runtimeTraceLogger.endRunSession(traceSession);
-            return {
-                passed: true,
-                errors: [],
-                warnings: [],
-                info: []
-            };
-        }
-
-        const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
-        let diffByFile: Map<string, FileDiff> | undefined;
-        const diffStartAt = Date.now();
-        if (useDiff) {
-            diffByFile = await this.fileScanner.getStagedDiff(stagedFiles);
-        }
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'ReviewEngine',
-            event: 'diff_fetch_summary',
-            phase: 'staged',
-            durationMs: Date.now() - diffStartAt,
-            data: {
-                stagedFiles: stagedFiles.length,
-                useDiff,
-                diffFiles: diffByFile?.size ?? 0,
-            },
-        });
-
         try {
+            const stagedFiles = await this.fileScanner.getStagedFiles();
+            if (stagedFiles.length === 0) {
+                return await this.completeEmptyRun(traceSession, config, 'staged', 'staged');
+            }
+
+            const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
+            let diffByFile: Map<string, FileDiff> | undefined;
+            const diffStartAt = Date.now();
+            if (useDiff) {
+                diffByFile = await this.fileScanner.getStagedDiff(stagedFiles);
+            }
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'ReviewEngine',
+                event: 'diff_fetch_summary',
+                phase: 'staged',
+                durationMs: Date.now() - diffStartAt,
+                data: {
+                    stagedFiles: stagedFiles.length,
+                    useDiff,
+                    diffFiles: diffByFile?.size ?? 0,
+                },
+            });
+
             return await this.review(stagedFiles, { diffByFile, traceSession });
         } finally {
             this.runtimeTraceLogger.endRunSession(traceSession);
@@ -1295,52 +1282,30 @@ export class ReviewEngine {
         const traceSession = this.runtimeTraceLogger.startRunSession('manual');
         const normalizedFiles = files.map(file => path.normalize(file));
 
-        if (normalizedFiles.length === 0) {
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'run_start',
-                phase: 'manual',
-                data: { inputFiles: 0, trigger: 'save' },
-            });
-            this.runtimeTraceLogger.logEvent({
-                session: traceSession,
-                component: 'ReviewEngine',
-                event: 'run_end',
-                phase: 'manual',
-                durationMs: 0,
-                data: { status: 'success' },
-            });
-            await this.generateRuntimeSummaryIfEnabled(traceSession, config);
-            this.runtimeTraceLogger.endRunSession(traceSession);
-            return {
-                passed: true,
-                errors: [],
-                warnings: [],
-                info: [],
-            };
-        }
-
-        const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
-        let diffByFile: Map<string, FileDiff> | undefined;
-        const diffStartAt = Date.now();
-        if (useDiff) {
-            diffByFile = await this.fileScanner.getWorkingDiff(normalizedFiles);
-        }
-        this.runtimeTraceLogger.logEvent({
-            session: traceSession,
-            component: 'ReviewEngine',
-            event: 'diff_fetch_summary',
-            phase: 'manual',
-            durationMs: Date.now() - diffStartAt,
-            data: {
-                workingFiles: normalizedFiles.length,
-                useDiff,
-                diffFiles: diffByFile?.size ?? 0,
-            },
-        });
-
         try {
+            if (normalizedFiles.length === 0) {
+                return await this.completeEmptyRun(traceSession, config, 'manual', 'save');
+            }
+
+            const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
+            let diffByFile: Map<string, FileDiff> | undefined;
+            const diffStartAt = Date.now();
+            if (useDiff) {
+                diffByFile = await this.fileScanner.getWorkingDiff(normalizedFiles);
+            }
+            this.runtimeTraceLogger.logEvent({
+                session: traceSession,
+                component: 'ReviewEngine',
+                event: 'diff_fetch_summary',
+                phase: 'manual',
+                durationMs: Date.now() - diffStartAt,
+                data: {
+                    workingFiles: normalizedFiles.length,
+                    useDiff,
+                    diffFiles: diffByFile?.size ?? 0,
+                },
+            });
+
             return await this.review(normalizedFiles, { diffByFile, traceSession });
         } finally {
             this.runtimeTraceLogger.endRunSession(traceSession);

@@ -143,6 +143,9 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
     private status: 'idle' | 'reviewing' | 'completed' | 'error' = 'idle';  // 审查状态
     private statusMessage: string | null = null; // 子状态文案（排队中/待复审/限频中等）
     private emptyStateHint: string | null = null; // 无问题时的场景化提示文案
+    private getAllIssues = (): ReviewIssue[] => this.reviewResult
+        ? [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info]
+        : [];
 
     constructor(private context: vscode.ExtensionContext) {}
 
@@ -244,7 +247,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
             items.push(new ReviewTreeItem(statusText, vscode.TreeItemCollapsibleState.None));
 
             // 根节点分两类：你的增量（默认展开）与项目存量（默认折叠）
-            const allIssues = [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info];
+            const allIssues = this.getAllIssues();
             const incrementalIssues = allIssues.filter(issue => issue.incremental === true);
             const existingIssues = allIssues.filter(issue => issue.incremental !== true);
 
@@ -275,11 +278,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
 
         // 文件节点：显示该文件的所有问题
         if (element.filePath) {
-            const groupIssues = element.groupKey ? this.getIssuesByGroup(element.groupKey) : [
-                ...this.reviewResult.errors,
-                ...this.reviewResult.warnings,
-                ...this.reviewResult.info
-            ];
+            const groupIssues = element.groupKey ? this.getIssuesByGroup(element.groupKey) : this.getAllIssues();
             const fileIssues = groupIssues.filter(issue => issue.file === element.filePath);
 
             return fileIssues.map(issue => 
@@ -303,7 +302,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         if (!this.reviewResult) {
             return [];
         }
-        const allIssues = [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info];
+        const allIssues = this.getAllIssues();
         if (groupKey === 'incremental') {
             return allIssues.filter(issue => issue.incremental === true);
         }
@@ -325,9 +324,18 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         const items: ReviewTreeItem[] = [];
         for (const [filePath, fileIssues] of fileMap.entries()) {
             const fileName = path.basename(filePath);
-            const errorCount = fileIssues.filter(i => i.severity === 'error').length;
-            const warningCount = fileIssues.filter(i => i.severity === 'warning').length;
-            const infoCount = fileIssues.filter(i => i.severity === 'info').length;
+            let errorCount = 0;
+            let warningCount = 0;
+            let infoCount = 0;
+            for (const issue of fileIssues) {
+                if (issue.severity === 'error') {
+                    errorCount++;
+                } else if (issue.severity === 'warning') {
+                    warningCount++;
+                } else if (issue.severity === 'info') {
+                    infoCount++;
+                }
+            }
             const countText = [
                 errorCount > 0 ? `${errorCount}个错误` : '',
                 warningCount > 0 ? `${warningCount}个警告` : '',
