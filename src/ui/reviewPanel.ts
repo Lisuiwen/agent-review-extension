@@ -38,9 +38,8 @@ const isAiIssue = (issue: ReviewIssue): boolean =>
     issue.rule === 'ai_review' || issue.rule.startsWith('ai_');
 
 /**
- * 
- * - 文件节点：显示文件路径和问题统计
- *
+ * 审查结果树节点：根状态/文件/分组/问题项均用此类。
+ * - 问题节点：显示消息、规则、行号等，点击可跳转；文件节点显示路径；分组为规则量/存量。
  * VSCode TreeView 要求每个节点均继承自 vscode.TreeItem
  */
 export class ReviewTreeItem extends vscode.TreeItem {
@@ -187,6 +186,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
     }
 
     /**
+     * 返回树子节点：无结果时显示提示或状态；有结果时为状态项 + 通过/未通过 + 规则/AI 分组 + 文件与问题。
      */
     getChildren(element?: ReviewTreeItem): ReviewTreeItem[] {
         if (!this.reviewResult) {

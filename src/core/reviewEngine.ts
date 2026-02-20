@@ -101,6 +101,7 @@ export class ReviewEngine {
     }
 
     /**
+     * 若配置启用 AI 审查，则初始化 AI 审查器。
      */
     async initialize(): Promise<void> {
         const config = this.configManager.getConfig();
@@ -110,6 +111,7 @@ export class ReviewEngine {
     }
 
     /**
+     * 应用运行时日志配置并同步 Logger 是否输出到通道。
      */
     private applyRuntimeTraceConfig = (config: ReturnType<ConfigManager['getConfig']>): void => {
         this.runtimeTraceLogger.applyConfig(config.runtime_log);
@@ -117,8 +119,7 @@ export class ReviewEngine {
     };
 
     /**
-     *
-     *
+     * 对指定文件执行规则 + AI 审查，支持 diff/ast 等选项。
      * @param files - 要审查的文件路径数组
      * @returns 审查结果对象
      */
@@ -472,7 +473,7 @@ export class ReviewEngine {
     }
 
     /**
-     *
+     * 判断问题列表中是否存在按规则需阻断提交的项（project_rule 看 error，其余看 ruleActionMap）。
      * @param issues - 问题列表
      */
     private hasBlockingErrors = (
@@ -523,7 +524,7 @@ export class ReviewEngine {
     };
 
     /**
-     * 
+     * 根据 astSnippetsByFile 为问题补充 astRange（取包含问题行号的最小片段）。
      * @param issues - 需要补充范围的问题列表
      */
     private attachAstRanges = (
@@ -587,7 +588,7 @@ export class ReviewEngine {
     };
 
     /**
-     *
+     * 从 VSCode 语言服务收集各文件的诊断信息，并规范化为行号、严重程度等。
      */
     private collectDiagnosticsByFile = (
         files: string[]
@@ -773,6 +774,7 @@ export class ReviewEngine {
     };
 
     /**
+     * 根据 diffByFile 标记每个问题是否属于本次变更行（incremental）；无 diff 时全部标为 incremental。
      */
     private markIncrementalIssues = (issues: ReviewIssue[], diffByFile?: Map<string, FileDiff>): void => {
         if (issues.length === 0) {
@@ -802,6 +804,7 @@ export class ReviewEngine {
     };
 
     /**
+     * 若配置启用运行结束自动生成可读摘要，则对当前会话日志生成并写入摘要文件。
      */
     private generateRuntimeSummaryIfEnabled = async (
         session: RuntimeTraceSession | null | undefined,

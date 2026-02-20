@@ -164,6 +164,7 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
+     * 从 VSCode 工作区/用户设置中读取 agentreview.ai.* 并映射为 ai_review 配置键，未设置则返回 undefined。
      */
     private loadAIConfigFromSettings(): Partial<AgentReviewConfig['ai_review']> | undefined {
         const settings = vscode.workspace.getConfiguration('agentreview');
@@ -534,7 +535,7 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
-     * 
+     * 将对象按键排序后序列化为 JSON，用于配置比较；遇循环引用输出 [Circular]。
      */
     private stableStringify = (value: unknown): string => {
         const seen = new WeakSet<object>();
@@ -604,6 +605,7 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
+     * 检测项目根目录是否存在常见规则配置文件（如 eslint/prettier），有则返回 'project'，否则 'builtin'。
      */
     getRuleSource(): 'project' | 'builtin' {
         return this.detectProjectRuleConfig() ? 'project' : 'builtin';

@@ -64,7 +64,8 @@ type AutoReviewController = vscode.Disposable & {
 };
 
 /**
- *
+ * 注册保存/空闲/手动触发的自动复审逻辑，管理队列、限频与状态。
+ * 返回带 reviewCurrentFileNow 与 dispose 的控制器。
  */
 const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController => {
     const { reviewEngine, reviewPanel, statusBar, logger, configManager } = deps;
@@ -175,9 +176,8 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             .getDiagnostics(vscode.Uri.file(filePath))
             .map(item => ({ severity: toDiagnosticSeverity(item.severity) }));
 
-    const createContentHash = (content: string): string => {
-        return createHash('sha1').update(content, 'utf8').digest('hex');
-    };
+    const createContentHash = (content: string): string =>
+        createHash('sha1').update(content, 'utf8').digest('hex');
 
     const getRuntimeOptions = () => {
         const config = configManager?.getConfig();

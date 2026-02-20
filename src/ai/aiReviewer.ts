@@ -121,6 +121,7 @@ export class AIReviewer {
     }
 
     /**
+     * 从配置加载 API 端点、密钥、模型等，并校验占位符是否已解析。
      */
     async initialize(): Promise<void> {
         const config = this.configManager.getConfig();

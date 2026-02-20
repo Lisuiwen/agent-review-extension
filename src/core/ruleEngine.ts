@@ -293,24 +293,22 @@ export class RuleEngine {
      * @returns 是否为二进制文件
      */
     private isBinaryFile = async (filePath: string): Promise<boolean> => {
+        let fileHandle: fs.promises.FileHandle;
         try {
-            const fileHandle = await fs.promises.open(filePath, 'r');
-            try {
-                const buffer = Buffer.alloc(RuleEngine.BINARY_CHECK_BYTES);
-                const { bytesRead } = await fileHandle.read(buffer, 0, buffer.length, 0);
-                for (let i = 0; i < bytesRead; i++) {
-                    if (buffer[i] === 0) {
-                        return true;
-                    }
-                }
-                return false;
-            } finally {
-                await fileHandle.close();
-            }
+            fileHandle = await fs.promises.open(filePath, 'r');
         } catch (error) {
-            // 如果读取失败，保守处理：不认为是二进制，让上层流程继续处理
             this.logger.debug(`二进制检测失败，继续按文本处理: ${filePath}`, error);
             return false;
+        }
+        try {
+            const buffer = Buffer.alloc(RuleEngine.BINARY_CHECK_BYTES);
+            const { bytesRead } = await fileHandle.read(buffer, 0, buffer.length, 0);
+            for (let i = 0; i < bytesRead; i++) {
+                if (buffer[i] === 0) return true;
+            }
+            return false;
+        } finally {
+            await fileHandle.close();
         }
     };
 
