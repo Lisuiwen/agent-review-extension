@@ -105,7 +105,7 @@ export function extractPartialJson(content: string, logger?: Logger): unknown {
                 braceCount--;
                 if (braceCount === 0 && issueStart !== -1) {
                     try {
-                        const issueStr = '{' + issuesContent.substring(issueStart, i + 1);
+                        const issueStr = issuesContent.substring(issueStart, i + 1);
                         const issue = JSON.parse(issueStr);
                         issues.push(issue);
                         issueStart = -1;
