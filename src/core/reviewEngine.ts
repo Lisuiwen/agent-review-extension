@@ -13,8 +13,6 @@
 
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { RuleEngine } from './ruleEngine';
 import { AIReviewer } from '../ai/aiReviewer';
 import { ConfigManager } from '../config/configManager';
@@ -26,51 +24,12 @@ import type { ReviewIssue, ReviewResult } from '../types/review';
 import { getAffectedScopeWithDiagnostics, type AffectedScopeResult, type AstFallbackReason } from '../utils/astScope';
 import { RuntimeTraceLogger, type RuntimeTraceSession, type RunSummaryPayload } from '../utils/runtimeTraceLogger';
 import { computeIssueFingerprint } from '../utils/issueFingerprint';
-import { loadIgnoredFingerprints, getIgnoreStoreCount } from '../config/ignoreStore';
-import { formatTimeHms, formatDurationMs } from '../utils/runtimeLogExplainer';
-
-const execAsync = promisify(exec);
+import { loadIgnoredFingerprints } from '../config/ignoreStore';
+import { formatTimeHms } from '../utils/runtimeLogExplainer';
+import type { ReviewRunOptions, ReviewedRange, SavedFileReviewContext, PendingReviewContext, ProjectDiagnosticItem, ReviewScopeHint } from './reviewEngine.types';
+import { buildRunSummaryPayload } from './reviewEngine.runSummary';
 
 export type { ReviewIssue, ReviewResult } from '../types/review';
-
-type ReviewScopeHint = {
-    startLine: number;
-    endLine: number;
-    source: 'ast' | 'line';
-};
-
-type ReviewRunOptions = {
-    diffByFile?: Map<string, FileDiff>;
-    traceSession?: RuntimeTraceSession | null;
-    astSnippetsByFileOverride?: Map<string, AffectedScopeResult>;
-};
-
-type PendingReviewContext = {
-    result: ReviewResult;
-    pendingFiles: string[];
-    reason: 'no_pending_changes' | 'reviewed';
-};
-
-type ReviewedRange = {
-    startLine: number;
-    endLine: number;
-};
-
-type SavedFileReviewContext = {
-    result: ReviewResult;
-    reviewedRanges: ReviewedRange[];
-    mode: 'diff' | 'full';
-    reason: 'reviewed' | 'fallback_full' | 'no_target_diff';
-};
-
-type ProjectDiagnosticItem = {
-    line: number;
-    column: number;
-    message: string;
-    severity: 'error' | 'warning' | 'info' | 'hint';
-    code?: string;
-    range?: { startLine: number; endLine: number };
-};
 
 /**
  * 
@@ -122,77 +81,6 @@ export class ReviewEngine {
         Logger.setInfoOutputEnabled(this.runtimeTraceLogger.shouldOutputInfoToChannel());
     };
 
-    /** 获取 git user.name / user.email，供运行汇总使用；失败返回空字符串 */
-    private getGitUser = async (workspaceRoot: string): Promise<{ userName: string; userEmail: string }> => {
-        let userName = '';
-        let userEmail = '';
-        if (!workspaceRoot) return { userName, userEmail };
-        try {
-            const { stdout } = await execAsync('git config user.name', { cwd: workspaceRoot, encoding: 'utf8' });
-            userName = (stdout && typeof stdout === 'string' ? stdout : String(stdout || '')).trim();
-        } catch {
-            // 忽略
-        }
-        try {
-            const { stdout } = await execAsync('git config user.email', { cwd: workspaceRoot, encoding: 'utf8' });
-            userEmail = (stdout && typeof stdout === 'string' ? stdout : String(stdout || '')).trim();
-        } catch {
-            // 忽略
-        }
-        return { userName, userEmail };
-    };
-
-    /** 组装当次 run 的汇总 payload 与写日志用的日期戳，用于写入 YYYYMMDD.jsonl（仅含 hms 与 durationMs，不含时间戳与 durationDisplay）。 */
-    private buildRunSummaryPayload = async (
-        session: RuntimeTraceSession,
-        result: ReviewResult,
-        status: 'success' | 'failed',
-        opts: {
-            errorClass?: string;
-            ignoredByFingerprintCount: number;
-            allowedByLineCount: number;
-            ignoreAllowEvents?: RunSummaryPayload['ignoreAllowEvents'];
-        },
-        workspaceRoot: string,
-        reviewStartAt: number
-    ): Promise<{ payload: RunSummaryPayload; logDateMs: number }> => {
-        const endedAt = Date.now();
-        const durationMs = endedAt - reviewStartAt;
-        const projectName = vscode.workspace.workspaceFolders?.[0]?.name ?? (workspaceRoot ? path.basename(workspaceRoot) : '');
-        const { userName, userEmail } = await this.getGitUser(workspaceRoot);
-        const ignoreStoreCount = workspaceRoot ? await getIgnoreStoreCount(workspaceRoot) : 0;
-        const aggregates = this.runtimeTraceLogger.getRunAggregates(session.runId);
-        const collectFingerprints = (issues: ReviewIssue[]): string[] =>
-            [...new Set(issues.map(i => i.fingerprint).filter((f): f is string => !!f))];
-        const payload: RunSummaryPayload = {
-            runId: session.runId,
-            startedAtHms: formatTimeHms(session.startedAt),
-            endedAtHms: formatTimeHms(endedAt),
-            durationMs,
-            trigger: session.trigger,
-            projectName: projectName || undefined,
-            userName: userName || undefined,
-            userEmail: userEmail || undefined,
-            passed: result.passed,
-            errorsCount: result.errors.length,
-            warningsCount: result.warnings.length,
-            infoCount: result.info.length,
-            inputTokensTotal: aggregates?.inputTokensTotal ?? 0,
-            outputTokensTotal: aggregates?.outputTokensTotal ?? 0,
-            llmTotalMs: aggregates?.llmTotalMs ?? 0,
-            ignoredByFingerprintCount: opts.ignoredByFingerprintCount,
-            allowedByLineCount: opts.allowedByLineCount,
-            ignoreStoreCount,
-            errorFingerprints: collectFingerprints(result.errors),
-            warningFingerprints: collectFingerprints(result.warnings),
-            infoFingerprints: collectFingerprints(result.info),
-            status,
-            errorClass: opts.errorClass,
-            ignoreAllowEvents: opts.ignoreAllowEvents ?? [],
-        };
-        return { payload, logDateMs: endedAt };
-    };
-
     /**
      * 对指定文件执行规则 + AI 审查，支持 diff/ast 等选项。
      * @param files - 要审查的文件路径数组
@@ -204,12 +92,7 @@ export class ReviewEngine {
     ): Promise<ReviewResult> {
         this.logger.show();
         const reviewStartAt = Date.now();
-        const result: ReviewResult = {
-            passed: true,
-            errors: [],
-            warnings: [],
-            info: [],
-        };
+        const result = this.createEmptyReviewResult();
 
         const config = this.configManager.getConfig();
         if (!options?.traceSession) {
@@ -221,40 +104,35 @@ export class ReviewEngine {
 
         try {
             const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+            const writeRunSummaryIfNeeded = async (
+                status: 'success' | 'failed',
+                opts: { errorClass?: string; ignoredByFingerprintCount: number; allowedByLineCount: number; ignoreAllowEvents?: RunSummaryPayload['ignoreAllowEvents'] }
+            ): Promise<void> => {
+                if (!traceSession) return;
+                const { payload, logDateMs } = await buildRunSummaryPayload(
+                    traceSession,
+                    result,
+                    status,
+                    opts,
+                    workspaceRoot,
+                    reviewStartAt
+                );
+                this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
+            };
+            const emptySummaryOpts = { ignoredByFingerprintCount: 0, allowedByLineCount: 0 };
+
             if (files.length === 0) {
-                if (traceSession) {
-                    const { payload, logDateMs } = await this.buildRunSummaryPayload(
-                        traceSession,
-                        result,
-                        'success',
-                        { ignoredByFingerprintCount: 0, allowedByLineCount: 0 },
-                        workspaceRoot,
-                        reviewStartAt
-                    );
-                    this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
-                }
+                await writeRunSummaryIfNeeded('success', emptySummaryOpts);
                 return result;
             }
 
-            const filteredFiles = files.filter(file => {
-                if (config.exclusions) {
-                    return !this.fileScanner.shouldExclude(file, config.exclusions);
-                }
-                return true;
-            });
+            const exclusions = config.exclusions;
+            const filteredFiles = exclusions
+                ? files.filter(file => !this.fileScanner.shouldExclude(file, exclusions))
+                : [...files];
 
             if (filteredFiles.length === 0) {
-                if (traceSession) {
-                    const { payload, logDateMs } = await this.buildRunSummaryPayload(
-                        traceSession,
-                        result,
-                        'success',
-                        { ignoredByFingerprintCount: 0, allowedByLineCount: 0 },
-                        workspaceRoot,
-                        reviewStartAt
-                    );
-                    this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
-                }
+                await writeRunSummaryIfNeeded('success', emptySummaryOpts);
                 return result;
             }
 
@@ -439,28 +317,18 @@ export class ReviewEngine {
             }
 
             this.logger.info('审查流程完成');
-            if (traceSession) {
-                const { payload, logDateMs } = await this.buildRunSummaryPayload(
-                    traceSession,
-                    result,
-                    'success',
-                    { ignoredByFingerprintCount, allowedByLineCount, ignoreAllowEvents },
-                    workspaceRoot,
-                    reviewStartAt
-                );
-                this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
-            }
+            await writeRunSummaryIfNeeded('success', { ignoredByFingerprintCount, allowedByLineCount, ignoreAllowEvents });
             return result;
         } catch (error) {
             const errorClass = error instanceof Error ? error.name : 'UnknownError';
             if (traceSession) {
-                const emptyResult: ReviewResult = { passed: true, errors: [], warnings: [], info: [] };
-                const { payload, logDateMs } = await this.buildRunSummaryPayload(
+                const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+                const { payload, logDateMs } = await buildRunSummaryPayload(
                     traceSession,
-                    emptyResult,
+                    this.createEmptyReviewResult(),
                     'failed',
                     { errorClass, ignoredByFingerprintCount: 0, allowedByLineCount: 0, ignoreAllowEvents: [] },
-                    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '',
+                    root,
                     reviewStartAt
                 );
                 this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
@@ -626,15 +494,13 @@ export class ReviewEngine {
     };
 
     /** 将 VSCode DiagnosticSeverity 转为统一字符串，供 project rule 与漏斗逻辑使用 */
-    private toDiagnosticSeverity = (
-        severity: vscode.DiagnosticSeverity | undefined
-    ): 'error' | 'warning' | 'info' | 'hint' => {
-        switch (severity) {
-            case vscode.DiagnosticSeverity.Error: return 'error';
-            case vscode.DiagnosticSeverity.Warning: return 'warning';
-            case vscode.DiagnosticSeverity.Information: return 'info';
-            default: return 'hint';
-        }
+    private toDiagnosticSeverity = (severity: vscode.DiagnosticSeverity | undefined): 'error' | 'warning' | 'info' | 'hint' => {
+        const map: Record<number, 'error' | 'warning' | 'info' | 'hint'> = {
+            [vscode.DiagnosticSeverity.Error]: 'error',
+            [vscode.DiagnosticSeverity.Warning]: 'warning',
+            [vscode.DiagnosticSeverity.Information]: 'info',
+        };
+        return map[severity ?? -1] ?? 'hint';
     };
 
     private pickDiagnosticsForFiles = (
@@ -931,6 +797,7 @@ export class ReviewEngine {
         };
     };
 
+    /** 每次返回新的空结果对象（新数组），避免共享引用被污染 */
     private createEmptyReviewResult = (): ReviewResult => ({
         passed: true,
         errors: [],
