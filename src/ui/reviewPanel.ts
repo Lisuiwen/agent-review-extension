@@ -1183,6 +1183,69 @@ export class ReviewPanel {
         if (issue.astRange) {
             md.appendMarkdown(`\nAST: 第 ${issue.astRange.startLine}-${issue.astRange.endLine} 行`);
         }
+        const refs = issue.contextLineRefs;
+        if (refs) {
+            const detailParts: string[] = [];
+            const groupByFileAndRanges = (items: Array<{ file: string; line: number }>) => {
+                const byFile = new Map<string, number[]>();
+                for (const { file, line } of items) {
+                    const key = path.normalize(file);
+                    if (!byFile.has(key)) byFile.set(key, []);
+                    const arr = byFile.get(key)!;
+                    if (!arr.includes(line)) arr.push(line);
+                }
+                byFile.forEach((lines, filePath) => lines.sort((a, b) => a - b));
+                return byFile;
+            };
+            const linesToRangeStr = (lines: number[]): string => {
+                if (lines.length === 0) return '';
+                const ranges: string[] = [];
+                let start = lines[0];
+                let end = lines[0];
+                for (let i = 1; i < lines.length; i++) {
+                    if (lines[i] === end + 1) end = lines[i];
+                    else {
+                        ranges.push(start === end ? `${start}` : `${start}-${end}`);
+                        start = lines[i];
+                        end = lines[i];
+                    }
+                }
+                ranges.push(start === end ? `${start}` : `${start}-${end}`);
+                return ranges.join(', ');
+            };
+            const formatFileRefs = (byFile: Map<string, number[]>) => {
+                return Array.from(byFile.entries()).map(([filePath, lines]) => {
+                    const rangeStr = linesToRangeStr(lines);
+                    const firstLine = lines[0];
+                    const uri = vscode.Uri.file(filePath).toString() + `#L${firstLine}`;
+                    const label = path.basename(filePath);
+                    return `[${label}](${uri}) ${rangeStr}`;
+                });
+            };
+            if (refs.definitions?.length) {
+                const byFile = groupByFileAndRanges(refs.definitions);
+                const fileLines = formatFileRefs(byFile);
+                if (fileLines.length) detailParts.push('依赖定义: ' + fileLines.join('；'));
+            }
+            if (refs.usages?.length) {
+                const byFile = groupByFileAndRanges(refs.usages);
+                const fileLines = formatFileRefs(byFile);
+                if (fileLines.length) detailParts.push('调用方: ' + fileLines.join('；'));
+            }
+            const vueParts: string[] = [];
+            if (refs.vueRelatedBlock?.template) {
+                vueParts.push(`template 第 ${refs.vueRelatedBlock.template[0]}-${refs.vueRelatedBlock.template[1]} 行`);
+            }
+            if (refs.vueRelatedBlock?.script) {
+                vueParts.push(`script 第 ${refs.vueRelatedBlock.script[0]}-${refs.vueRelatedBlock.script[1]} 行`);
+            }
+            if (vueParts.length) detailParts.push('同一 SFC: ' + vueParts.join(', '));
+            if (detailParts.length > 0) {
+                md.appendMarkdown('\n\n<details><summary>关联上下文行号（点击展开）</summary>\n\n');
+                md.appendMarkdown(detailParts.join('\n\n'));
+                md.appendMarkdown('\n</details>');
+            }
+        }
         md.appendMarkdown('\n\n');
         md.appendMarkdown('[放行](command:agentreview.allowIssueIgnore)');
         if (issue.severity !== 'error') {

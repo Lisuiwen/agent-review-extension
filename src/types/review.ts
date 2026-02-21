@@ -17,6 +17,12 @@ export interface ReviewIssue {
     rule: string;               // 触发的规则名称（如 'no_space_in_filename'）
     severity: 'error' | 'warning' | 'info';  // 严重程度
     astRange?: { startLine: number; endLine: number }; // AST 片段范围（1-based，可选）
+    /** 送给 AI 的关联上下文行号（仅行号，供 hover 折叠展示：依赖定义、调用方、同一 SFC 块范围） */
+    contextLineRefs?: {
+        definitions?: Array<{ file: string; line: number }>;
+        usages?: Array<{ file: string; line: number }>;
+        vueRelatedBlock?: { template?: [number, number]; script?: [number, number] };
+    };
     /** 内容寻址指纹，用于项目级忽略（抗行号偏移）；见 utils/issueFingerprint.ts */
     fingerprint?: string;
     incremental?: boolean;      // 是否属于“本次增量问题”（true=增量，false/undefined=存量）

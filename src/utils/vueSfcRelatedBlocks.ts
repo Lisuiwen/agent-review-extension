@@ -15,6 +15,9 @@ export interface VueSfcRelatedBlocksOptions {
 export interface VueSfcRelatedBlocksResult {
     template?: string;
     script?: string;
+    /** 附带块在源文件中的行范围（1-based [start, end]），供 hover 展示用 */
+    templateRange?: [number, number];
+    scriptRange?: [number, number];
 }
 
 const blockLoc = (block: { loc?: { start?: { line: number }; end?: { line: number } } } | null) =>
@@ -64,6 +67,7 @@ export const getVueSfcRelatedBlocksForContext = (
     const out: VueSfcRelatedBlocksResult = {};
 
     if (mainIsScript && templateLoc) {
+        out.templateRange = [templateLoc.start, templateLoc.end];
         const blockLines = lines.slice(templateLoc.start - 1, templateLoc.end);
         const capped = blockLines.length > maxLines ? blockLines.slice(0, maxLines) : blockLines;
         const withLineNum = capped.map((line, i) => `# 行 ${templateLoc.start + i}\n${line}`).join('\n');
@@ -74,6 +78,7 @@ export const getVueSfcRelatedBlocksForContext = (
 
     if (mainIsTemplate && (scriptSetupLoc || scriptLoc)) {
         const loc = scriptSetupLoc ?? scriptLoc!;
+        out.scriptRange = [loc.start, loc.end];
         const blockLines = lines.slice(loc.start - 1, loc.end);
         const capped = blockLines.length > maxLines ? blockLines.slice(0, maxLines) : blockLines;
         const withLineNum = capped.map((line, i) => `# 行 ${loc.start + i}\n${line}`).join('\n');

@@ -10,10 +10,18 @@ import type { AffectedScopeResult } from './astScope';
  * 1. 仅做浅层补全（最多若干定义），避免 token 爆炸
  * 2. 只作为 AI 的参考信息，不改变主审查片段
  */
+/** 可选：收集「定义/引用」位置行号，供 hover 展示关联上下文行号用 */
+export interface CollectLineRefs {
+    definitions?: Array<{ file: string; line: number }>;
+    usages?: Array<{ file: string; line: number }>;
+}
+
 export interface LspContextOptions {
     maxDefinitions?: number;
     linePadding?: number;
     maxChars?: number;
+    /** 若传入则顺带收集定义位置（file+line），不增加 LSP 调用 */
+    collectLineRefs?: CollectLineRefs;
 }
 
 type IdentifierOccurrence = {
@@ -54,6 +62,8 @@ export const buildLspReferenceContext = async (
         return '';
     }
 
+    // 获取当前文件的 vscode Uri 对象，用于后续调用 LSP（语言服务器协议）相关 API。
+    // 注意：LSP API 需要通过 Uri 确定目标文件，对新手来说 fileUri 就是 VSCode 用来标识磁盘文件的对象
     const fileUri = vscode.Uri.file(filePath);
     const candidates = collectIdentifierOccurrences(snippets);
     if (candidates.length === 0) {
@@ -76,11 +86,13 @@ export const buildLspReferenceContext = async (
         const first = definitions[0];
         const targetPath = normalizeFsPath(first.uri.fsPath);
         const targetLine = first.range.start.line + 1;
+        if (isThirdPartyOrLibPath(targetPath)) continue;
         const key = `${targetPath}:${targetLine}`;
         if (seenDefinitionKeys.has(key)) {
             continue;
         }
         seenDefinitionKeys.add(key);
+        options?.collectLineRefs?.definitions?.push({ file: targetPath, line: targetLine });
 
         const snippet = await readLineSnippet(targetPath, targetLine, linePadding, fileCache);
         if (!snippet) {
@@ -114,7 +126,7 @@ const DEFAULT_MAX_USAGES_CHARS = 3000;
 export const buildLspUsagesContext = async (
     filePath: string,
     snippets: AffectedScopeResult['snippets'],
-    options?: { maxUsages?: number; maxChars?: number }
+    options?: { maxUsages?: number; maxChars?: number; collectLineRefs?: CollectLineRefs }
 ): Promise<string> => {
     const maxUsages = options?.maxUsages ?? DEFAULT_MAX_USAGES;
     const maxChars = options?.maxChars ?? DEFAULT_MAX_USAGES_CHARS;
@@ -136,9 +148,11 @@ export const buildLspUsagesContext = async (
             if (totalUsages >= maxUsages || totalChars >= maxChars) break;
             const targetPath = normalizeFsPath(ref.uri.fsPath);
             const line = ref.range.start.line + 1;
+            if (isThirdPartyOrLibPath(targetPath)) continue;
             const key = `${targetPath}:${line}`;
             if (seenKey.has(key)) continue;
             seenKey.add(key);
+            options?.collectLineRefs?.usages?.push({ file: targetPath, line });
             const snippet = await readLineSnippet(targetPath, line, 1, fileCache);
             if (!snippet) continue;
             refBlocks.push(`- ${targetPath}:${line}\n  ${snippet.replace(/\n/g, '\n  ')}`);
@@ -158,6 +172,18 @@ export const buildLspUsagesContext = async (
 };
 
 const normalizeFsPath = (input: string): string => path.normalize(input);
+
+/**
+ * 判断是否为第三方/库文件，不纳入「关联上下文行号」且不送给 AI，避免噪声与 token 浪费。
+ * - node_modules 内文件
+ * - TypeScript 库声明如 lib.dom.d.ts、lib.es2015.d.ts
+ */
+const isThirdPartyOrLibPath = (filePath: string): boolean => {
+    const normalized = path.normalize(filePath);
+    if (/\bnode_modules\b/.test(normalized)) return true;
+    const base = path.basename(normalized);
+    return /^lib\.\w+\.d\.ts$/i.test(base);
+};
 
 /**
  * 从「受影响作用域」的代码片段里收集所有标识符的出现位置（名称 + 行 + 列）。

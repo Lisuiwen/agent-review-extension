@@ -244,16 +244,29 @@ export class AIReviewer {
                 const normalizedPath = path.normalize(f.path);
                 let content: string | undefined;
                 let referenceContext = '';
+                const contextLineRefs: NonNullable<ReviewIssue['contextLineRefs']> = {
+                    definitions: [],
+                    usages: [],
+                    vueRelatedBlock: {},
+                };
                 if (useAstSnippets) {
                     const astSnippets = astSnippetsByFile!.get(normalizedPath) ?? astSnippetsByFile!.get(f.path);
                     if (astSnippets?.snippets?.length) {
                         content = buildAstSnippetForFile(f.path, astSnippets);
                         if (enableLspContext) {
+                            const collectLineRefs = {
+                                definitions: contextLineRefs.definitions!,
+                                usages: contextLineRefs.usages!,
+                            };
                             const definitionContext = lspReferenceBuilder
-                                ? await lspReferenceBuilder(f.path, astSnippets.snippets)
+                                ? await lspContext.buildLspReferenceContext(f.path, astSnippets.snippets, {
+                                      collectLineRefs,
+                                  })
                                 : '';
                             const usagesContext = lspUsagesBuilder
-                                ? await lspUsagesBuilder(f.path, astSnippets.snippets)
+                                ? await lspContext.buildLspUsagesContext(f.path, astSnippets.snippets, {
+                                      collectLineRefs,
+                                  })
                                 : '';
                             const parts: string[] = [];
                             if (definitionContext) parts.push(`## 依赖定义 (Definitions)\n${definitionContext}`);
@@ -279,6 +292,10 @@ export class AIReviewer {
                                     snippetLines,
                                     maxLines: astConfig?.vue_related_blocks_max_lines ?? 60,
                                 });
+                                if (related.templateRange)
+                                    contextLineRefs.vueRelatedBlock!.template = related.templateRange;
+                                if (related.scriptRange)
+                                    contextLineRefs.vueRelatedBlock!.script = related.scriptRange;
                                 const relatedParts: string[] = [];
                                 if (related.template) relatedParts.push(related.template);
                                 if (related.script) relatedParts.push(related.script);
@@ -309,9 +326,42 @@ export class AIReviewer {
                 if (content && referenceContext) {
                     content = buildStructuredReviewContent(content, referenceContext);
                 }
-                return { path: f.path, content };
+                // 调用方中排除与「依赖定义」相同的 (file, line)，避免 LSP 把定义处也算作引用导致重复
+                if (contextLineRefs.usages?.length && contextLineRefs.definitions?.length) {
+                    const defSet = new Set(
+                        contextLineRefs.definitions.map((d) => `${path.normalize(d.file)}:${d.line}`)
+                    );
+                    contextLineRefs.usages = contextLineRefs.usages.filter(
+                        (u) => !defSet.has(`${path.normalize(u.file)}:${u.line}`)
+                    );
+                }
+                // 调用方仅保留当前文件内引用，避免 LSP 把其他文件同名符号误报为「调用方」（如 Hello.vue 里自己的 user）
+                if (contextLineRefs.usages?.length) {
+                    contextLineRefs.usages = contextLineRefs.usages.filter(
+                        (u) => path.normalize(u.file) === normalizedPath
+                    );
+                }
+                const hasRefs =
+                    (contextLineRefs.definitions?.length ?? 0) > 0 ||
+                    (contextLineRefs.usages?.length ?? 0) > 0 ||
+                    contextLineRefs.vueRelatedBlock?.template != null ||
+                    contextLineRefs.vueRelatedBlock?.script != null;
+                return {
+                    path: f.path,
+                    content,
+                    contextLineRefs: hasRefs ? contextLineRefs : undefined,
+                };
             }))
             : validatedRequest.files;
+
+        const contextLineRefsByFile = new Map<string, NonNullable<ReviewIssue['contextLineRefs']>>();
+        if (useDiffContent && Array.isArray(filesToLoad)) {
+            for (const item of filesToLoad) {
+                const refs = (item as { contextLineRefs?: NonNullable<ReviewIssue['contextLineRefs']> })
+                    .contextLineRefs;
+                if (refs) contextLineRefsByFile.set(path.normalize(item.path), refs);
+            }
+        }
 
         const allowedLinesByFile = new Map<string, Set<number>>();
         const addAllowedLine = (filePath: string, line: number): void => {
@@ -382,6 +432,7 @@ export class AIReviewer {
                 allowedLinesByFile,
                 diagnosticsByFile,
                 astSnippetsByFile: astSnippetsByFile ?? undefined,
+                contextLineRefsByFile,
             }, traceSession);
             return issues;
         } catch (error) {
@@ -549,6 +600,7 @@ export class AIReviewer {
             allowedLinesByFile: Map<string, Set<number>>;
             diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>;
             astSnippetsByFile?: Map<string, AffectedScopeResult>;
+            contextLineRefsByFile?: Map<string, NonNullable<ReviewIssue['contextLineRefs']>>;
         },
         traceSession?: RuntimeTraceSession | null
     ): Promise<ReviewIssue[]> => {
@@ -596,6 +648,7 @@ export class AIReviewer {
             allowedLinesByFile: Map<string, Set<number>>;
             diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>;
             astSnippetsByFile?: Map<string, AffectedScopeResult>;
+            contextLineRefsByFile?: Map<string, NonNullable<ReviewIssue['contextLineRefs']>>;
         },
         traceSession?: RuntimeTraceSession | null
     ): Promise<ReviewIssue[]> => {
@@ -633,6 +686,7 @@ export class AIReviewer {
             allowedLinesByFile: Map<string, Set<number>>;
             diagnosticsByFile: Map<string, Array<{ line: number; message: string; range?: { startLine: number; endLine: number } }>>;
             astSnippetsByFile?: Map<string, AffectedScopeResult>;
+            contextLineRefsByFile?: Map<string, NonNullable<ReviewIssue['contextLineRefs']>>;
         },
         allowSplit: boolean,
         traceSession?: RuntimeTraceSession | null
@@ -670,6 +724,13 @@ export class AIReviewer {
                 : [];
             const issuesInScope = filterIssuesByAllowedLines(batchIssues, options, this.logger);
             attachAstRangesForBatch(issuesInScope, options.astSnippetsByFile);
+            const refsByFile = options.contextLineRefsByFile;
+            if (refsByFile?.size) {
+                for (const issue of issuesInScope) {
+                    const refs = refsByFile.get(path.normalize(issue.file));
+                    if (refs) issue.contextLineRefs = refs;
+                }
+            }
             return filterIssuesByDiagnostics(issuesInScope, diagnosticsForBatch, {
                 logger: this.logger,
                 onOverdropFallback: (data) => {
