@@ -28,6 +28,7 @@ export interface AIReviewConfig {
     batch_concurrency?: number;
     max_request_chars?: number;
     run_on_save?: boolean;
+    run_on_save_force_review?: boolean;
     funnel_lint?: boolean;
     funnel_lint_severity?: 'error' | 'warning';
     ignore_format_only_diff?: boolean;
@@ -128,11 +129,11 @@ export const DEFAULT_SYSTEM_PROMPT = `你是一个经验丰富的代码审查专
 
 请提供详细、具体、可操作的建议。即使代码看起来没有严重问题，也要提供改进建议和最佳实践。`;
 
-/** 格式化 Zod 错误为可读字符串 */
+/** 格式化 Zod 错误为可读字符串，供日志与抛错信息使用 */
 export function formatZodError(error: z.ZodError): string {
-    return error.issues.map((issue: z.ZodIssue) =>
-        `${issue.path.join('.')}: ${issue.message}`
-    ).join(', ');
+    return error.issues
+        .map((issue: z.ZodIssue) => `${issue.path.join('.')}: ${issue.message}`)
+        .join(', ');
 }
 
 /** 统一处理 Zod 校验错误：ZodError 时打日志并抛格式化错误，否则原样抛出 */

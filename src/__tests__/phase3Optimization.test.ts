@@ -76,12 +76,7 @@ vi.mock('vscode', () => {
     class Position {
         constructor(public line: number, public character: number) {}
         public isBefore(other: Position): boolean {
-            if (this.line < other.line) {
-                return true;
-            }
-            if (this.line > other.line) {
-                return false;
-            }
+            if (this.line !== other.line) return this.line < other.line;
             return this.character < other.character;
         }
     }
@@ -305,6 +300,7 @@ vi.mock('../utils/logger', () => {
     return {
         Logger: class {
             info = vi.fn(() => {});
+            important = vi.fn(() => {});
             warn = vi.fn(() => {});
             error = vi.fn(() => {});
             static setInfoOutputEnabled = vi.fn(() => {});
@@ -378,10 +374,9 @@ describe('Phase3: 侧边栏面板定位能力', () => {
         expect(item.command?.command).toBe('vscode.open');
         expect(Array.isArray(item.command?.arguments)).toBe(true);
 
-        const selection = (item.command?.arguments?.[1] as { selection?: { start: { line: number; character: number } } })
-            .selection;
-        expect(selection?.start.line).toBe(2);
-        expect(selection?.start.character).toBe(4);
+        const openArgs = item.command?.arguments?.[1] as { selection?: { start: { line: number; character: number } } } | undefined;
+        expect(openArgs?.selection?.start.line).toBe(2);
+        expect(openArgs?.selection?.start.character).toBe(4);
     });
 
     it('选中问题节点后应打开文件并定位到指定行列', async () => {
@@ -595,7 +590,8 @@ describe('Phase3: 放行后本地同步与标记', () => {
         const issueItems = provider.getChildren(fileItems[0]);
         expect(issueItems.length).toBe(1);
         expect(String(issueItems[0].label).startsWith('【已放行】')).toBe(true);
-        expect(typeof issueItems[0].description === 'string' && issueItems[0].description.includes('已放行')).toBe(true);
+        const desc = issueItems[0].description;
+        expect(typeof desc === 'string' && desc.includes('已放行')).toBe(true);
     });
 });
 

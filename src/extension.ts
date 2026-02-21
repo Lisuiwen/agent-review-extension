@@ -189,9 +189,10 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         return {
             aiEnabled: ai?.enabled === true,
             runOnSaveEnabled: ai?.run_on_save === true,
+            runOnSaveForceReview: ai?.run_on_save_force_review === true,
             debounceMs: parseNumber(ai?.run_on_save_debounce_ms, 1200, 0),
             maxRunsPerMinute: parseNumber(ai?.run_on_save_max_runs_per_minute, 4, 1),
-            skipSameContent: ai?.run_on_save_skip_same_content !== false,
+            skipSameContent: ai?.run_on_save_skip_same_content === true,
             minEffectiveChangedLines: parseNumber(ai?.run_on_save_min_effective_changed_lines, 3, 0),
             riskPatterns,
             saveFunnelLintSeverity,
@@ -221,12 +222,12 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         // 静默跳过，不写日志
     };
 
-    /** 解析指定文件的待提交 diff；失败时返回 ok: false */
+    /** 解析指定文件的待提交 diff；失败时返回 ok: false。与手动刷新一致：先取全部 pending diff 再按文件查找，避免单文件路径传 git 时为空。 */
     const resolvePendingDiffForFile = async (filePath: string): Promise<{ diff: FileDiff | null; ok: boolean }> => {
         try {
-            const pendingDiffByFile = await fileScanner.getPendingDiff([filePath]);
+            const pendingDiffByFile = await fileScanner.getPendingDiff();
             const norm = normalizeFilePath(filePath);
-            const matched = [...pendingDiffByFile.entries()].find(([key]) => normalizeFilePath(key) === norm);
+            const matched = [...pendingDiffByFile.entries()].find(([key]) => path.normalize(key) === norm);
             return { diff: matched?.[1] ?? null, ok: true };
         } catch {
             return { diff: null, ok: false };
@@ -277,8 +278,10 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             .some(item => item.severity === vscode.DiagnosticSeverity.Error);
 
     /** 复审完成时的状态文案：保留历史问题时与“已最新保存”区分 */
-    const getSaveReviewDoneMessage = (preserveStaleOnEmpty: boolean): string =>
-        preserveStaleOnEmpty ? '复审完成（已保留历史）' : '复审完成（已最新保存）';
+    const getSaveReviewDoneMessage = (preserveStaleOnEmpty: boolean, forceReview: boolean): string => {
+        if (forceReview) return preserveStaleOnEmpty ? '复审完成（强制模式，已保留历史）' : '复审完成（强制模式）';
+        return preserveStaleOnEmpty ? '复审完成（已保留历史）' : '复审完成（已最新保存）';
+    };
 
     const enqueueTask = (filePath: string, task: QueuedAutoReviewTask): void => {
         const normalizedPath = normalizeFilePath(filePath);
@@ -323,6 +326,10 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         if (task.trigger !== 'save') {
             return { skip: false, effectiveChangedLines: 0, riskMatched: false };
         }
+        if (options.runOnSaveForceReview) {
+            logger.important('[SaveTrace] 保存门控已强制放行', { filePath });
+            return { skip: false, effectiveChangedLines: 0, riskMatched: false };
+        }
         if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
             return { skip: false, effectiveChangedLines: 0, riskMatched: false };
         }
@@ -332,7 +339,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             return { skip: false, effectiveChangedLines: 0, riskMatched: false };
         }
         const diagnostics = collectDiagnosticsForFile(filePath);
-        return evaluateAutoReviewGate({
+        const gateResult = evaluateAutoReviewGate({
             trigger: 'save',
             savedContentHash: task.savedContentHash,
             lastReviewedContentHash: state.lastReviewedContentHash,
@@ -345,6 +352,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                 funnelLintSeverity: options.saveFunnelLintSeverity,
             },
         });
+        return gateResult;
     };
 
     const flushQueue = async (): Promise<void> => {
@@ -377,6 +385,13 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                     if (gateDecision.skip && gateDecision.reason) {
                         if (gateDecision.reason === 'same_content') {
                             readyReviewPanel.clearFileStaleMarkers(nextPath);
+                            logger.important('[SaveTrace] 保存门控跳过 same_content', {
+                                file: nextPath,
+                                savedHashPrefix: task.savedContentHash?.slice(0, 8),
+                                lastReviewedHashPrefix: ensureState(nextPath).lastReviewedContentHash?.slice(0, 8),
+                            });
+                        } else {
+                            logger.important('[SaveTrace] 保存门控跳过', { file: nextPath, reason: gateDecision.reason });
                         }
                         const message = getSkipReasonMessage(gateDecision.reason);
                         updateCompletedStatus(message);
@@ -399,6 +414,8 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                         executionTimestamps.push(Date.now());
                     }
 
+                    logger.important('[SaveTrace] 保存复审开始执行', { file: nextPath, trigger: task.trigger });
+
                     const requestSeq = state.latestRequestSeq + 1;
                     state.latestRequestSeq = requestSeq;
                     state.inFlight = true;
@@ -416,7 +433,10 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                                         readyReviewPanel.isFileStale(nextPath)
                                         && countIssuesForFile(result, nextPath) === 0
                                         && hasErrorDiagnostics(nextPath);
-                                    const saveReviewDoneMessage = getSaveReviewDoneMessage(preserveStaleOnEmpty);
+                                    const saveReviewDoneMessage = getSaveReviewDoneMessage(
+                                        preserveStaleOnEmpty,
+                                        options.runOnSaveForceReview
+                                    );
                                     const latestState = ensureState(nextPath);
                                     const staleByRequest = requestSeq < latestState.latestRequestSeq;
                                     const staleByEdit = task.editRevision < latestState.editRevision;
@@ -443,9 +463,16 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                                         readyReviewPanel.getCurrentResult() ?? result,
                                         saveReviewDoneMessage
                                     );
+                                    logger.important('[SaveTrace] 保存复审执行完成', {
+                                        file: nextPath,
+                                        mode: saveReviewContext.mode,
+                                        reason: saveReviewContext.reason,
+                                        forceReview: options.runOnSaveForceReview,
+                                    });
                                 }
                             );
                         } catch (error) {
+                            logger.important('[SaveTrace] 保存复审执行失败', { file: nextPath });
                             logger.error('自动复审执行失败', error);
                             readyStatusBar.updateStatus('error', undefined, '自动复审失败');
                             readyReviewPanel.setStatus('error', '自动复审失败');
@@ -587,21 +614,37 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
 
     const onDidSaveDisposable = onDidSaveTextDocument
         ? onDidSaveTextDocument((document) => {
+            logger.important('[SaveTrace] onDidSave 事件触发', {
+                scheme: document.uri.scheme,
+                filePath: document.uri.fsPath,
+            });
             if (document.uri.scheme !== 'file') {
                 return;
             }
             if (!isRuntimeReady()) {
+                logger.important('[SaveTrace] save 未入队', { reason: 'runtime_not_ready' });
                 return;
             }
             const options = getRuntimeOptions();
             if (!options.aiEnabled || !options.runOnSaveEnabled) {
+                logger.important('[SaveTrace] save 未入队', {
+                    reason: 'options',
+                    aiEnabled: options.aiEnabled,
+                    runOnSaveEnabled: options.runOnSaveEnabled,
+                });
                 return;
             }
             const filePath = normalizeFilePath(document.uri.fsPath);
             const state = ensureState(filePath);
             state.latestSavedRevision = state.editRevision;
             const content = typeof document.getText === 'function' ? document.getText() : '';
-            scheduleSaveReview(filePath, createContentHash(content));
+            const savedContentHash = createContentHash(content);
+            logger.important('[SaveTrace] 保存触发入队', {
+                filePath,
+                savedHashPrefix: savedContentHash.slice(0, 8),
+                forceReview: options.runOnSaveForceReview,
+            });
+            scheduleSaveReview(filePath, savedContentHash);
         })
         : { dispose: () => {} };
 

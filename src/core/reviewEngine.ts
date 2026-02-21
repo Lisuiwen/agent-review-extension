@@ -315,13 +315,6 @@ export class ReviewEngine {
                         });
                         if (scopeResult.result?.snippets?.length) {
                             snippetsByFile.set(filePath, scopeResult.result);
-                            const spans = scopeResult.result.snippets.map(s => s.endLine - s.startLine + 1);
-                            const maxSpan = spans.length ? Math.max(...spans) : 0;
-                            const minSpan = spans.length ? Math.min(...spans) : 0;
-                            const sample = scopeResult.result.snippets.slice(0, 3).map(s => `${s.startLine}-${s.endLine}`);
-                            // #region agent log
-                            fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-2',hypothesisId:'N1',location:'reviewEngine.ts:260',message:'ast_scope_snippets_generated',data:{filePath,snippetCount:scopeResult.result.snippets.length,minSpan,maxSpan,sample},timestamp:Date.now()})}).catch(()=>{});
-                            // #endregion
                         } else {
                             addFallback(scopeResult.fallbackReason);
                         }
@@ -432,9 +425,6 @@ export class ReviewEngine {
                 }
             }
             const { issues: allIssues, ignoredByFingerprintCount, allowedByLineCount, ignoreAllowEvents } = await this.filterIgnoredIssues(deduplicatedIssues, workspaceRoot);
-            // #region agent log
-            fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H1',location:'reviewEngine.ts:399',message:'pre_attach_ast_ranges',data:{useAstScope:!!useAstScope,hasDiffByFile:!!options?.diffByFile,astMapSize:astSnippetsByFile?.size??0,allIssues:allIssues.length,aiIssues:aiIssues.length,ruleIssues:ruleIssues.length},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             this.attachAstRanges(allIssues, astSnippetsByFile);
             this.markIncrementalIssues(allIssues, options?.diffByFile);
             for (const issue of allIssues) {
@@ -545,9 +535,6 @@ export class ReviewEngine {
         astSnippetsByFile?: Map<string, AffectedScopeResult>
     ): void => {
         if (!astSnippetsByFile || issues.length === 0) {
-            // #region agent log
-            fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H1',location:'reviewEngine.ts:486',message:'attach_ast_ranges_skipped',data:{hasAstMap:!!astSnippetsByFile,issuesCount:issues.length},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             return;
         }
         const stats = {
@@ -595,9 +582,6 @@ export class ReviewEngine {
             };
             stats.attached++;
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H2-H3',location:'reviewEngine.ts:513',message:'attach_ast_ranges_summary',data:stats,timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
     };
 
     /**
@@ -643,13 +627,16 @@ export class ReviewEngine {
         }
     };
 
+    /** 将 VSCode DiagnosticSeverity 转为统一字符串，供 project rule 与漏斗逻辑使用 */
     private toDiagnosticSeverity = (
         severity: vscode.DiagnosticSeverity | undefined
     ): 'error' | 'warning' | 'info' | 'hint' => {
-        if (severity === vscode.DiagnosticSeverity.Error) return 'error';
-        if (severity === vscode.DiagnosticSeverity.Warning) return 'warning';
-        if (severity === vscode.DiagnosticSeverity.Information) return 'info';
-        return 'hint';
+        switch (severity) {
+            case vscode.DiagnosticSeverity.Error: return 'error';
+            case vscode.DiagnosticSeverity.Warning: return 'warning';
+            case vscode.DiagnosticSeverity.Information: return 'info';
+            default: return 'hint';
+        }
     };
 
     private pickDiagnosticsForFiles = (
@@ -1091,11 +1078,9 @@ export class ReviewEngine {
 
         try {
             const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
-            const diffStartAt = Date.now();
             const pendingDiffByFile = await this.fileScanner.getPendingDiff();
             const pendingFiles = Array.from(pendingDiffByFile.keys()).map(filePath => path.normalize(filePath));
             const diffByFile = useDiff ? pendingDiffByFile : undefined;
-
 
             if (pendingFiles.length === 0) {
                 return {
@@ -1210,7 +1195,6 @@ export class ReviewEngine {
 
             const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
             let diffByFile: Map<string, FileDiff> | undefined;
-            const diffStartAt = Date.now();
             if (useDiff) {
                 diffByFile = await this.fileScanner.getStagedDiff(stagedFiles);
             }
@@ -1239,7 +1223,6 @@ export class ReviewEngine {
 
             const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
             let diffByFile: Map<string, FileDiff> | undefined;
-            const diffStartAt = Date.now();
             if (useDiff) {
                 diffByFile = await this.fileScanner.getWorkingDiff(normalizedFiles);
             }

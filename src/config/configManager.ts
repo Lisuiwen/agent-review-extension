@@ -110,56 +110,47 @@ export class ConfigManager implements vscode.Disposable {
         this.logger.info('配置文件监听器已设置（含 .env 文件监听）');
     }
 
+    /** 配置加载失败时弹出的提示文案（统一一处，便于维护） */
+    private static readonly CONFIG_LOAD_FAILED_MESSAGE =
+        '⚠️ AgentReview 配置加载失败，已恢复使用旧配置。请检查配置文件格式。';
+
     /**
      * 重新加载配置文件
-     * - 会保留旧配置，如果新配置加载失败，继续使用旧配置
+     * - 会保留旧配置；若新配置加载失败或与默认完全相同（疑似失败），则继续使用旧配置并提示用户
      */
     private async reloadConfig(): Promise<void> {
         const oldConfig = this.config;
-        
         try {
             const fileExists = fs.existsSync(this.configPath);
-            
-            // 尝试重新加载配置
             const newConfig = await this.loadConfig();
-            
-            // 如果文件存在但加载后配置与默认配置相同，可能是加载失败了
+
             if (fileExists && oldConfig) {
                 const defaultConfig = this.getDefaultConfig();
-                // 简单检查：如果新配置与默认配置完全相同，可能是加载失败
-                // 这里使用 JSON 字符串比较，虽然不精确，但对于 MVP 足够
-                const newConfigStr = this.stableStringify(newConfig);
-                const defaultConfigStr = this.stableStringify(defaultConfig);
-                const oldConfigStr = this.stableStringify(oldConfig);
-                
-                if (newConfigStr === defaultConfigStr && oldConfigStr !== defaultConfigStr) {
+                const newStr = this.stableStringify(newConfig);
+                const defaultStr = this.stableStringify(defaultConfig);
+                const oldStr = this.stableStringify(oldConfig);
+                if (newStr === defaultStr && oldStr !== defaultStr) {
                     this.config = oldConfig;
                     this.logger.warn('配置文件可能加载失败，保持使用旧配置');
-                    vscode.window.showWarningMessage(
-                        '⚠️ AgentReview 配置加载可能失败，已恢复使用旧配置。请检查配置文件格式。'
-                    );
+                    vscode.window.showWarningMessage(ConfigManager.CONFIG_LOAD_FAILED_MESSAGE);
                     return;
                 }
             }
-            
-            // 加载成功，显示通知
+
             this.logger.info('配置文件重新加载成功');
             vscode.window.showInformationMessage('AgentReview 配置已更新');
         } catch (error) {
-            // 加载失败，恢复旧配置
             this.logger.error('配置文件重新加载失败，保持使用旧配置', error);
             if (oldConfig) {
                 this.config = oldConfig;
-                vscode.window.showWarningMessage(
-                    '⚠️ AgentReview 配置加载失败，已恢复使用旧配置。请检查配置文件格式。'
-                );
             } else {
-                // 如果没有旧配置，使用默认配置
                 this.config = this.getDefaultConfig();
-                vscode.window.showWarningMessage(
-                    '⚠️ AgentReview 配置加载失败，已使用默认配置。请检查配置文件格式。'
-                );
             }
+            vscode.window.showWarningMessage(
+                oldConfig
+                    ? ConfigManager.CONFIG_LOAD_FAILED_MESSAGE
+                    : '⚠️ AgentReview 配置加载失败，已使用默认配置。请检查配置文件格式。'
+            );
         }
     }
 
@@ -196,6 +187,7 @@ export class ConfigManager implements vscode.Disposable {
             { key: 'ai.runOnSaveMinEffectiveChangedLines', configKey: 'run_on_save_min_effective_changed_lines' },
             { key: 'ai.runOnSaveRiskPatterns', configKey: 'run_on_save_risk_patterns' },
             { key: 'ai.runOnSaveFunnelLintSeverity', configKey: 'run_on_save_funnel_lint_severity' },
+            { key: 'ai.runOnSaveForceReview', configKey: 'run_on_save_force_review' },
             { key: 'ai.enableLocalRebase', configKey: 'enable_local_rebase' },
             { key: 'ai.largeChangeLineThreshold', configKey: 'large_change_line_threshold' },
             { key: 'ai.idleRecheckEnabled', configKey: 'idle_recheck_enabled' },
@@ -219,74 +211,41 @@ export class ConfigManager implements vscode.Disposable {
 
     /**
      * 从 VSCode Settings 加载运行时日志配置
-     * 优先级：Settings > YAML > 默认
+     * 优先级：Settings > YAML > 默认；仅当至少有一项被设置时才返回对象
      */
     private loadRuntimeLogConfigFromSettings(): Partial<NonNullable<AgentReviewConfig['runtime_log']>> | undefined {
         const settings = vscode.workspace.getConfiguration('agentreview');
-        const runtimeLogConfig: Partial<NonNullable<AgentReviewConfig['runtime_log']>> = {};
-        const enabled = this.getExplicitSetting<boolean>(settings, 'runtimeLog.enabled');
-        if (enabled !== undefined) {
-            runtimeLogConfig.enabled = enabled;
-        }
-        const level = this.getExplicitSetting<NonNullable<AgentReviewConfig['runtime_log']>['level']>(
-            settings,
-            'runtimeLog.level'
-        );
-        if (level !== undefined) {
-            runtimeLogConfig.level = level;
-        }
-        const retentionDays = this.getExplicitSetting<number>(settings, 'runtimeLog.retentionDays');
-        if (retentionDays !== undefined) {
-            runtimeLogConfig.retention_days = retentionDays;
-        }
-        const fileMode = this.getExplicitSetting<NonNullable<AgentReviewConfig['runtime_log']>['file_mode']>(
-            settings,
-            'runtimeLog.fileMode'
-        );
-        if (fileMode !== undefined) {
-            runtimeLogConfig.file_mode = fileMode;
-        }
-        const format = this.getExplicitSetting<NonNullable<AgentReviewConfig['runtime_log']>['format']>(
-            settings,
-            'runtimeLog.format'
-        );
-        if (format !== undefined) {
-            runtimeLogConfig.format = format;
-        }
-        const baseDirMode = this.getExplicitSetting<NonNullable<AgentReviewConfig['runtime_log']>['base_dir_mode']>(
-            settings,
-            'runtimeLog.baseDirMode'
-        );
-        if (baseDirMode !== undefined) {
-            runtimeLogConfig.base_dir_mode = baseDirMode;
-        }
+        const cfg: Partial<NonNullable<AgentReviewConfig['runtime_log']>> = {};
+        const set = <K extends keyof NonNullable<AgentReviewConfig['runtime_log']>>(
+            key: K,
+            settingsKey: string
+        ): void => {
+            const val = this.getExplicitSetting<NonNullable<AgentReviewConfig['runtime_log']>[K]>(settings, settingsKey);
+            if (val !== undefined) (cfg as Record<string, unknown>)[key] = val;
+        };
+        set('enabled', 'runtimeLog.enabled');
+        set('level', 'runtimeLog.level');
+        set('retention_days', 'runtimeLog.retentionDays');
+        set('file_mode', 'runtimeLog.fileMode');
+        set('format', 'runtimeLog.format');
+        set('base_dir_mode', 'runtimeLog.baseDirMode');
 
-        const humanReadableEnabled = this.getExplicitSetting<boolean>(settings, 'runtimeLog.humanReadable.enabled');
-        const humanReadableGranularity = this.getExplicitSetting<
+        const humanEnabled = this.getExplicitSetting<boolean>(settings, 'runtimeLog.humanReadable.enabled');
+        const humanGranularity = this.getExplicitSetting<
             NonNullable<NonNullable<AgentReviewConfig['runtime_log']>['human_readable']>['granularity']
         >(settings, 'runtimeLog.humanReadable.granularity');
-        const humanReadableAutoGenerate = this.getExplicitSetting<boolean>(
+        const humanAutoGenerate = this.getExplicitSetting<boolean>(
             settings,
             'runtimeLog.humanReadable.autoGenerateOnRunEnd'
         );
-
-        if (
-            humanReadableEnabled !== undefined
-            || humanReadableGranularity !== undefined
-            || humanReadableAutoGenerate !== undefined
-        ) {
-            runtimeLogConfig.human_readable = {
-                ...(humanReadableEnabled !== undefined ? { enabled: humanReadableEnabled } : {}),
-                ...(humanReadableGranularity !== undefined ? { granularity: humanReadableGranularity } : {}),
-                ...(humanReadableAutoGenerate !== undefined ? { auto_generate_on_run_end: humanReadableAutoGenerate } : {}),
+        if (humanEnabled !== undefined || humanGranularity !== undefined || humanAutoGenerate !== undefined) {
+            cfg.human_readable = {
+                ...(humanEnabled !== undefined && { enabled: humanEnabled }),
+                ...(humanGranularity !== undefined && { granularity: humanGranularity }),
+                ...(humanAutoGenerate !== undefined && { auto_generate_on_run_end: humanAutoGenerate }),
             };
         }
-
-        if (Object.keys(runtimeLogConfig).length === 0) {
-            return undefined;
-        }
-
-        return runtimeLogConfig;
+        return Object.keys(cfg).length === 0 ? undefined : cfg;
     }
 
     /**
@@ -393,6 +352,10 @@ export class ConfigManager implements vscode.Disposable {
                         settingsAIConfig.run_on_save_funnel_lint_severity
                         ?? existingAIConfig?.run_on_save_funnel_lint_severity
                         ?? 'error',
+                    run_on_save_force_review:
+                        settingsAIConfig.run_on_save_force_review
+                        ?? existingAIConfig?.run_on_save_force_review
+                        ?? false,
                     enable_local_rebase:
                         settingsAIConfig.enable_local_rebase
                         ?? existingAIConfig?.enable_local_rebase

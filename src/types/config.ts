@@ -56,6 +56,7 @@ export interface AgentReviewConfig {
         run_on_save_min_effective_changed_lines?: number; // 保存自动复审最小有效改动行数（默认 3，0 为关闭）
         run_on_save_risk_patterns?: string[]; // 保存自动复审风险特征正则列表（命中则不按小改动跳过）
         run_on_save_funnel_lint_severity?: 'off' | 'error' | 'warning'; // 保存自动复审 diagnostics 漏斗阈值（默认 error）
+        run_on_save_force_review?: boolean; // 保存自动复审强制执行（默认 false，忽略门控跳过）
         enable_local_rebase?: boolean;      // 编辑期本地行号重映射（默认 true）
         large_change_line_threshold?: number; // 大改动阈值，超出仅标记 stale（默认 40）
         idle_recheck_enabled?: boolean;     // 编辑停顿后自动复审（默认 false）

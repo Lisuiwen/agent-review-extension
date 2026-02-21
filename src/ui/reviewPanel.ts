@@ -212,7 +212,8 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
             info,
         };
         const groupKey = isAiIssue(issue) ? 'ai' : 'rule';
-        this.refreshGroup(groupKey);
+        // 忽略后需要同步更新根节点计数与分组计数，局部刷新会导致统计滞后
+        this.refresh();
         return groupKey;
     }
 
@@ -353,21 +354,20 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
             else fileMap.set(issue.file, [issue]);
         }
 
+        const countBySeverity = (fileIssues: ReviewIssue[]) => {
+            let e = 0, w = 0, i = 0;
+            for (const issue of fileIssues) {
+                if (issue.severity === 'error') e++;
+                else if (issue.severity === 'warning') w++;
+                else if (issue.severity === 'info') i++;
+            }
+            return [e, w, i] as const;
+        };
+
         const items: ReviewTreeItem[] = [];
         for (const [filePath, fileIssues] of fileMap.entries()) {
             const fileName = path.basename(filePath);
-            let errorCount = 0;
-            let warningCount = 0;
-            let infoCount = 0;
-            for (const issue of fileIssues) {
-                if (issue.severity === 'error') {
-                    errorCount++;
-                } else if (issue.severity === 'warning') {
-                    warningCount++;
-                } else if (issue.severity === 'info') {
-                    infoCount++;
-                }
-            }
+            const [errorCount, warningCount, infoCount] = countBySeverity(fileIssues);
             const countText = [
                 errorCount > 0 ? `${errorCount}` : '',
                 warningCount > 0 ? `${warningCount}` : '',
@@ -696,21 +696,10 @@ export class ReviewPanel {
         let changed = false;
 
         const clearInIssues = (issues: ReviewIssue[]): ReviewIssue[] => issues.map(issue => {
-            if (path.normalize(issue.file) !== normalizedTarget || issue.stale !== true) {
-                return issue;
-            }
+            if (path.normalize(issue.file) !== normalizedTarget || issue.stale !== true) return issue;
             changed = true;
-            return {
-                ...issue,
-                stale: false,
-            };
+            return { ...issue, stale: false };
         });
-
-        if (!changed && !this.getAllIssues(currentResult).some(issue =>
-            path.normalize(issue.file) === normalizedTarget && issue.stale === true
-        )) {
-            return;
-        }
 
         const nextResult: ReviewResult = {
             ...currentResult,
@@ -718,10 +707,7 @@ export class ReviewPanel {
             warnings: clearInIssues(currentResult.warnings),
             info: clearInIssues(currentResult.info),
         };
-
-        if (!changed) {
-            return;
-        }
+        if (!changed) return;
 
         if (
             this.activeIssueForActions
@@ -1139,15 +1125,7 @@ export class ReviewPanel {
                         astEndText.length
                     );
                     editor.setDecorations(this.astHighlightDecoration, [astRange]);
-                    // #region agent log
-                    fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H5',location:'reviewPanel.ts:528',message:'ast_decoration_applied',data:{docLineCount:document.lineCount,astStartLine,astEndLine},timestamp:Date.now()})}).catch(()=>{});
-                    // #endregion
                 }
-            }
-            if (!issue.astRange) {
-                // #region agent log
-                fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({runId:'run-1',hypothesisId:'H4',location:'reviewPanel.ts:531',message:'ast_decoration_skipped_no_ast_range',data:{file:issue.file,line:issue.line},timestamp:Date.now()})}).catch(()=>{});
-                // #endregion
             }
 
             this.activeIssueForActions = issue;
@@ -1241,6 +1219,7 @@ export class ReviewPanel {
                 }
             }, 0);
         }
+        this.syncTreeViewBadgeAndDescription();
     }
 
     /**

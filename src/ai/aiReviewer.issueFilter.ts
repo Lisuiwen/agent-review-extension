@@ -111,54 +111,17 @@ export function attachAstRangesForBatch(
     astSnippetsByFile?: Map<string, AffectedScopeResult>
 ): void {
     if (!astSnippetsByFile || issues.length === 0) return;
-    let selectedSingleLineCount = 0;
-    let selectedMultiLineCount = 0;
-    let noAstResultCount = 0;
-    let noCandidatesCount = 0;
-    const samples: string[] = [];
     for (const issue of issues) {
         if (issue.astRange) continue;
         const astResult = astSnippetsByFile.get(path.normalize(issue.file)) ?? astSnippetsByFile.get(issue.file);
-        if (!astResult?.snippets?.length) {
-            noAstResultCount++;
-            continue;
-        }
+        if (!astResult?.snippets?.length) continue;
         const candidates = astResult.snippets.filter((s) => issue.line >= s.startLine && issue.line <= s.endLine);
-        if (candidates.length === 0) {
-            noCandidatesCount++;
-            continue;
-        }
-        const best = candidates.reduce((a, b) => ((a.endLine - a.startLine) <= (b.endLine - b.startLine) ? a : b));
+        if (candidates.length === 0) continue;
+        const best = candidates.reduce((a, b) =>
+            (a.endLine - a.startLine) <= (b.endLine - b.startLine) ? a : b
+        );
         issue.astRange = { startLine: best.startLine, endLine: best.endLine };
-        const span = best.endLine - best.startLine + 1;
-        if (span <= 1) selectedSingleLineCount++;
-        else selectedMultiLineCount++;
-        if (samples.length < 3) {
-            const candidateSample = candidates.slice(0, 3).map((item) => `${item.startLine}-${item.endLine}`).join(',');
-            samples.push(`${issue.file}@${issue.line}|best=${best.startLine}-${best.endLine}|candidates=${candidateSample}`);
-        }
     }
-    // #region agent log
-    fetch('http://127.0.0.1:7249/ingest/6d65f76e-9264-4398-8f0e-449b589acfa2', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            runId: 'run-2',
-            hypothesisId: 'N2',
-            location: 'aiReviewer.issueFilter.ts:attachAstRangesForBatch',
-            message: 'attach_ast_ranges_for_batch_summary',
-            data: {
-                issues: issues.length,
-                selectedSingleLineCount,
-                selectedMultiLineCount,
-                noAstResultCount,
-                noCandidatesCount,
-                samples,
-            },
-            timestamp: Date.now(),
-        }),
-    }).catch(() => {});
-    // #endregion
 }
 
 /** 移除与本地 diagnostics 高度重复的 AI 问题；若过滤后为 0 则回退保留原结果 */

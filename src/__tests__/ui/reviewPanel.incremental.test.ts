@@ -1,4 +1,8 @@
-﻿import { describe, expect, it, vi } from 'vitest';
+/**
+ * ReviewPanelProvider 增量/来源分栏单元测试（Vitest）
+ * 验证规则检测与 AI 检测分组、空状态提示、忽略后计数更新等。
+ */
+import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('vscode', () => {
     class TreeItem {
@@ -148,5 +152,26 @@ describe('ReviewPanelProvider 来源分栏', () => {
         const labels = provider.getChildren().map(item => item.label);
         expect(labels.some(label => label.includes('当前保存文件复审未发现问题'))).toBe(true);
         expect(labels.some(label => label.includes('没有staged文件需要审查'))).toBe(false);
+    });
+
+    it('忽略移除问题后应同步更新根节点分组数量', () => {
+        const provider = new ReviewPanelProvider({} as never);
+        provider.updateResult(createResult(), 'completed');
+
+        const before = provider.getChildren().map(item => item.label);
+        expect(before.some(label => label.includes('规则检测错误 (1)'))).toBe(true);
+
+        provider.removeIssue({
+            file: 'src/rule.ts',
+            line: 3,
+            column: 1,
+            message: '规则错误',
+            rule: 'no_todo',
+            severity: 'error',
+            incremental: true,
+        });
+
+        const after = provider.getChildren().map(item => item.label);
+        expect(after.some(label => label.includes('规则检测错误 (0)'))).toBe(true);
     });
 });

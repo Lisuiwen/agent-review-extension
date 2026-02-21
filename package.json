@@ -264,6 +264,11 @@
           "default": "error",
           "description": "保存自动复审 diagnostics 漏斗阈值"
         },
+        "agentreview.ai.runOnSaveForceReview": {
+          "type": "boolean",
+          "default": false,
+          "description": "保存时强制触发自动复审（忽略 same-content/小改动/诊断漏斗等跳过门控，仍受防抖与限频控制）"
+        },
         "agentreview.ai.enableLocalRebase": {
           "type": "boolean",
           "default": true,
@@ -293,6 +298,7 @@
           "maximum": 2,
           "description": "保存复审并行文件数"
         },
+
         "agentreview.ai.reviewCurrentFileNowBypassRateLimit": {
           "type": "boolean",
           "default": false,

@@ -46,6 +46,7 @@ ai_review:
   max_tokens: 1500                # 最大token数（配合精简提示词，减少冗长输出）
   diff_only: true                # 仅发送变更片段给 AI（默认 true）
   run_on_save: true                    # 保存文件时自动触发复审
+  run_on_save_force_review: true       # 保存时强制复审（仍受防抖/限频控制）
   run_on_save_debounce_ms: 1200         # 保存防抖时间（毫秒），多次快速保存只触发一次
   run_on_save_max_runs_per_minute: 4    # 每分钟最多执行次数，超限进入冷却队列
   run_on_save_skip_same_content: true   # 内容哈希与上次一致时跳过复审（避免重复跑）
@@ -79,7 +80,6 @@ ai_review:
   retry_count: 3                  # API请求失败时的重试次数
   retry_delay: 1000               # 重试延迟时间（毫秒）
   action: "warning"               # 发现问题时的行为：block_commit（阻止提交）、warning（警告但允许）、log（仅记录）
-
 runtime_log:
   enabled: false
   human_readable:

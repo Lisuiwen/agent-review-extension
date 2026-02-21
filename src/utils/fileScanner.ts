@@ -119,13 +119,11 @@ export class FileScanner {
                 this.logger.info(`找到 ${files.length} 个staged文件`);
             }
             return files;
-        } catch (error: any) {
-            // 错误处理
-            // Git 命令可能因为以下原因失败：
-            // 1. 不是 Git 仓库（exit code 1）
-            // 2. 没有 staged 文件
-            // 3. Git 未安装
-            if (error.code === 1 || error.message?.includes('not a git repository')) {
+        } catch (error: unknown) {
+            // Git 可能因非仓库、无 staged 文件或未安装而失败
+            const code = (error as { code?: number })?.code;
+            const msg = (error as Error)?.message ?? String(error);
+            if (code === 1 || msg.includes('not a git repository')) {
                 this.logger.debug('未找到git仓库或没有staged文件');
                 return [];
             }
@@ -182,7 +180,8 @@ export class FileScanner {
                 }
                 const relPaths = files
                     .map(f => (path.isAbsolute(f) ? path.relative(this.workspaceRoot!, f) : f))
-                    .filter(Boolean);
+                    .filter(Boolean)
+                    .map(p => p.replace(/\\/g, '/'));
                 if (relPaths.length === 0) {
                     return '';
                 }
@@ -206,7 +205,7 @@ export class FileScanner {
                 maxBuffer: 10 * 1024 * 1024,
             });
             if (rawDiffResult.stderr && !rawDiffResult.stdout) {
-                this.logger.debug(`git diff 输出: ${rawDiffResult.stderr}`);
+                this.logger.debug('仅有 stderr 无 stdout，返回空 Map', rawDiffResult.stderr);
                 return new Map();
             }
 
@@ -216,7 +215,8 @@ export class FileScanner {
                 const absPath = path.isAbsolute(fd.path)
                     ? fd.path
                     : path.join(this.workspaceRoot, fd.path);
-                map.set(absPath, { ...fd, path: absPath });
+                const normalizedPath = path.normalize(absPath);
+                map.set(normalizedPath, { ...fd, path: normalizedPath });
             }
 
             // 第二次用 -w 取“忽略空白”的 diff：
@@ -275,7 +275,8 @@ export class FileScanner {
             return map;
         } catch (error: unknown) {
             const code = (error as { code?: number })?.code;
-            if (code === 1 || (error as Error)?.message?.includes('not a git repository')) {
+            const msg = (error as Error)?.message ?? String(error);
+            if (code === 1 || msg.includes('not a git repository')) {
                 this.logger.debug(`无 ${mode} diff 或非 git 仓库`);
                 return new Map();
             }
