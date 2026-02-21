@@ -2,7 +2,7 @@
  * 审查结果 TreeView 数据提供者
  *
  * 实现 vscode.TreeDataProvider<ReviewTreeItem>，管理审查结果数据与树形结构：
- * 根节点（状态/通过与否/规则量/存量）-> 文件节点 -> 问题节点。
+ * 根节点（状态/通过与否/规则/AI 分组）-> 文件节点 -> 问题节点。
  * 支持局部刷新（如忽略后只刷新该分组）、分组节点缓存供 Panel 做 reveal。
  */
 
@@ -28,8 +28,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
 
     private getAllIssues = (): ReviewIssue[] => {
         if (!this.reviewResult) return [];
-        return [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info]
-            .filter(issue => issue.incremental === true);
+        return [...this.reviewResult.errors, ...this.reviewResult.warnings, ...this.reviewResult.info];
     };
 
     constructor(private context: vscode.ExtensionContext) {}

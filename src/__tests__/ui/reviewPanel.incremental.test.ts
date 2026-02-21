@@ -67,7 +67,6 @@ const createResult = (): ReviewResult => ({
         message: '规则错误',
         rule: 'no_todo',
         severity: 'error',
-        incremental: true,
     }],
     warnings: [{
         file: 'src/ai.ts',
@@ -76,17 +75,8 @@ const createResult = (): ReviewResult => ({
         message: 'AI警告',
         rule: 'ai_review',
         severity: 'warning',
-        incremental: true,
     }],
-    info: [{
-        file: 'src/existing.ts',
-        line: 1,
-        column: 1,
-        message: '存量不显示',
-        rule: 'no_todo',
-        severity: 'info',
-        incremental: false,
-    }],
+    info: [],
 });
 
 describe('ReviewPanelProvider 来源分栏', () => {
@@ -126,7 +116,7 @@ describe('ReviewPanelProvider 来源分栏', () => {
         expect(aiIssues[0].issue?.rule).toBe('ai_review');
     });
 
-    it('仅展示增量问题，存量问题不应出现在分组里', () => {
+    it('分组数量应正确反映结果中的规则与 AI 问题', () => {
         const provider = new ReviewPanelProvider({} as never);
         provider.updateResult(createResult(), 'completed');
 
@@ -168,7 +158,6 @@ describe('ReviewPanelProvider 来源分栏', () => {
             message: '规则错误',
             rule: 'no_todo',
             severity: 'error',
-            incremental: true,
         });
 
         const after = provider.getChildren().map(item => item.label);
