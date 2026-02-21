@@ -266,7 +266,7 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(diagnostics[0].line).toBe(2);
     });
 
-    it('应基于 diff 行号正确标 incremental', async () => {
+    it('结果只包含变更行上的问题', async () => {
         const configManager = createMockConfigManager();
         const reviewEngine = new ReviewEngine(configManager);
         const issues: ReviewIssue[] = [
@@ -300,12 +300,13 @@ describe('ReviewEngine 优化逻辑', () => {
             }],
         ]);
 
-        (reviewEngine as unknown as {
-            markIncrementalIssues: (items: ReviewIssue[], diff?: Map<string, FileDiff>) => void;
-        }).markIncrementalIssues(issues, diffByFile);
+        const filtered = (reviewEngine as unknown as {
+            filterIncrementalIssues: (items: ReviewIssue[], diff?: Map<string, FileDiff>) => ReviewIssue[];
+        }).filterIncrementalIssues(issues, diffByFile);
 
-        expect(issues[0].incremental).toBe(true);
-        expect(issues[1].incremental).toBe(false);
+        expect(filtered.length).toBe(1);
+        expect(filtered[0].line).toBe(5);
+        expect(filtered[0].message).toBe('增量行问题');
     });
 
     it('保存触发路径中，formatOnly 文件应被 AI 过滤', async () => {

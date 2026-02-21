@@ -2,7 +2,7 @@
  * 审查结果树节点
  *
  * 根状态/文件/分组/问题项均用此类。问题节点显示消息、规则、行号等，点击可跳转；
- * 文件节点显示路径；分组为规则量/存量。VSCode TreeView 要求每个节点均继承自 vscode.TreeItem。
+ * 文件节点显示路径；分组为规则/AI。VSCode TreeView 要求每个节点均继承自 vscode.TreeItem。
  */
 
 import * as vscode from 'vscode';

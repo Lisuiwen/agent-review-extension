@@ -574,7 +574,6 @@ describe('Phase3: 放行后本地同步与标记', () => {
                     message: 'v-for 缺少 :key',
                     rule: 'vue_require_v_for_key',
                     severity: 'warning',
-                    incremental: true,
                     ignored: true,
                     ignoreReason: '当前迭代暂不处理',
                 },

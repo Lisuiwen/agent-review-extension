@@ -302,8 +302,8 @@ export class ReviewEngine {
             }
             const { issues: allIssues, ignoredByFingerprintCount, allowedByLineCount, ignoreAllowEvents } = await this.filterIgnoredIssues(deduplicatedIssues, workspaceRoot);
             this.attachAstRanges(allIssues, astSnippetsByFile);
-            this.markIncrementalIssues(allIssues, options?.diffByFile);
-            for (const issue of allIssues) {
+            const incrementalOnly = this.filterIncrementalIssues(allIssues, options?.diffByFile);
+            for (const issue of incrementalOnly) {
                 if (issue.severity === 'error') result.errors.push(issue);
                 else if (issue.severity === 'warning') result.warnings.push(issue);
                 else result.info.push(issue);
@@ -683,18 +683,11 @@ export class ReviewEngine {
     };
 
     /**
-     * 根据 diffByFile 标记每个问题是否属于本次变更行（incremental）；无 diff 时全部标为 incremental。
+     * 根据 diffByFile 过滤出本次变更行上的问题；无 diff 时返回全部问题。结果中只含增量，供写入 result。
      */
-    private markIncrementalIssues = (issues: ReviewIssue[], diffByFile?: Map<string, FileDiff>): void => {
-        if (issues.length === 0) {
-            return;
-        }
-        if (!diffByFile || diffByFile.size === 0) {
-            issues.forEach(issue => {
-                issue.incremental = true;
-            });
-            return;
-        }
+    private filterIncrementalIssues = (issues: ReviewIssue[], diffByFile?: Map<string, FileDiff>): ReviewIssue[] => {
+        if (issues.length === 0) return [];
+        if (!diffByFile || diffByFile.size === 0) return [...issues];
         const changedLinesByFile = new Map<string, Set<number>>();
         for (const [filePath, fileDiff] of diffByFile.entries()) {
             const normalizedPath = path.normalize(filePath);
@@ -706,10 +699,10 @@ export class ReviewEngine {
             }
             changedLinesByFile.set(normalizedPath, lines);
         }
-        for (const issue of issues) {
+        return issues.filter(issue => {
             const lines = changedLinesByFile.get(path.normalize(issue.file));
-            issue.incremental = !!lines?.has(issue.line);
-        }
+            return !!lines?.has(issue.line);
+        });
     };
 
     private normalizeScopeHints = (scopes: ReviewScopeHint[]): ReviewScopeHint[] => {

@@ -596,6 +596,15 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             const state = ensureState(filePath);
             state.editRevision += 1;
             syncReviewPanelOptions();
+            // 文档变更时若当前内容与上次复审内容一致（hash 相等），则清除该文件待复审标记，使撤销编辑后无需保存即可恢复显示。
+            if (reviewPanel && typeof event.document.getText === 'function') {
+                const content = event.document.getText();
+                const currentHash = createContentHash(content);
+                const lastHash = state.lastReviewedContentHash;
+                if (lastHash != null && currentHash === lastHash) {
+                    reviewPanel.clearFileStaleMarkers(filePath);
+                }
+            }
             const options = getRuntimeOptions();
             if (!options.idleRecheckEnabled) {
                 return;
