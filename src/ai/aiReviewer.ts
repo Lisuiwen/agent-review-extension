@@ -57,6 +57,8 @@ import {
 } from './aiReviewer.issueFilter';
 import { transformToReviewIssues, actionToSeverity } from './aiReviewer.transform';
 import { callReviewAPI } from './aiReviewer.api';
+import { loadFilesWithContent } from './aiReviewer.contentLoader';
+import { calculateRequestHash, mergeCachedIssues } from './aiReviewer.cache';
 
 /**
  * AI 审查器类
@@ -208,26 +210,17 @@ export class AIReviewer {
         const useDiffContent = useDiffMode || useAstSnippets;
         const astConfig = this.configManager.getConfig().ast;
         const enableLspContext = astConfig?.include_lsp_context !== false;
-        const lspReferenceBuilder = (() => {
+        type LspBuilder = (filePath: string, snippets: AffectedScopeResult['snippets']) => Promise<string>;
+        const getLspBuilder = (name: string): LspBuilder | null => {
             try {
-                const candidate = (lspContext as unknown as Record<string, unknown>).buildLspReferenceContext;
-                return typeof candidate === 'function'
-                    ? candidate as (filePath: string, snippets: AffectedScopeResult['snippets']) => Promise<string>
-                    : null;
+                const candidate = (lspContext as unknown as Record<string, unknown>)[name];
+                return typeof candidate === 'function' ? (candidate as LspBuilder) : null;
             } catch {
                 return null;
             }
-        })();
-        const lspUsagesBuilder = (() => {
-            try {
-                const candidate = (lspContext as unknown as Record<string, unknown>).buildLspUsagesContext;
-                return typeof candidate === 'function'
-                    ? candidate as (filePath: string, snippets: AffectedScopeResult['snippets']) => Promise<string>
-                    : null;
-            } catch {
-                return null;
-            }
-        })();
+        };
+        const lspReferenceBuilder = getLspBuilder('buildLspReferenceContext');
+        const lspUsagesBuilder = getLspBuilder('buildLspUsagesContext');
         const headerContextCache = new Map<string, string>();
         const getHeaderReferenceContext = async (filePath: string): Promise<string> => {
             const normalizedPath = path.normalize(filePath);
@@ -395,7 +388,7 @@ export class AIReviewer {
             if (previewOnly) {
                 this.logger.info('[ast.preview_only=true] 仅预览切片，不请求大模型');
             }
-            const validFiles = await this.loadFilesWithContent(filesToLoad, previewOnly);
+            const validFiles = await loadFilesWithContent(filesToLoad, this.fileScanner, this.logger, previewOnly);
             if (validFiles.length === 0) {
                 this.logger.warn('没有可审查的文件');
                 return [];
@@ -440,13 +433,7 @@ export class AIReviewer {
         }
     }
 
-    /**
-     * 验证输入请求
-     *
-     * @param request - 待验证的请求
-     * @returns 验证后的请求
-     * @throws 如果验证失败
-     */
+    /** 构建文件头依赖上下文（import/export/class 等），供 AST 审查时附加到片段前 */
     private buildFileHeaderReferenceContext = async (filePath: string): Promise<string> => {
         try {
             const content = await this.fileScanner.readFile(filePath);
@@ -486,6 +473,7 @@ export class AIReviewer {
             return '';
         }
     };
+    /** 验证输入请求，失败时由 handleZodError 抛出 */
     private validateRequest(request: AIReviewRequest): AIReviewRequest {
         try {
             return AIReviewRequestSchema.parse(request);
@@ -513,11 +501,7 @@ export class AIReviewer {
         }
         const ep = (this.config.apiEndpoint || '').trim();
         if (!ep || ep.includes('${')) {
-            this.logger.warn(
-                ep.includes('${')
-                    ? 'AI API 端点依赖 .env 或环境变量未解析'
-                    : 'AI API端点未配置'
-            );
+            this.logger.warn(ep.includes('${') ? 'AI API 端点依赖 .env 或环境变量未解析' : 'AI API端点未配置');
             return false;
         }
         try {
@@ -528,11 +512,7 @@ export class AIReviewer {
         }
         const model = (this.config.model || '').trim();
         if (!model || model.includes('${')) {
-            this.logger.warn(
-                model.includes('${')
-                    ? 'AI 模型依赖 .env 或环境变量未解析'
-                    : 'AI 模型未配置，请在设置或 .env 中配置 model'
-            );
+            this.logger.warn(model.includes('${') ? 'AI 模型依赖 .env 或环境变量未解析' : 'AI 模型未配置，请在设置或 .env 中配置 model');
             return false;
         }
         this.validateApiKey();
@@ -565,32 +545,6 @@ export class AIReviewer {
             !normalizedKey.startsWith('${') &&
             !normalizedKey.includes('}') &&
             normalizedKey.length >= 8;
-    }
-
-    /** 加载文件内容（必要时从磁盘读取） */
-    private async loadFilesWithContent(
-        files: Array<{ path: string; content?: string }>,
-        previewOnly = false
-    ): Promise<Array<{ path: string; content: string }>> {
-        const filesWithContent = await Promise.all(
-            files.map(async (file) => {
-                if (file.content !== undefined && file.content.trim().length > 0) {
-                    return { path: file.path, content: file.content };
-                }
-                try {
-                    const content = await this.fileScanner.readFile(file.path);
-                    if (!previewOnly && content.length === 0) {
-                        this.logger.warn(`文件为空: ${file.path}`);
-                    }
-                    return { path: file.path, content };
-                } catch (error) {
-                    this.logger.warn(`无法读取文件 ${file.path}，跳过`, error);
-                    return null;
-                }
-            })
-        );
-
-        return filesWithContent.filter((f): f is { path: string; content: string } => f !== null);
     }
 
     private processReviewUnitBatches = async (
@@ -764,13 +718,11 @@ export class AIReviewer {
     private handleReviewError(error: unknown): ReviewIssue[] {
         this.logger.error('AI 审查失败', error);
         const action = this.config?.action ?? 'warning';
-        const message = error instanceof Error ? error.message : String(error);
-        const isTimeout = axios.isAxiosError(error) && (error.code === 'ECONNABORTED' || /timeout/i.test(error.message));
+        const isTimeout = axios.isAxiosError(error) && (error.code === 'ECONNABORTED' || /timeout/i.test(error.message ?? ''));
         const userMessage = isTimeout
             ? `AI 超时（${this.config?.timeout ?? DEFAULT_TIMEOUT}ms）`
-            : `AI 审查失败: ${message}`;
+            : `AI 审查失败: ${error instanceof Error ? error.message : String(error)}`;
         const rule = isTimeout ? 'ai_review_timeout' : 'ai_review_error';
-
         if (action === 'block_commit') throw new Error(userMessage);
         return [{ file: '', line: 1, column: 1, message: userMessage, rule, severity: actionToSeverity(action) }];
     }
@@ -802,8 +754,8 @@ export class AIReviewer {
                 axiosInstance: this.axiosInstance,
                 logger: this.logger,
                 runtimeTraceLogger: this.runtimeTraceLogger,
-                calculateRequestHash: this.calculateRequestHash,
-                mergeCachedIssues: this.mergeCachedIssues,
+                calculateRequestHash: (req) => calculateRequestHash(req),
+                mergeCachedIssues: (hash, resp, partial) => mergeCachedIssues(hash, resp, partial, this.responseCache),
                 baseMessageCache: this.baseMessageCache,
                 shouldRetry: this.shouldRetry.bind(this),
                 getRetryReason: this.getRetryReason,
@@ -814,53 +766,6 @@ export class AIReviewer {
             traceSession
         );
     }
-
-    /** 生成请求哈希，用于缓存和续写关联 */
-    private calculateRequestHash = (request: { files: Array<{ path: string; content: string }> }): string => {
-        const raw = request.files
-            .map(file => `${file.path}:${file.content}`)
-            .join('|');
-        return this.simpleHash(raw);
-    };
-
-    /** 简单字符串哈希 */
-    private simpleHash = (input: string): string => {
-        let hash = 0;
-        for (let i = 0; i < input.length; i++) {
-            hash = (hash << 5) - hash + input.charCodeAt(i);
-            hash |= 0;
-        }
-        return `${hash}`;
-    };
-
-    /** 合并缓存中的 issues，避免续写场景重复 */
-    private mergeCachedIssues = (requestHash: string, response: AIReviewResponse, isPartial: boolean): AIReviewResponse => {
-        const existing = this.responseCache.get(requestHash);
-        const mergedIssues = existing
-            ? this.dedupeIssues([...existing.response.issues, ...response.issues])
-            : this.dedupeIssues(response.issues);
-        const mergedResponse = { issues: mergedIssues };
-        this.responseCache.set(requestHash, {
-            response: mergedResponse,
-            isPartial
-        });
-        return mergedResponse;
-    };
-
-    /**
-     * 去重 issues，避免续写带来的重复结果
-     */
-    private dedupeIssues = (issues: AIReviewResponse['issues']): AIReviewResponse['issues'] => {
-        const seen = new Set<string>();
-        return issues.filter(issue => {
-            const key = `${issue.file}|${issue.line}|${issue.column}|${issue.message}`;
-            if (seen.has(key)) {
-                return false;
-            }
-            seen.add(key);
-            return true;
-        });
-    };
 
     private shouldRetry(error: AxiosError): boolean {
         if (!error.response) return true;
