@@ -39,8 +39,8 @@ describe('RuntimeTraceLogger', () => {
         expect(session).toBeTruthy();
         const payload: RunSummaryPayload = {
             runId: (session as RuntimeTraceSession).runId,
-            startedAt: Date.now() - 100,
-            endedAt: Date.now(),
+            startedAtHms: '12:00:00',
+            endedAtHms: '12:00:01',
             durationMs: 100,
             trigger: 'manual',
             passed: true,
@@ -52,7 +52,8 @@ describe('RuntimeTraceLogger', () => {
             errorFingerprints: [],
             status: 'success',
         };
-        runtimeTraceLogger.writeRunSummary(session, payload);
+        const logDateMs = Date.now();
+        runtimeTraceLogger.writeRunSummary(session, payload, logDateMs);
         runtimeTraceLogger.endRunSession(session);
         await runtimeTraceLogger.flush();
 
@@ -76,40 +77,48 @@ describe('RuntimeTraceLogger', () => {
 
         const sessionA = runtimeTraceLogger.startRunSession('staged');
         const now = Date.now();
-        runtimeTraceLogger.writeRunSummary(sessionA, {
-            runId: (sessionA as RuntimeTraceSession).runId,
-            startedAt: now - 50,
-            endedAt: now,
-            durationMs: 50,
-            trigger: 'staged',
-            passed: true,
-            errorsCount: 0,
-            warningsCount: 0,
-            infoCount: 0,
-            ignoredByFingerprintCount: 0,
-            allowedByLineCount: 0,
-            errorFingerprints: [],
-            status: 'success',
-        });
+        runtimeTraceLogger.writeRunSummary(
+            sessionA,
+            {
+                runId: (sessionA as RuntimeTraceSession).runId,
+                startedAtHms: '12:00:00',
+                endedAtHms: '12:00:01',
+                durationMs: 50,
+                trigger: 'staged',
+                passed: true,
+                errorsCount: 0,
+                warningsCount: 0,
+                infoCount: 0,
+                ignoredByFingerprintCount: 0,
+                allowedByLineCount: 0,
+                errorFingerprints: [],
+                status: 'success',
+            },
+            now
+        );
         runtimeTraceLogger.endRunSession(sessionA);
 
         const sessionB = runtimeTraceLogger.startRunSession('staged');
         const now2 = Date.now();
-        runtimeTraceLogger.writeRunSummary(sessionB, {
-            runId: (sessionB as RuntimeTraceSession).runId,
-            startedAt: now2 - 30,
-            endedAt: now2,
-            durationMs: 30,
-            trigger: 'staged',
-            passed: true,
-            errorsCount: 0,
-            warningsCount: 0,
-            infoCount: 0,
-            ignoredByFingerprintCount: 0,
-            allowedByLineCount: 0,
-            errorFingerprints: [],
-            status: 'success',
-        });
+        runtimeTraceLogger.writeRunSummary(
+            sessionB,
+            {
+                runId: (sessionB as RuntimeTraceSession).runId,
+                startedAtHms: '12:00:01',
+                endedAtHms: '12:00:02',
+                durationMs: 30,
+                trigger: 'staged',
+                passed: true,
+                errorsCount: 0,
+                warningsCount: 0,
+                infoCount: 0,
+                ignoredByFingerprintCount: 0,
+                allowedByLineCount: 0,
+                errorFingerprints: [],
+                status: 'success',
+            },
+            now2
+        );
         runtimeTraceLogger.endRunSession(sessionB);
 
         await runtimeTraceLogger.flush();

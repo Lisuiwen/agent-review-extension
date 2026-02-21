@@ -16,17 +16,14 @@ export interface RuntimeTraceSession {
     startedAt: number;
 }
 
-/** 写入 YYYYMMDD.jsonl 的一行汇总 payload 结构（与计划中的统计项一致） */
+/** 写入 YYYYMMDD.jsonl 的一行汇总 payload 结构（与计划中的统计项一致）。仅保留 hms 与 durationMs，不写时间戳与可读时长串。 */
 export interface RunSummaryPayload {
     runId: string;
-    startedAt: number;
-    endedAt: number;
-    /** 开始/结束的时分秒，便于直接看出时间段；日期由文件名 YYYYMMDD 体现 */
-    startedAtHms?: string;
-    endedAtHms?: string;
+    /** 开始时分秒 HH:mm:ss，日期由文件名 YYYYMMDD 体现 */
+    startedAtHms: string;
+    /** 结束时分秒 HH:mm:ss */
+    endedAtHms: string;
     durationMs: number;
-    /** 运行时长可读串，如 "2.7秒"、"1分2秒"，便于直接看出运行时长 */
-    durationDisplay?: string;
     trigger: 'manual' | 'staged';
     projectName?: string;
     userName?: string;
@@ -155,10 +152,14 @@ export class RuntimeTraceLogger {
         };
     };
 
-    /** 将当次 run 的汇总追加到当日 YYYYMMDD.jsonl */
-    writeRunSummary = (session: RuntimeTraceSession | null | undefined, payload: RunSummaryPayload): void => {
+    /** 将当次 run 的汇总追加到当日 YYYYMMDD.jsonl；logDateMs 用于确定文件名（通常为本次运行结束时间戳）。 */
+    writeRunSummary = (
+        session: RuntimeTraceSession | null | undefined,
+        payload: RunSummaryPayload,
+        logDateMs: number
+    ): void => {
         if (!this.isEnabled() || !this.runtimeLogDir || !session) return;
-        const dateStr = this.getDateStringFromMs(payload.endedAt);
+        const dateStr = this.getDateStringFromMs(logDateMs);
         const filePath = path.join(this.runtimeLogDir, `${dateStr}.jsonl`);
         const line = `${JSON.stringify(payload)}\n`;
         this.enqueueWrite(filePath, line);

@@ -23,8 +23,8 @@ describe('explainRuntimeLogCommand', () => {
         const jsonlPath = path.join(runtimeDir, '20260210.jsonl');
         const runSummary = JSON.stringify({
             runId: 'r1',
-            startedAt: 1707552000000,
-            endedAt: 1707552001000,
+            startedAtHms: '08:00:00',
+            endedAtHms: '08:00:01',
             durationMs: 1000,
             trigger: 'manual',
             passed: true,

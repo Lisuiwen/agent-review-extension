@@ -42,19 +42,17 @@ export const formatDurationMs = (ms: number): string => {
     return sec === '0.0' ? `${min}分` : `${min}分${sec}秒`;
 };
 
-const formatTime = (ms: number): string => formatTimeHms(ms);
-
 const safe = (v: unknown): string =>
     typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? `${v}` : 'N/A';
 
-/** 将单条运行汇总格式化为可读文本 */
+/** 将单条运行汇总格式化为可读文本（时间仅用 hms，时长仅用毫秒数）。 */
 export const formatRunSummaryPayload = (p: RunSummaryPayload): string => {
     const lines: string[] = [];
     lines.push('运行汇总');
     lines.push(`RunId: ${p.runId}`);
-    lines.push(`开始: ${p.startedAtHms ?? formatTime(p.startedAt)}`);
-    lines.push(`结束: ${p.endedAtHms ?? formatTime(p.endedAt)}`);
-    lines.push(`运行时长: ${p.durationDisplay ?? formatDurationMs(p.durationMs)} (${p.durationMs}ms)`);
+    lines.push(`开始: ${p.startedAtHms ?? 'N/A'}`);
+    lines.push(`结束: ${p.endedAtHms ?? 'N/A'}`);
+    lines.push(`运行时长: ${p.durationMs}ms`);
     lines.push(`触发: ${p.trigger}`);
     lines.push(`状态: ${p.status}${p.errorClass ? ` (${p.errorClass})` : ''}`);
     lines.push(`通过: ${p.passed}`);

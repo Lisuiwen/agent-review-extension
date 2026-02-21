@@ -12,8 +12,8 @@ import type { RunSummaryPayload } from '../../utils/runtimeTraceLogger';
 
 const samplePayload: RunSummaryPayload = {
     runId: '20260220-120000-abc',
-    startedAt: 1708423200000,
-    endedAt: 1708423205000,
+    startedAtHms: '12:00:00',
+    endedAtHms: '12:00:05',
     durationMs: 5000,
     trigger: 'manual',
     projectName: 'test-project',

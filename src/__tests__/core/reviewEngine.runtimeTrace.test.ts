@@ -147,8 +147,9 @@ describe('ReviewEngine 运行链路日志完整性', () => {
         expect(one.status).toBe('success');
         expect(one.trigger).toBe('staged');
         expect(one.runId).toBeTruthy();
-        expect(typeof one.startedAt).toBe('number');
-        expect(typeof one.endedAt).toBe('number');
+        expect(one.startedAtHms).toBeTruthy();
+        expect(one.endedAtHms).toBeTruthy();
+        expect(typeof one.durationMs).toBe('number');
     });
 
     it('开启 AST 后应输出 AST 汇总事件', async () => {

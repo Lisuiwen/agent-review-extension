@@ -142,7 +142,7 @@ export class ReviewEngine {
         return { userName, userEmail };
     };
 
-    /** 组装当次 run 的汇总 payload，用于写入 YYYYMMDD.jsonl */
+    /** 组装当次 run 的汇总 payload 与写日志用的日期戳，用于写入 YYYYMMDD.jsonl（仅含 hms 与 durationMs，不含时间戳与 durationDisplay）。 */
     private buildRunSummaryPayload = async (
         session: RuntimeTraceSession,
         result: ReviewResult,
@@ -155,7 +155,7 @@ export class ReviewEngine {
         },
         workspaceRoot: string,
         reviewStartAt: number
-    ): Promise<RunSummaryPayload> => {
+    ): Promise<{ payload: RunSummaryPayload; logDateMs: number }> => {
         const endedAt = Date.now();
         const durationMs = endedAt - reviewStartAt;
         const projectName = vscode.workspace.workspaceFolders?.[0]?.name ?? (workspaceRoot ? path.basename(workspaceRoot) : '');
@@ -164,14 +164,11 @@ export class ReviewEngine {
         const aggregates = this.runtimeTraceLogger.getRunAggregates(session.runId);
         const collectFingerprints = (issues: ReviewIssue[]): string[] =>
             [...new Set(issues.map(i => i.fingerprint).filter((f): f is string => !!f))];
-        return {
+        const payload: RunSummaryPayload = {
             runId: session.runId,
-            startedAt: session.startedAt,
-            endedAt,
             startedAtHms: formatTimeHms(session.startedAt),
             endedAtHms: formatTimeHms(endedAt),
             durationMs,
-            durationDisplay: formatDurationMs(durationMs),
             trigger: session.trigger,
             projectName: projectName || undefined,
             userName: userName || undefined,
@@ -193,6 +190,7 @@ export class ReviewEngine {
             errorClass: opts.errorClass,
             ignoreAllowEvents: opts.ignoreAllowEvents ?? [],
         };
+        return { payload, logDateMs: endedAt };
     };
 
     /**
@@ -225,7 +223,7 @@ export class ReviewEngine {
             const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
             if (files.length === 0) {
                 if (traceSession) {
-                    const payload = await this.buildRunSummaryPayload(
+                    const { payload, logDateMs } = await this.buildRunSummaryPayload(
                         traceSession,
                         result,
                         'success',
@@ -233,7 +231,7 @@ export class ReviewEngine {
                         workspaceRoot,
                         reviewStartAt
                     );
-                    this.runtimeTraceLogger.writeRunSummary(traceSession, payload);
+                    this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
                 }
                 return result;
             }
@@ -247,7 +245,7 @@ export class ReviewEngine {
 
             if (filteredFiles.length === 0) {
                 if (traceSession) {
-                    const payload = await this.buildRunSummaryPayload(
+                    const { payload, logDateMs } = await this.buildRunSummaryPayload(
                         traceSession,
                         result,
                         'success',
@@ -255,7 +253,7 @@ export class ReviewEngine {
                         workspaceRoot,
                         reviewStartAt
                     );
-                    this.runtimeTraceLogger.writeRunSummary(traceSession, payload);
+                    this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
                 }
                 return result;
             }
@@ -442,7 +440,7 @@ export class ReviewEngine {
 
             this.logger.info('审查流程完成');
             if (traceSession) {
-                const payload = await this.buildRunSummaryPayload(
+                const { payload, logDateMs } = await this.buildRunSummaryPayload(
                     traceSession,
                     result,
                     'success',
@@ -450,14 +448,14 @@ export class ReviewEngine {
                     workspaceRoot,
                     reviewStartAt
                 );
-                this.runtimeTraceLogger.writeRunSummary(traceSession, payload);
+                this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
             }
             return result;
         } catch (error) {
             const errorClass = error instanceof Error ? error.name : 'UnknownError';
             if (traceSession) {
                 const emptyResult: ReviewResult = { passed: true, errors: [], warnings: [], info: [] };
-                const payload = await this.buildRunSummaryPayload(
+                const { payload, logDateMs } = await this.buildRunSummaryPayload(
                     traceSession,
                     emptyResult,
                     'failed',
@@ -465,7 +463,7 @@ export class ReviewEngine {
                     vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '',
                     reviewStartAt
                 );
-                this.runtimeTraceLogger.writeRunSummary(traceSession, payload);
+                this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
             }
             throw error;
         } finally {
