@@ -75,6 +75,8 @@ export interface AgentReviewConfig {
         max_file_lines?: number;   // 文件总行数超过阈值则回退
         include_lsp_context?: boolean; // 是否通过 LSP 补充外部定义上下文（默认 true）
         preview_only?: boolean;     // 为 true 时不调用大模型，仅打印将发送的 AST/变更切片内容
+        vue_include_related_blocks?: boolean;   // Vue：审 script 时带 template、审 template 时带 script（默认 true），不送 style
+        vue_related_blocks_max_lines?: number;   // Vue 附带块最大行数，超出截断（默认 60）
     };
     exclusions?: {
         files?: string[];

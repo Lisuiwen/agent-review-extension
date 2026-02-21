@@ -159,6 +159,17 @@ export const buildLspUsagesContext = async (
 
 const normalizeFsPath = (input: string): string => path.normalize(input);
 
+/**
+ * 从「受影响作用域」的代码片段里收集所有标识符的出现位置（名称 + 行 + 列）。
+ *
+ * 用途：供 buildLspReferenceContext / buildLspReferenceContextFromRefs 使用：
+ * 先得到这些候选位置，再对每个位置调 LSP 的 definition/references，拼成外部定义或引用上下文给 AI 参考。
+ *
+ * 行为摘要：
+ * - 用正则匹配 JS/TS 合法标识符（字母/数字/下划线/$），排除关键字（const、function 等）。
+ * - 按「标识符名:绝对行号」去重，同一行同一名字只算一次，避免重复查 LSP。
+ * - 返回的 character 为 1-based 列号，与 LSP Position 一致。
+ */
 const collectIdentifierOccurrences = (snippets: AffectedScopeResult['snippets']): IdentifierOccurrence[] => {
     const occurrences: IdentifierOccurrence[] = [];
     const seenNameAndLine = new Set<string>();

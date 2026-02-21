@@ -33,6 +33,7 @@ import {
 export type { AIReviewConfig, AIReviewRequest, AIReviewResponse } from './aiReviewer.types';
 
 import { buildDiffSnippetForFile, buildAstSnippetForFile, buildStructuredReviewContent } from './aiReviewer.snippets';
+import { getVueSfcRelatedBlocksForContext } from '../utils/vueSfcRelatedBlocks';
 import {
     buildReviewUnits,
     splitIntoBatches,
@@ -264,6 +265,32 @@ export class AIReviewer {
                             referenceContext = referenceContext
                                 ? `${headerContext}\n\n${referenceContext}`
                                 : headerContext;
+                        }
+                        if (
+                            path.extname(f.path).toLowerCase() === '.vue' &&
+                            astConfig?.vue_include_related_blocks !== false
+                        ) {
+                            try {
+                                const fileContent = await this.fileScanner.readFile(f.path);
+                                const snippetLines = astSnippets.snippets.flatMap((s) =>
+                                    Array.from({ length: s.endLine - s.startLine + 1 }, (_, i) => s.startLine + i)
+                                );
+                                const related = getVueSfcRelatedBlocksForContext(fileContent, {
+                                    snippetLines,
+                                    maxLines: astConfig?.vue_related_blocks_max_lines ?? 60,
+                                });
+                                const relatedParts: string[] = [];
+                                if (related.template) relatedParts.push(related.template);
+                                if (related.script) relatedParts.push(related.script);
+                                if (relatedParts.length > 0) {
+                                    const blockSection = `## 同一 SFC 相关块（供参考）\n${relatedParts.join('\n\n')}`;
+                                    referenceContext = referenceContext
+                                        ? `${referenceContext}\n\n${blockSection}`
+                                        : blockSection;
+                                }
+                            } catch {
+                                // 读文件失败时跳过 Vue 相关块，不影响主流程
+                            }
                         }
                     }
                 }

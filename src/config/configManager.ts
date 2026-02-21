@@ -614,6 +614,8 @@ export class ConfigManager implements vscode.Disposable {
                 max_file_lines: 2000,
                 include_lsp_context: true, // 默认启用：为 AST 片段补充一层局部定义上下文
                 preview_only: false,  // 默认 false：正常请求大模型；true 时仅打印切片不请求
+                vue_include_related_blocks: true,  // Vue 审 script 时带 template、审 template 时带 script，不送 style
+                vue_related_blocks_max_lines: 60,  // Vue 附带块最大行数，超出截断
             },
             exclusions: {
                 files: [],

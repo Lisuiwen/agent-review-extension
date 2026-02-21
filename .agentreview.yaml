@@ -25,6 +25,8 @@ rules:
 ast:
   enabled: true                      # 是否启用 AST 切片模式（按节点切分送审，减少 token）
   preview_only: false                # true=不请求大模型，仅打印将发送的切片内容（调试用）
+  # vue_include_related_blocks: true   # Vue：审 script 时带 template、审 template 时带 script（默认 true），不送 style
+  # vue_related_blocks_max_lines: 60   # Vue 附带块最大行数，超出截断
 # AI审查配置
 # 支持通过VSCode Settings UI或此配置文件进行配置
 # 优先级：VSCode Settings > 此配置文件 > 默认配置
