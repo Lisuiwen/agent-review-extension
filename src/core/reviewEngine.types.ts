@@ -21,6 +21,11 @@ export type ReviewRunOptions = {
     diffByFile?: Map<string, FileDiff>;
     traceSession?: RuntimeTraceSession | null;
     astSnippetsByFileOverride?: Map<string, AffectedScopeResult>;
+    workspaceRoot?: string;
+};
+
+export type ReviewContextOptions = {
+    workspaceRoot?: string;
 };
 
 /** 待审查上下文：无待变更或已审查完成 */

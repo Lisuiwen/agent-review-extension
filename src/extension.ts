@@ -31,7 +31,7 @@ import {
     type AutoReviewSkipReason,
     type AutoReviewDiagnosticSeverity,
 } from './core/autoReviewGate';
-import { getEffectiveWorkspaceRoot } from './utils/workspaceRoot';
+import { getEffectiveWorkspaceRoot, getWorkspaceFolderByFile } from './utils/workspaceRoot';
 
 let reviewEngine: ReviewEngine | undefined;
 let configManager: ConfigManager | undefined;
@@ -241,7 +241,10 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
     /** 解析指定文件的待提交 diff；失败时返回 ok: false。与手动刷新一致：先取全部 pending diff 再按文件查找，避免单文件路径传 git 时为空。 */
     const resolvePendingDiffForFile = async (filePath: string): Promise<{ diff: FileDiff | null; ok: boolean }> => {
         try {
-            const pendingDiffByFile = await fileScanner.getPendingDiff();
+            const workspaceRoot =
+                getWorkspaceFolderByFile(filePath)?.uri.fsPath
+                ?? getEffectiveWorkspaceRoot()?.uri.fsPath;
+            const pendingDiffByFile = await fileScanner.getPendingDiff(workspaceRoot);
             const norm = normalizeFilePath(filePath);
             const matched = [...pendingDiffByFile.entries()].find(([key]) => path.normalize(key) === norm);
             return { diff: matched?.[1] ?? null, ok: true };
@@ -444,7 +447,9 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                                 { location: { viewId: 'agentReview.results' }, title: '复审中…' },
                                 async () => {
                                     updateQueuedStatus('复审执行中');
-                                    const saveReviewContext = await readyReviewEngine.reviewSavedFileWithPendingDiffContext(nextPath);
+                                    const saveReviewContext = await readyReviewEngine.reviewSavedFileWithPendingDiffContext(nextPath, {
+                                        workspaceRoot: getWorkspaceFolderByFile(nextPath)?.uri.fsPath,
+                                    });
                                     const result = saveReviewContext.result;
                                     const preserveStaleOnEmpty =
                                         readyReviewPanel.isFileStale(nextPath)

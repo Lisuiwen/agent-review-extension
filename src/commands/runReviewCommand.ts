@@ -8,6 +8,8 @@ import * as vscode from 'vscode';
 import type { CommandContext } from './commandContext';
 import type { ReviewResult } from '../types/review';
 import { IssueDeduplicator } from '../core/issueDeduplicator';
+import { getGitWorkspaceFolders, getWorkspaceFolders } from '../utils/workspaceRoot';
+import { runPendingReviewAcrossRoots } from '../core/multiRootCoordinator';
 
 const createContentHash = (content: string): string =>
     createHash('sha1').update(content, 'utf8').digest('hex');
@@ -55,6 +57,10 @@ const showResultNotification = (result: ReviewResult, preserveHistoricalOnEmpty:
 
 export const registerRunReviewCommand = (deps: CommandContext): vscode.Disposable => {
     let inProgress = false;
+    const getBatchConcurrency = (): number => {
+        const configured = deps.configManager?.getConfig().ai_review?.batch_concurrency;
+        return typeof configured === 'number' && configured > 0 ? Math.floor(configured) : 2;
+    };
 
     return vscode.commands.registerCommand('agentreview.run', async () => {
         const { reviewEngine, reviewPanel, statusBar, logger } = deps;
@@ -85,7 +91,12 @@ export const registerRunReviewCommand = (deps: CommandContext): vscode.Disposabl
                     reviewPanel.setStatus('reviewing');
                     reviewPanel.reveal();
 
-                    const { result, reason, pendingFiles } = await reviewEngine.reviewPendingChangesWithContext();
+                    const workspaceFolders = getWorkspaceFolders();
+                    const multiRootMode = workspaceFolders.length > 1;
+                    const gitWorkspaceRoots = getGitWorkspaceFolders().map(item => item.uri.fsPath);
+                    const { result, reason, pendingFiles } = multiRootMode
+                        ? await runPendingReviewAcrossRoots(reviewEngine, gitWorkspaceRoots, getBatchConcurrency())
+                        : await reviewEngine.reviewPendingChangesWithContext();
                     logger.info('审查流程执行完成');
 
                     const finalResult = reason === 'reviewed' ? dedupeReviewedResult(result) : result;

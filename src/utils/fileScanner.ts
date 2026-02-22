@@ -1,34 +1,34 @@
-/**
- * 文件扫描器
+﻿/**
+ * 鏂囦欢鎵弿鍣?
  * 
- * 这个文件负责与 Git 交互，获取需要审查的文件列表
+ * 杩欎釜鏂囦欢璐熻矗涓?Git 浜や簰锛岃幏鍙栭渶瑕佸鏌ョ殑鏂囦欢鍒楄〃
  * 
- * 主要功能：
- * 1. 获取 Git staged（已暂存）的文件列表
- * 2. 读取文件内容
- * 3. 检查文件是否在排除列表中
+ * 涓昏鍔熻兘锛?
+ * 1. 鑾峰彇 Git staged锛堝凡鏆傚瓨锛夌殑鏂囦欢鍒楄〃
+ * 2. 璇诲彇鏂囦欢鍐呭
+ * 3. 妫€鏌ユ枃浠舵槸鍚﹀湪鎺掗櫎鍒楄〃涓?
  * 
- * 工作原理：
- * - 使用 Git 命令 'git diff --cached --name-only' 获取 staged 文件
- * - 这个命令会返回所有已添加到暂存区的文件路径
+ * 宸ヤ綔鍘熺悊锛?
+ * - 浣跨敤 Git 鍛戒护 'git diff --cached --name-only' 鑾峰彇 staged 鏂囦欢
+ * - 杩欎釜鍛戒护浼氳繑鍥炴墍鏈夊凡娣诲姞鍒版殏瀛樺尯鐨勬枃浠惰矾寰?
  * 
- * 使用场景：
- * - 用户执行审查命令时
- * - Git pre-commit hook 执行时
+ * 浣跨敤鍦烘櫙锛?
+ * - 鐢ㄦ埛鎵ц瀹℃煡鍛戒护鏃?
+ * - Git pre-commit hook 鎵ц鏃?
  */
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
-import { exec } from 'child_process';  // Node.js 的进程执行模块
-import { promisify } from 'util';      // 将回调函数转换为 Promise
+import { exec } from 'child_process';  // Node.js 鐨勮繘绋嬫墽琛屾ā鍧?
+import { promisify } from 'util';      // 灏嗗洖璋冨嚱鏁拌浆鎹负 Promise
 import { Logger } from './logger';
 import { parseUnifiedDiff } from './diffParser';
 import type { FileDiff } from './diffTypes';
 import { getEffectiveWorkspaceRoot } from './workspaceRoot';
 
-// 将 exec 转换为 Promise 形式，方便使用 async/await
+// 灏?exec 杞崲涓?Promise 褰㈠紡锛屾柟渚夸娇鐢?async/await
 const execAsync = promisify(exec);
 const EMPTY_TREE_HASH = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const COMMENT_ONLY_IGNORE_REGEX = [
@@ -42,9 +42,9 @@ const COMMENT_ONLY_IGNORE_REGEX = [
 ];
 
 /**
- * 文件扫描器类
+ * 鏂囦欢鎵弿鍣ㄧ被
  * 
- * 使用方式：
+ * 浣跨敤鏂瑰紡锛?
  * ```typescript
  * const scanner = new FileScanner();
  * const stagedFiles = await scanner.getStagedFiles();
@@ -52,126 +52,130 @@ const COMMENT_ONLY_IGNORE_REGEX = [
  */
 export class FileScanner {
     private logger: Logger;
-    private workspaceRoot: string | undefined;
 
     constructor() {
         this.logger = new Logger('FileScanner');
-        const workspaceFolder = getEffectiveWorkspaceRoot();
-        this.workspaceRoot = workspaceFolder?.uri.fsPath;
     }
 
+    private resolveWorkspaceRoot = (workspaceRoot?: string): string | undefined => {
+        if (workspaceRoot && workspaceRoot.trim().length > 0) return workspaceRoot;
+        return getEffectiveWorkspaceRoot()?.uri.fsPath;
+    };
+
     /**
-     * 获取 Git staged（已暂存）的文件列表
+     * 鑾峰彇 Git staged锛堝凡鏆傚瓨锛夌殑鏂囦欢鍒楄〃
      * 
-     * 这个方法使用 Git 命令获取所有已添加到暂存区的文件
+     * 杩欎釜鏂规硶浣跨敤 Git 鍛戒护鑾峰彇鎵€鏈夊凡娣诲姞鍒版殏瀛樺尯鐨勬枃浠?
      * 
-     * Git 命令说明：
-     * - git diff --cached: 显示已暂存（staged）的更改
-     * - --name-only: 只显示文件名，不显示具体更改内容
+     * Git 鍛戒护璇存槑锛?
+     * - git diff --cached: 鏄剧ず宸叉殏瀛橈紙staged锛夌殑鏇存敼
+     * - --name-only: 鍙樉绀烘枃浠跺悕锛屼笉鏄剧ず鍏蜂綋鏇存敼鍐呭
      * 
-     * @returns 文件路径数组（绝对路径）
+     * @returns 鏂囦欢璺緞鏁扮粍锛堢粷瀵硅矾寰勶級
      * 
-     * 示例：
+     * 绀轰緥锛?
      * ```typescript
      * const files = await scanner.getStagedFiles();
-     * // 返回: ['/path/to/file1.ts', '/path/to/file2.ts']
+     * // 杩斿洖: ['/path/to/file1.ts', '/path/to/file2.ts']
      * ```
      */
-    async getStagedFiles(): Promise<string[]> {
-        // 强制显示日志通道，确保日志可见
+    async getStagedFiles(workspaceRoot?: string): Promise<string[]> {
+        // 寮哄埗鏄剧ず鏃ュ織閫氶亾锛岀‘淇濇棩蹇楀彲瑙?
         this.logger.show();
-        this.logger.info('获取staged文件');
+        this.logger.info('鑾峰彇staged鏂囦欢');
         
-        // 检查是否有工作区
-        if (!this.workspaceRoot) {
-            this.logger.warn('未找到工作区，无法获取staged文件');
+        const resolvedWorkspaceRoot = this.resolveWorkspaceRoot(workspaceRoot);
+        // 妫€鏌ユ槸鍚︽湁宸ヤ綔鍖?
+        if (!resolvedWorkspaceRoot) {
+            this.logger.warn('鏈壘鍒板伐浣滃尯锛屾棤娉曡幏鍙杝taged鏂囦欢');
             return [];
         }
 
         try {
-            // 执行 Git 命令获取 staged 文件列表
-            // execAsync 会在指定的工作目录（cwd）中执行命令
+            // 鎵ц Git 鍛戒护鑾峰彇 staged 鏂囦欢鍒楄〃
+            // execAsync 浼氬湪鎸囧畾鐨勫伐浣滅洰褰曪紙cwd锛変腑鎵ц鍛戒护
             const { stdout, stderr } = await execAsync('git diff --cached --name-only', {
-                cwd: this.workspaceRoot,  // 在工作区根目录执行命令
-                encoding: 'utf-8',        // 指定输出编码为 UTF-8
+                cwd: resolvedWorkspaceRoot,  // 鍦ㄥ伐浣滃尯鏍圭洰褰曟墽琛屽懡浠?
+                encoding: 'utf-8',        // 鎸囧畾杈撳嚭缂栫爜涓?UTF-8
             });
 
-            // 如果只有 stderr 没有 stdout，可能是没有 staged 文件或不是 git 仓库
+            // 濡傛灉鍙湁 stderr 娌℃湁 stdout锛屽彲鑳芥槸娌℃湁 staged 鏂囦欢鎴栦笉鏄?git 浠撳簱
             if (stderr && !stdout) {
-                this.logger.debug(`Git命令输出: ${stderr}`);
+                this.logger.debug(`Git鍛戒护杈撳嚭: ${stderr}`);
                 return [];
             }
 
-            // 解析 Git 命令的输出
-            // Git 命令返回的是每行一个文件路径的文本
+            // 瑙ｆ瀽 Git 鍛戒护鐨勮緭鍑?
+            // Git 鍛戒护杩斿洖鐨勬槸姣忚涓€涓枃浠惰矾寰勭殑鏂囨湰
             const files = stdout
-                .split('\n')                    // 按行分割
-                .map(line => line.trim())        // 去除每行的首尾空格
-                .filter(line => line.length > 0) // 过滤空行
+                .split('\n')                    // 鎸夎鍒嗗壊
+                .map(line => line.trim())        // 鍘婚櫎姣忚鐨勯灏剧┖鏍?
+                .filter(line => line.length > 0) // 杩囨护绌鸿
                 .map(file => 
-                    // 将相对路径转换为绝对路径
-                    // path.isAbsolute 检查路径是否是绝对路径
+                    // 灏嗙浉瀵硅矾寰勮浆鎹负缁濆璺緞
+                    // path.isAbsolute 妫€鏌ヨ矾寰勬槸鍚︽槸缁濆璺緞
                     path.isAbsolute(file) 
                         ? file 
-                        : path.join(this.workspaceRoot!, file)
+                        : path.join(resolvedWorkspaceRoot, file)
                 );
 
             if (files.length > 0) {
-                this.logger.info(`找到 ${files.length} 个staged文件`);
+                this.logger.info(`鎵惧埌 ${files.length} 涓猻taged鏂囦欢`);
             }
             return files;
         } catch (error: unknown) {
-            // Git 可能因非仓库、无 staged 文件或未安装而失败
+            // Git 鍙兘鍥犻潪浠撳簱銆佹棤 staged 鏂囦欢鎴栨湭瀹夎鑰屽け璐?
             const code = (error as { code?: number })?.code;
             const msg = (error as Error)?.message ?? String(error);
             if (code === 1 || msg.includes('not a git repository')) {
-                this.logger.debug('未找到git仓库或没有staged文件');
+                this.logger.debug('鏈壘鍒癵it浠撳簱鎴栨病鏈塻taged鏂囦欢');
                 return [];
             }
-            this.logger.error('获取staged文件失败', error);
+            this.logger.error('鑾峰彇staged鏂囦欢澶辫触', error);
             return [];
         }
     }
 
     /**
-     * 获取 Git staged 的 diff，解析为每文件的变更 hunks
-     * 用于增量审查：仅对变更行做规则与 AI 审查
+     * 鑾峰彇 Git staged 鐨?diff锛岃В鏋愪负姣忔枃浠剁殑鍙樻洿 hunks
+     * 鐢ㄤ簬澧為噺瀹℃煡锛氫粎瀵瑰彉鏇磋鍋氳鍒欎笌 AI 瀹℃煡
      *
-     * @param files - 可选，只取这些文件的 diff；不传则取全部 staged
-     * @returns Map：键为文件绝对路径，值为该文件的 FileDiff
+     * @param files - 鍙€夛紝鍙彇杩欎簺鏂囦欢鐨?diff锛涗笉浼犲垯鍙栧叏閮?staged
+     * @returns Map锛氶敭涓烘枃浠剁粷瀵硅矾寰勶紝鍊间负璇ユ枃浠剁殑 FileDiff
      */
-    async getStagedDiff(files?: string[]): Promise<Map<string, FileDiff>> {
-        return this.getDiffByMode('staged', files);
+    async getStagedDiff(workspaceRoot: string | undefined, files?: string[]): Promise<Map<string, FileDiff>> {
+        return this.getDiffByMode('staged', workspaceRoot, files);
     }
 
     /**
-     * 获取工作区（未暂存）diff，解析为每文件的变更 hunks。
+     * 鑾峰彇宸ヤ綔鍖猴紙鏈殏瀛橈級diff锛岃В鏋愪负姣忔枃浠剁殑鍙樻洿 hunks銆?
      *
-     * 主要用于“保存触发审查”场景：文件还未 git add，也能识别是否仅格式变更。
+     * 涓昏鐢ㄤ簬鈥滀繚瀛樿Е鍙戝鏌モ€濆満鏅細鏂囦欢杩樻湭 git add锛屼篃鑳借瘑鍒槸鍚︿粎鏍煎紡鍙樻洿銆?
      */
-    async getWorkingDiff(files?: string[]): Promise<Map<string, FileDiff>> {
-        return this.getDiffByMode('working', files);
+    async getWorkingDiff(workspaceRoot: string | undefined, files?: string[]): Promise<Map<string, FileDiff>> {
+        return this.getDiffByMode('working', workspaceRoot, files);
     }
 
     /**
-     * 获取「待提交增量」的 diff（基于 HEAD..WorkingTree）。
-     * 用于默认审查入口：同时覆盖 staged + unstaged + untracked。
+     * 鑾峰彇銆屽緟鎻愪氦澧為噺銆嶇殑 diff锛堝熀浜?HEAD..WorkingTree锛夈€?
+     * 鐢ㄤ簬榛樿瀹℃煡鍏ュ彛锛氬悓鏃惰鐩?staged + unstaged + untracked銆?
      */
-    async getPendingDiff(files?: string[]): Promise<Map<string, FileDiff>> {
-        return this.getDiffByMode('pending', files);
+    async getPendingDiff(workspaceRoot: string | undefined, files?: string[]): Promise<Map<string, FileDiff>> {
+        return this.getDiffByMode('pending', workspaceRoot, files);
     }
 
     /**
-     * 按模式获取 diff：
+     * 鎸夋ā寮忚幏鍙?diff锛?
      * - staged: git diff --cached
      * - working: git diff
      *
-     * 两种模式都会执行“原始 diff + 语义 diff（忽略空白）”双通道比较，
-     * 产出 formatOnly 标记，供 ReviewEngine 在发 AI 前做降噪过滤。
+     * 涓ょ妯″紡閮戒細鎵ц鈥滃師濮?diff + 璇箟 diff锛堝拷鐣ョ┖鐧斤級鈥濆弻閫氶亾姣旇緝锛?
+     * 浜у嚭 formatOnly 鏍囪锛屼緵 ReviewEngine 鍦ㄥ彂 AI 鍓嶅仛闄嶅櫔杩囨护銆?
      */
-    private async getDiffByMode(mode: 'staged' | 'working' | 'pending', files?: string[]): Promise<Map<string, FileDiff>> {
-        if (!this.workspaceRoot) {
-            this.logger.warn(`未找到工作区，无法获取 ${mode} diff`);
+    private async getDiffByMode(mode: 'staged' | 'working' | 'pending', workspaceRoot: string | undefined, files?: string[]): Promise<Map<string, FileDiff>> {
+        const resolvedWorkspaceRoot = this.resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot) {
+            this.logger.warn(`鏈壘鍒板伐浣滃尯锛屾棤娉曡幏鍙?${mode} diff`);
             return new Map();
         }
         try {
@@ -180,7 +184,7 @@ export class FileScanner {
                     return '';
                 }
                 const relPaths = files
-                    .map(f => (path.isAbsolute(f) ? path.relative(this.workspaceRoot!, f) : f))
+                    .map(f => (path.isAbsolute(f) ? path.relative(resolvedWorkspaceRoot, f) : f))
                     .filter(Boolean)
                     .map(p => p.replace(/\\/g, '/'));
                 if (relPaths.length === 0) {
@@ -192,7 +196,7 @@ export class FileScanner {
 
             const fileArgs = buildFileArgs();
             const pendingBaseRef = mode === 'pending'
-                ? await this.resolvePendingDiffBaseRef()
+                ? await this.resolvePendingDiffBaseRef(resolvedWorkspaceRoot)
                 : null;
             const diffBase = mode === 'staged'
                 ? 'git diff --cached'
@@ -201,12 +205,12 @@ export class FileScanner {
                     : `git diff ${pendingBaseRef}`;
             const rawDiffCmd = `${diffBase} -U3 --no-color${fileArgs}`;
             const rawDiffResult = await execAsync(rawDiffCmd, {
-                cwd: this.workspaceRoot,
+                cwd: resolvedWorkspaceRoot,
                 encoding: 'utf-8',
                 maxBuffer: 10 * 1024 * 1024,
             });
             if (rawDiffResult.stderr && !rawDiffResult.stdout) {
-                this.logger.debug('仅有 stderr 无 stdout，返回空 Map', rawDiffResult.stderr);
+                this.logger.debug('浠呮湁 stderr 鏃?stdout锛岃繑鍥炵┖ Map', rawDiffResult.stderr);
                 return new Map();
             }
 
@@ -215,18 +219,18 @@ export class FileScanner {
             for (const fd of parsed) {
                 const absPath = path.isAbsolute(fd.path)
                     ? fd.path
-                    : path.join(this.workspaceRoot, fd.path);
+                    : path.join(resolvedWorkspaceRoot, fd.path);
                 const normalizedPath = path.normalize(absPath);
                 map.set(normalizedPath, { ...fd, path: normalizedPath });
             }
 
-            // 第二次用 -w 取“忽略空白”的 diff：
-            // 若某文件在普通 diff 中存在、但在 -w diff 中消失，则可判定为“仅格式/空白变更”。
-            // -w：忽略空格/缩进等空白差异；--ignore-blank-lines：仅增删空行视为无变更；
-            // --ignore-cr-at-eol：行尾 CRLF/LF 差异视为无变更（常见于 Vue/跨平台格式整理）。
+            // 绗簩娆＄敤 -w 鍙栤€滃拷鐣ョ┖鐧解€濈殑 diff锛?
+            // 鑻ユ煇鏂囦欢鍦ㄦ櫘閫?diff 涓瓨鍦ㄣ€佷絾鍦?-w diff 涓秷澶憋紝鍒欏彲鍒ゅ畾涓衡€滀粎鏍煎紡/绌虹櫧鍙樻洿鈥濄€?
+            // -w锛氬拷鐣ョ┖鏍?缂╄繘绛夌┖鐧藉樊寮傦紱--ignore-blank-lines锛氫粎澧炲垹绌鸿瑙嗕负鏃犲彉鏇达紱
+            // --ignore-cr-at-eol锛氳灏?CRLF/LF 宸紓瑙嗕负鏃犲彉鏇达紙甯歌浜?Vue/璺ㄥ钩鍙版牸寮忔暣鐞嗭級銆?
             const whitespaceInsensitiveCmd = `${diffBase} -U3 --no-color -w --ignore-blank-lines --ignore-cr-at-eol${fileArgs}`;
             const whitespaceInsensitiveResult = await execAsync(whitespaceInsensitiveCmd, {
-                cwd: this.workspaceRoot,
+                cwd: resolvedWorkspaceRoot,
                 encoding: 'utf-8',
                 maxBuffer: 10 * 1024 * 1024,
             });
@@ -235,18 +239,18 @@ export class FileScanner {
                 .join('');
             const commentInsensitiveCmd = `${diffBase} -U3 --no-color -w --ignore-blank-lines --ignore-cr-at-eol${commentInsensitiveIgnoreArgs}${fileArgs}`;
             const commentInsensitiveResult = await execAsync(commentInsensitiveCmd, {
-                cwd: this.workspaceRoot,
+                cwd: resolvedWorkspaceRoot,
                 encoding: 'utf-8',
                 maxBuffer: 10 * 1024 * 1024,
             });
             const semanticDiffSet = new Set<string>(
                 parseUnifiedDiff(whitespaceInsensitiveResult.stdout || '')
-                    .map(item => path.isAbsolute(item.path) ? item.path : path.join(this.workspaceRoot!, item.path))
+                    .map(item => path.isAbsolute(item.path) ? item.path : path.join(resolvedWorkspaceRoot, item.path))
                     .map(item => path.normalize(item))
             );
             const commentSemanticDiffSet = new Set<string>(
                 parseUnifiedDiff(commentInsensitiveResult.stdout || '')
-                    .map(item => path.isAbsolute(item.path) ? item.path : path.join(this.workspaceRoot!, item.path))
+                    .map(item => path.isAbsolute(item.path) ? item.path : path.join(resolvedWorkspaceRoot, item.path))
                     .map(item => path.normalize(item))
             );
             for (const [filePath, fileDiff] of map.entries()) {
@@ -259,9 +263,9 @@ export class FileScanner {
                 });
             }
 
-            // working/pending 不包含 untracked；将未跟踪的新文件纳入为“全量新增”的 diff
+            // working/pending 涓嶅寘鍚?untracked锛涘皢鏈窡韪殑鏂版枃浠剁撼鍏ヤ负鈥滃叏閲忔柊澧炩€濈殑 diff
             if (mode === 'working' || mode === 'pending') {
-                const untrackedFiles = await this.getUntrackedFiles(fileArgs);
+                const untrackedFiles = await this.getUntrackedFiles(resolvedWorkspaceRoot, fileArgs);
                 for (const filePath of untrackedFiles) {
                     const normalizedPath = path.normalize(filePath);
                     if (map.has(normalizedPath)) continue;
@@ -271,28 +275,28 @@ export class FileScanner {
             }
 
             if (map.size > 0) {
-                this.logger.info(`解析到 ${map.size} 个文件的 ${mode} diff`);
+                this.logger.info(`瑙ｆ瀽鍒?${map.size} 涓枃浠剁殑 ${mode} diff`);
             }
             return map;
         } catch (error: unknown) {
             const code = (error as { code?: number })?.code;
             const msg = (error as Error)?.message ?? String(error);
             if (code === 1 || msg.includes('not a git repository')) {
-                this.logger.debug(`无 ${mode} diff 或非 git 仓库`);
+                this.logger.debug(`鏃?${mode} diff 鎴栭潪 git 浠撳簱`);
                 return new Map();
             }
-            this.logger.error(`获取 ${mode} diff 失败`, error);
+            this.logger.error(`鑾峰彇 ${mode} diff 澶辫触`, error);
             return new Map();
         }
     }
 
-    private async resolvePendingDiffBaseRef(): Promise<string> {
-        if (!this.workspaceRoot) {
+    private async resolvePendingDiffBaseRef(workspaceRoot: string | undefined): Promise<string> {
+        if (!workspaceRoot) {
             return 'HEAD';
         }
         try {
             await execAsync('git rev-parse --verify HEAD', {
-                cwd: this.workspaceRoot,
+                cwd: workspaceRoot,
                 encoding: 'utf-8',
             });
             return 'HEAD';
@@ -301,7 +305,7 @@ export class FileScanner {
         }
     }
 
-    /** 为未跟踪文件构造 FileDiff（读入全文为单一 hunk，含 addedLines/addedContentLines） */
+    /** 涓烘湭璺熻釜鏂囦欢鏋勯€?FileDiff锛堣鍏ュ叏鏂囦负鍗曚竴 hunk锛屽惈 addedLines/addedContentLines锛?*/
     private async buildUntrackedFileDiff(normalizedPath: string): Promise<FileDiff> {
         let hunks: FileDiff['hunks'] = [];
         try {
@@ -311,7 +315,7 @@ export class FileScanner {
                 ? [{ newStart: 1, newCount: lines.length, lines }]
                 : [];
         } catch {
-            // 文件读不到时保守回退为无 hunk，上层按整文件路径继续审查
+            // 鏂囦欢璇讳笉鍒版椂淇濆畧鍥為€€涓烘棤 hunk锛屼笂灞傛寜鏁存枃浠惰矾寰勭户缁鏌?
         }
         const addedLines = hunks.reduce((sum, h) => sum + h.newCount, 0);
         return {
@@ -325,14 +329,14 @@ export class FileScanner {
         };
     }
 
-    private async getUntrackedFiles(fileArgs: string): Promise<string[]> {
-        if (!this.workspaceRoot) {
+    private async getUntrackedFiles(workspaceRoot: string | undefined, fileArgs: string): Promise<string[]> {
+        if (!workspaceRoot) {
             return [];
         }
         const command = `git ls-files --others --exclude-standard${fileArgs}`;
         try {
             const { stdout, stderr } = await execAsync(command, {
-                cwd: this.workspaceRoot,
+                cwd: workspaceRoot,
                 encoding: 'utf-8',
                 maxBuffer: 10 * 1024 * 1024,
             });
@@ -343,47 +347,47 @@ export class FileScanner {
                 .split('\n')
                 .map(line => line.trim())
                 .filter(line => line.length > 0)
-                .map(file => path.isAbsolute(file) ? file : path.join(this.workspaceRoot!, file));
+                .map(file => path.isAbsolute(file) ? file : path.join(workspaceRoot, file));
         } catch {
             return [];
         }
     }
 
     async getChangedFiles(): Promise<string[]> {
-        // TODO: 获取变更文件列表
-        this.logger.info('获取变更文件');
+        // TODO: 鑾峰彇鍙樻洿鏂囦欢鍒楄〃
+        this.logger.info('鑾峰彇鍙樻洿鏂囦欢');
         return [];
     }
 
-    /** 读取文件内容，UTF-8；失败时抛出错误由调用方处理 */
+    /** 璇诲彇鏂囦欢鍐呭锛孶TF-8锛涘け璐ユ椂鎶涘嚭閿欒鐢辫皟鐢ㄦ柟澶勭悊 */
     async readFile(filePath: string): Promise<string> {
         try {
             const content = await fs.promises.readFile(filePath, 'utf-8');
             return content;
         } catch (error) {
-            this.logger.error(`读取文件失败: ${filePath}`, error);
+            this.logger.error(`璇诲彇鏂囦欢澶辫触: ${filePath}`, error);
             throw error;
         }
     }
 
     /**
-     * 检查文件是否应该被排除
+     * 妫€鏌ユ枃浠舵槸鍚﹀簲璇ヨ鎺掗櫎
      * 
-     * 支持简单的glob模式匹配：
-     * - *.log 匹配所有.log文件
-     * - test-*.ts 匹配test-开头的.ts文件
-     * - 支持通配符模式匹配目录和文件
+     * 鏀寔绠€鍗曠殑glob妯″紡鍖归厤锛?
+     * - *.log 鍖归厤鎵€鏈?log鏂囦欢
+     * - test-*.ts 鍖归厤test-寮€澶寸殑.ts鏂囦欢
+     * - 鏀寔閫氶厤绗︽ā寮忓尮閰嶇洰褰曞拰鏂囦欢
      * 
-     * @param filePath - 文件路径（绝对路径或相对路径）
-     * @param exclusions - 排除配置
-     * @returns 如果文件应该被排除，返回true
+     * @param filePath - 鏂囦欢璺緞锛堢粷瀵硅矾寰勬垨鐩稿璺緞锛?
+     * @param exclusions - 鎺掗櫎閰嶇疆
+     * @returns 濡傛灉鏂囦欢搴旇琚帓闄わ紝杩斿洖true
      */
     shouldExclude(filePath: string, exclusions: { files?: string[]; directories?: string[] }): boolean {
         if (!exclusions) {
             return false;
         }
 
-        // 将文件路径标准化（统一使用正斜杠）
+        // 灏嗘枃浠惰矾寰勬爣鍑嗗寲锛堢粺涓€浣跨敤姝ｆ枩鏉狅級
         const normalizedPath = filePath.replace(/\\/g, '/');
         const fileName = path.basename(normalizedPath);
         const matchPattern = (pattern: string): boolean => {
@@ -398,17 +402,17 @@ export class FileScanner {
             }) || minimatch(fileName, normalizedPattern, { dot: true });
         };
 
-        // 检查文件模式
+        // 妫€鏌ユ枃浠舵ā寮?
         if (exclusions.files) {
             for (const pattern of exclusions.files) {
-                // 使用 minimatch 支持完整 glob 语法（如 {a,b}、[0-9]）
+                // 浣跨敤 minimatch 鏀寔瀹屾暣 glob 璇硶锛堝 {a,b}銆乕0-9]锛?
                 if (matchPattern(pattern)) {
                     return true;
                 }
             }
         }
 
-        // 检查目录
+        // 妫€鏌ョ洰褰?
         if (exclusions.directories && exclusions.directories.length > 0) {
             for (const dir of exclusions.directories) {
                 const normalizedDir = dir.replace(/\\/g, '/').replace(/\/+$/g, '').trim();
@@ -422,7 +426,7 @@ export class FileScanner {
                         return true;
                     }
                 } else {
-                    // 例如: node_modules 会匹配所有包含 node_modules 的路径
+                    // 渚嬪: node_modules 浼氬尮閰嶆墍鏈夊寘鍚?node_modules 鐨勮矾寰?
                     if (normalizedPath.includes(`/${normalizedDir}/`) || normalizedPath.endsWith(`/${normalizedDir}`)) {
                         return true;
                     }
@@ -433,3 +437,5 @@ export class FileScanner {
         return false;
     }
 }
+
+

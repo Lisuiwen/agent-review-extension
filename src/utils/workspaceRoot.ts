@@ -6,12 +6,34 @@
  */
 
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export const getWorkspaceFolders = (): vscode.WorkspaceFolder[] => {
+    const folders = vscode.workspace.workspaceFolders;
+    return folders ? [...folders] : [];
+};
+
+export const getWorkspaceFolderByFile = (filePath: string): vscode.WorkspaceFolder | undefined => {
+    if (!filePath) return undefined;
+    const folders = getWorkspaceFolders();
+    const normalizedTarget = filePath.replace(/\\/g, '/').toLowerCase();
+    return folders.find(folder => {
+        const root = folder.uri.fsPath.replace(/\\/g, '/').toLowerCase();
+        return normalizedTarget === root || normalizedTarget.startsWith(`${root}/`);
+    });
+};
+
+export const getGitWorkspaceFolders = (
+    existsSync: (targetPath: string) => boolean = fs.existsSync
+): vscode.WorkspaceFolder[] =>
+    getWorkspaceFolders().filter(folder => existsSync(path.join(folder.uri.fsPath, '.git')));
 
 /**
  * 返回当前有效工作区根。无 folder 返回 undefined；否则返回第一个 folder（单根行为与 [0] 一致）。
  */
 export const getEffectiveWorkspaceRoot = (): vscode.WorkspaceFolder | undefined => {
-    const folders = vscode.workspace.workspaceFolders;
+    const folders = getWorkspaceFolders();
     if (!folders || folders.length === 0) return undefined;
     return folders[0];
 };

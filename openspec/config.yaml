@@ -6,7 +6,7 @@ schema: spec-driven
 # 项目上下文：供 AI 创建产物时参考（技术栈、编码约定、OpenSpec 流程中的测试约定）
 context: |
   Tech stack: TypeScript, Vitest, VS Code Extension API.
-  编码约定：所有包含中文的新建或修改内容必须使用 UTF-8 编码保存。
+  编码约定：所有包含中文的新建或修改内容必须使用 UTF-8 编码保存，所有产物文档使用中文。
   OpenSpec 流程中的测试约定：
   - design.md 必须包含「测试与验证」小节；其格式（Scenario 列表、覆盖策略、每条用例设计的测什么/条件/期望/断言要点）见 openspec/测试用例设计与实现规范.md 的「设计怎么写」； 若该任务无需单元测试则说明无需更改或新增测试。 本节需要额外判断是否可以使用TDD 参考[tdd-workflow.md](.cursor/skills/tdd-workflow.md)。
   - tasks.md 必须包含至少一项与测试相关的任务（新增/修改测试或明确说明无需测试），并与 design 中「测试与验证」一致；需新增的测试在 tasks 中应有对应可勾选任务，实现后勾选，并可在 design 中更新「已有覆盖」。

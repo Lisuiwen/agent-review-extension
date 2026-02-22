@@ -630,7 +630,7 @@ describe('ReviewEngine 优化逻辑', () => {
 
         const context = await reviewEngine.reviewSavedFileWithPendingDiffContext(filePath);
 
-        expect(pendingDiffMock).toHaveBeenCalledWith([filePath]);
+        expect(pendingDiffMock).toHaveBeenCalledWith(undefined, [filePath]);
         expect(reviewSpy).toHaveBeenCalledTimes(1);
         const options = reviewSpy.mock.calls[0][1] as {
             diffByFile?: Map<string, FileDiff>;

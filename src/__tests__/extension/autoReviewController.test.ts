@@ -481,9 +481,9 @@ describe('autoReviewController', () => {
         expect(mocked.runtimeFlushMock).toHaveBeenCalled();
     });
 
-    // --- manual-review-store-hash: manual/idle 鐢?reviewedContentHash 鏇存柊 lastReviewedContentHash ---
+    // --- manual-review-store-hash: manual/idle 使用 reviewedContentHash 更新 lastReviewedContentHash ---
 
-    it('1.1 manual 浠诲姟瀹屾垚鏃剁敤 reviewedContentHash 鏇存柊 lastReviewedContentHash', async () => {
+    it('1.1 manual 任务完成时使用 reviewedContentHash 更新 lastReviewedContentHash', async () => {
         const content = 'const manual=1;';
         mocked.mockConfig = {
             ...mocked.mockConfig,
@@ -515,7 +515,7 @@ describe('autoReviewController', () => {
         expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith('d:\\ws\\manual.ts');
     });
 
-    it('1.2 idle 浠诲姟瀹屾垚鏃剁敤 reviewedContentHash 鏇存柊 lastReviewedContentHash', async () => {
+    it('1.2 idle 任务完成时使用 reviewedContentHash 更新 lastReviewedContentHash', async () => {
         const content = 'const idle=1;';
         const changePath = 'd:/ws/a.ts';
         const visiblePath = 'd:\\ws\\a.ts';
@@ -564,7 +564,7 @@ describe('autoReviewController', () => {
         expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith(path.normalize(changePath));
     });
 
-    it('1.3 save 浠诲姟瀹屾垚鏃朵粎鐢?savedContentHash 鏇存柊銆佷笉鍙?reviewedContentHash 褰卞搷', async () => {
+    it('1.3 save 任务完成时仅用 savedContentHash 更新，不受 reviewedContentHash 影响', async () => {
         const content = 'const saveOnly=1;';
         mocked.mockConfig = {
             ...mocked.mockConfig,
@@ -598,7 +598,7 @@ describe('autoReviewController', () => {
         expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith('d:\\ws\\saveOnly.ts');
     });
 
-    it('1.4 鎵嬪姩鍏ラ槦鏃朵换鍔″甫鏈?reviewedContentHash锛堢瓑浜庡綋鍓嶆枃妗ｅ唴瀹瑰搱甯岋級', async () => {
+    it('1.4 手动入队时任务带上 reviewedContentHash（等于当前文档内容哈希）', async () => {
         const content = 'const hashMe=42;';
         const expectedHash = createContentHash(content);
         const captured: Array<{ path: string; task: { reviewedContentHash?: string | null } }> = [];
@@ -624,7 +624,7 @@ describe('autoReviewController', () => {
         expect(captured[0].task.reviewedContentHash).toBe(expectedHash);
     });
 
-    it('1.5 褰?lastReviewedContentHash 宸茶涓旀枃妗ｅ彉鏇村唴瀹瑰搱甯屼笌涔嬬浉绛夋椂 clearFileStaleMarkers 琚皟鐢?', async () => {
+    it('1.5 当 lastReviewedContentHash 已设且文档变更内容哈希与之相等时 clearFileStaleMarkers 被调用', async () => {
         const content = 'const same=1;';
         mocked.mockConfig = {
             ...mocked.mockConfig,

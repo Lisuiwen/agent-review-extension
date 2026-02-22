@@ -1,8 +1,8 @@
-# workspace-root-resolution
+﻿# workspace-root-resolution
 
 统一工作区根解析能力，支持多根枚举与按文件定位，同时保持单根场景行为兼容。
 
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 工作区根解析入口必须支持多根定位
 

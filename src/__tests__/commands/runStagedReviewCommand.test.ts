@@ -3,6 +3,8 @@ import { createHash } from 'crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { registerRunStagedReviewCommand } from '../../commands/runStagedReviewCommand';
+import * as workspaceRootUtils from '../../utils/workspaceRoot';
+import * as multiRootCoordinator from '../../core/multiRootCoordinator';
 
 const createContentHash = (content: string): string =>
     createHash('sha1').update(content, 'utf8').digest('hex');
@@ -53,6 +55,11 @@ describe('runStagedReviewCommand', () => {
             errors: [{ file: 'a.ts', line: 1, column: 1, message: 'e', rule: 'r', severity: 'error' }],
             warnings: [],
             info: [],
+        };
+        (vscode as any).workspace = {
+            workspaceFolders: [{ uri: { fsPath: 'd:/ws' } }],
+            textDocuments: [],
+            openTextDocument: vi.fn(),
         };
         const reviewEngine = {
             reviewStagedFilesWithContext: vi.fn(async () => ({ result, stagedFiles: ['a.ts'] })),
@@ -197,5 +204,44 @@ describe('runStagedReviewCommand', () => {
         await handler!();
 
         expect(persist).not.toHaveBeenCalled();
+    });
+
+    it('3.2 多根模式应走 staged 聚合调度并汇总结果', async () => {
+        const result = { passed: false, errors: [{ file: 'd:/ws-a/a.ts', line: 1, column: 1, message: 'e', rule: 'r', severity: 'error' as const }], warnings: [], info: [] };
+        const reviewEngine = { reviewStagedFilesWithContext: vi.fn() };
+        const reviewPanel = { setStatus: vi.fn(), reveal: vi.fn(), showReviewResult: vi.fn() };
+        const statusBar = { updateStatus: vi.fn(), updateWithResult: vi.fn() };
+        const logger = { info: vi.fn(), error: vi.fn() };
+
+        vi.spyOn(workspaceRootUtils, 'getWorkspaceFolders').mockReturnValue([
+            { uri: { fsPath: 'd:/ws-a' } } as any,
+            { uri: { fsPath: 'd:/ws-b' } } as any,
+        ]);
+        vi.spyOn(workspaceRootUtils, 'getGitWorkspaceFolders').mockReturnValue([
+            { uri: { fsPath: 'd:/ws-a' } } as any,
+            { uri: { fsPath: 'd:/ws-b' } } as any,
+        ]);
+        const aggregateSpy = vi.spyOn(multiRootCoordinator, 'runStagedReviewAcrossRoots').mockResolvedValue({
+            result,
+            stagedFiles: ['d:/ws-a/a.ts', 'd:/ws-b/b.ts'],
+        });
+
+        registerRunStagedReviewCommand({
+            reviewEngine,
+            configManager: { getConfig: () => ({ ai_review: { batch_concurrency: 4 } }) } as any,
+            reviewPanel,
+            statusBar,
+            logger,
+            getGitRoot: () => null,
+        } as any);
+
+        const handler = handlers.get('agentreview.runStaged');
+        await handler!();
+
+        expect(aggregateSpy).toHaveBeenCalledTimes(1);
+        expect(aggregateSpy.mock.calls[0][1]).toEqual(['d:/ws-a', 'd:/ws-b']);
+        expect(aggregateSpy.mock.calls[0][2]).toBe(4);
+        expect(reviewPanel.showReviewResult).toHaveBeenCalledWith(result, 'completed', '', '没有staged文件需要审查');
+        expect(statusBar.updateWithResult).toHaveBeenCalledWith(result);
     });
 });

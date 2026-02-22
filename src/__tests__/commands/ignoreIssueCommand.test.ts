@@ -121,4 +121,29 @@ describe('ignoreIssueCommand', () => {
         expect(removeIssueFromList).toHaveBeenCalledWith(warningIssue);
         expect(showInformationMessage).toHaveBeenCalledWith('已忽略，已从列表移除');
     });
+
+    it('warning 携带 workspaceRoot 时应优先写入该项目忽略仓', async () => {
+        const warningIssue: ReviewIssue = {
+            file: 'd:/ws-b/src/a.ts',
+            line: 2,
+            column: 3,
+            message: 'w',
+            rule: 'no_xxx',
+            severity: 'warning',
+            workspaceRoot: 'd:/ws-b',
+        };
+        const treeItem = { issue: warningIssue } as ReviewTreeItem;
+        getActiveIssueForActions.mockReturnValue(null);
+
+        vi.mocked(vscode.workspace.openTextDocument).mockResolvedValue({
+            getText: () => 'const x = 1;\nconst y = 2;',
+        } as any);
+
+        const handler = handlers.get('agentreview.ignoreIssue');
+        await handler!(treeItem);
+
+        expect(addIgnoredFingerprintMock).toHaveBeenCalled();
+        expect(addIgnoredFingerprintMock.mock.calls[0][0]).toBe('d:/ws-b');
+        expect(addIgnoredFingerprintMock.mock.calls[0][2].file).toBe('src/a.ts');
+    });
 });

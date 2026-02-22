@@ -1,9 +1,9 @@
-/**
- * FileScanner diff 降噪测试
+﻿/**
+ * FileScanner diff 闄嶅櫔娴嬭瘯
  *
- * 目标：
- * 1. 验证 working diff 也会产出 formatOnly 标记
- * 2. 验证“语义 diff 为空”与“语义 diff 非空”两种分支
+ * 鐩爣锛?
+ * 1. 楠岃瘉 working diff 涔熶細浜у嚭 formatOnly 鏍囪
+ * 2. 楠岃瘉鈥滆涔?diff 涓虹┖鈥濅笌鈥滆涔?diff 闈炵┖鈥濅袱绉嶅垎鏀?
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -54,7 +54,7 @@ describe('FileScanner working diff formatOnly', () => {
         ];
     });
 
-    it('语义 diff 为空时应判定为 formatOnly=true', async () => {
+    it('璇箟 diff 涓虹┖鏃跺簲鍒ゅ畾涓?formatOnly=true', async () => {
         execAsyncMock.mockImplementation(async (command: string) => {
             if (command.includes('--ignore-blank-lines')) {
                 return { stdout: '', stderr: '' };
@@ -63,7 +63,7 @@ describe('FileScanner working diff formatOnly', () => {
         });
 
         const scanner = new FileScanner();
-        const result = await scanner.getWorkingDiff([absolutePath]);
+        const result = await scanner.getWorkingDiff(workspaceRoot, [absolutePath]);
         const fileDiff = result.get(absolutePath);
         expect(fileDiff).toBeDefined();
         expect(fileDiff?.formatOnly).toBe(true);
@@ -73,11 +73,11 @@ describe('FileScanner working diff formatOnly', () => {
         expect(fileDiff?.addedContentLines).toEqual(['<template>']);
     });
 
-    it('语义 diff 仍有内容时应判定为 formatOnly=false', async () => {
+    it('璇箟 diff 浠嶆湁鍐呭鏃跺簲鍒ゅ畾涓?formatOnly=false', async () => {
         execAsyncMock.mockResolvedValue({ stdout: createRawDiff(relativePath), stderr: '' });
 
         const scanner = new FileScanner();
-        const result = await scanner.getWorkingDiff([absolutePath]);
+        const result = await scanner.getWorkingDiff(workspaceRoot, [absolutePath]);
         const fileDiff = result.get(absolutePath);
         expect(fileDiff).toBeDefined();
         expect(fileDiff?.formatOnly).toBe(false);
@@ -87,7 +87,7 @@ describe('FileScanner working diff formatOnly', () => {
         expect(fileDiff?.addedContentLines).toEqual(['<template>']);
     });
 
-    it('仅注释差异时应判定为 commentOnly=true 且 formatOnly=false', async () => {
+    it('浠呮敞閲婂樊寮傛椂搴斿垽瀹氫负 commentOnly=true 涓?formatOnly=false', async () => {
         execAsyncMock.mockImplementation(async (command: string) => {
             if (command.includes(' -I "')) {
                 return { stdout: '', stderr: '' };
@@ -96,14 +96,14 @@ describe('FileScanner working diff formatOnly', () => {
         });
 
         const scanner = new FileScanner();
-        const result = await scanner.getWorkingDiff([absolutePath]);
+        const result = await scanner.getWorkingDiff(workspaceRoot, [absolutePath]);
         const fileDiff = result.get(absolutePath);
         expect(fileDiff).toBeDefined();
         expect(fileDiff?.formatOnly).toBe(false);
         expect(fileDiff?.commentOnly).toBe(true);
     });
 
-    it('格式+注释混合噪声变更应至少命中一种噪声标记', async () => {
+    it('格式与注释混合噪声变更应至少命中一种噪声标记', async () => {
         execAsyncMock.mockImplementation(async (command: string) => {
             if (command.includes('--ignore-blank-lines')) {
                 return { stdout: '', stderr: '' };
@@ -112,13 +112,13 @@ describe('FileScanner working diff formatOnly', () => {
         });
 
         const scanner = new FileScanner();
-        const result = await scanner.getWorkingDiff([absolutePath]);
+        const result = await scanner.getWorkingDiff(workspaceRoot, [absolutePath]);
         const fileDiff = result.get(absolutePath);
         expect(fileDiff).toBeDefined();
         expect(fileDiff?.formatOnly === true || fileDiff?.commentOnly === true).toBe(true);
     });
 
-    it('working diff 为空但文件为 untracked 时，应补充该文件的 diff hunk', async () => {
+    it('working diff 涓虹┖浣嗘枃浠朵负 untracked 鏃讹紝搴旇ˉ鍏呰鏂囦欢鐨?diff hunk', async () => {
         const readFileSpy = vi.spyOn(fs.promises, 'readFile').mockResolvedValue('const x = 1;');
         execAsyncMock.mockImplementation(async (command: string) => {
             if (command.includes('ls-files --others --exclude-standard')) {
@@ -128,7 +128,7 @@ describe('FileScanner working diff formatOnly', () => {
         });
 
         const scanner = new FileScanner();
-        const result = await scanner.getWorkingDiff([absolutePath]);
+        const result = await scanner.getWorkingDiff(workspaceRoot, [absolutePath]);
         const fileDiff = result.get(absolutePath);
 
         expect(fileDiff).toBeDefined();
@@ -163,7 +163,7 @@ describe('FileScanner pending diff', () => {
         ];
     });
 
-    it('pending diff 应统一覆盖 tracked 与 untracked 文件', async () => {
+    it('pending diff 搴旂粺涓€瑕嗙洊 tracked 涓?untracked 鏂囦欢', async () => {
         const readFileSpy = vi.spyOn(fs.promises, 'readFile').mockResolvedValue('const n = 1;');
         execAsyncMock.mockImplementation(async (command: string) => {
             if (command.startsWith('git rev-parse --verify HEAD')) {
@@ -179,7 +179,7 @@ describe('FileScanner pending diff', () => {
         });
 
         const scanner = new FileScanner();
-        const result = await scanner.getPendingDiff();
+        const result = await scanner.getPendingDiff(workspaceRoot);
 
         expect(result.has(absolutePath)).toBe(true);
         expect(result.has(untrackedAbsolutePath)).toBe(true);
@@ -190,7 +190,7 @@ describe('FileScanner pending diff', () => {
         readFileSpy.mockRestore();
     });
 
-    it('无 HEAD 时应回退空树基准继续获取 pending diff', async () => {
+    it('鏃?HEAD 鏃跺簲鍥為€€绌烘爲鍩哄噯缁х画鑾峰彇 pending diff', async () => {
         execAsyncMock.mockImplementation(async (command: string) => {
             if (command.startsWith('git rev-parse --verify HEAD')) {
                 const error = new Error('bad revision HEAD') as Error & { code?: number };
@@ -207,7 +207,7 @@ describe('FileScanner pending diff', () => {
         });
 
         const scanner = new FileScanner();
-        const result = await scanner.getPendingDiff([absolutePath]);
+        const result = await scanner.getPendingDiff(workspaceRoot, [absolutePath]);
 
         expect(result.has(absolutePath)).toBe(true);
         expect(execAsyncMock).toHaveBeenCalledWith(
@@ -216,3 +216,4 @@ describe('FileScanner pending diff', () => {
         );
     });
 });
+

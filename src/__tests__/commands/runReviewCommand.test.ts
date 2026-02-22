@@ -3,6 +3,8 @@ import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerRunReviewCommand } from '../../commands/runReviewCommand';
+import * as workspaceRootUtils from '../../utils/workspaceRoot';
+import * as multiRootCoordinator from '../../core/multiRootCoordinator';
 
 const createContentHash = (content: string): string =>
     createHash('sha1').update(content, 'utf8').digest('hex');
@@ -359,5 +361,53 @@ describe('runReviewCommand', () => {
         await commandHandler!();
 
         expect(persist).not.toHaveBeenCalled();
+    });
+
+    it('3.1 多根模式应走聚合调度并汇总结果', async () => {
+        const deps = createDeps({
+            reviewResultContext: {
+                result: { passed: true, errors: [], warnings: [], info: [] },
+                reason: 'no_pending_changes',
+                pendingFiles: [],
+            },
+            currentResult: null,
+        });
+        deps.configManager = { getConfig: () => ({ ai_review: { batch_concurrency: 3 } }) };
+
+        vi.spyOn(workspaceRootUtils, 'getWorkspaceFolders').mockReturnValue([
+            { uri: { fsPath: 'd:/ws-a' } } as any,
+            { uri: { fsPath: 'd:/ws-b' } } as any,
+        ]);
+        vi.spyOn(workspaceRootUtils, 'getGitWorkspaceFolders').mockReturnValue([
+            { uri: { fsPath: 'd:/ws-a' } } as any,
+            { uri: { fsPath: 'd:/ws-b' } } as any,
+        ]);
+
+        const aggregated = {
+            result: {
+                passed: false,
+                errors: [{ file: 'd:/ws-a/a.ts', line: 1, column: 1, message: 'e', rule: 'r', severity: 'error' as const }],
+                warnings: [{ file: 'd:/ws-b/b.ts', line: 2, column: 1, message: 'w', rule: 'r', severity: 'warning' as const }],
+                info: [],
+            },
+            reason: 'reviewed' as const,
+            pendingFiles: ['d:/ws-a/a.ts', 'd:/ws-b/b.ts'],
+        };
+        const aggregateSpy = vi.spyOn(multiRootCoordinator, 'runPendingReviewAcrossRoots').mockResolvedValue(aggregated);
+
+        let commandHandler: (() => Promise<void>) | undefined;
+        vi.spyOn(vscode.commands, 'registerCommand').mockImplementation((_, cb) => {
+            commandHandler = cb as () => Promise<void>;
+            return { dispose: () => undefined };
+        });
+
+        registerRunReviewCommand(deps);
+        await commandHandler!();
+
+        expect(aggregateSpy).toHaveBeenCalledTimes(1);
+        expect(aggregateSpy.mock.calls[0][1]).toEqual(['d:/ws-a', 'd:/ws-b']);
+        expect(aggregateSpy.mock.calls[0][2]).toBe(3);
+        expect(deps.reviewPanel.showReviewResult).toHaveBeenCalledWith(aggregated.result, 'completed', '', '');
+        expect(deps.statusBar.updateWithResult).toHaveBeenCalledWith(aggregated.result);
     });
 });

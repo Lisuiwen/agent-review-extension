@@ -6,6 +6,8 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import type { CommandContext } from './commandContext';
+import { getGitWorkspaceFolders, getWorkspaceFolders } from '../utils/workspaceRoot';
+import { runStagedReviewAcrossRoots } from '../core/multiRootCoordinator';
 
 const createContentHash = (content: string): string =>
     createHash('sha1').update(content, 'utf8').digest('hex');
@@ -13,6 +15,10 @@ const createContentHash = (content: string): string =>
 export const registerRunStagedReviewCommand = (deps: CommandContext): vscode.Disposable =>
     vscode.commands.registerCommand('agentreview.runStaged', async () => {
         const { reviewEngine, reviewPanel, statusBar, logger } = deps;
+        const getBatchConcurrency = (): number => {
+            const configured = deps.configManager?.getConfig().ai_review?.batch_concurrency;
+            return typeof configured === 'number' && configured > 0 ? Math.floor(configured) : 2;
+        };
         logger.info('执行 staged 代码审查命令');
         if (!reviewEngine || !reviewPanel || !statusBar) {
             logger.error('组件未初始化', {
@@ -32,7 +38,12 @@ export const registerRunStagedReviewCommand = (deps: CommandContext): vscode.Dis
                     reviewPanel.setStatus('reviewing');
                     reviewPanel.reveal();
 
-                    const { result, stagedFiles } = await reviewEngine.reviewStagedFilesWithContext();
+                    const workspaceFolders = getWorkspaceFolders();
+                    const multiRootMode = workspaceFolders.length > 1;
+                    const gitWorkspaceRoots = getGitWorkspaceFolders().map(item => item.uri.fsPath);
+                    const { result, stagedFiles } = multiRootMode
+                        ? await runStagedReviewAcrossRoots(reviewEngine, gitWorkspaceRoots, getBatchConcurrency())
+                        : await reviewEngine.reviewStagedFilesWithContext();
                     reviewPanel.showReviewResult(result, 'completed', '', '没有staged文件需要审查');
                     statusBar.updateWithResult(result);
                     if (stagedFiles.length > 0 && deps.persistLastReviewedHash) {

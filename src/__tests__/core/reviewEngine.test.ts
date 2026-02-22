@@ -1,13 +1,14 @@
-/**
- * ReviewEngine 单元测试
+﻿/**
+ * ReviewEngine 鍗曞厓娴嬭瘯
  * 
- * 测试用例覆盖：
+ * 娴嬭瘯鐢ㄤ緥瑕嗙洊锛?
  * - 7.1: Strict Mode
- * - 7.2: 非 Strict Mode
- * - 7.3: 规则 action 映射表（验证修复的硬编码问题）
+ * - 7.2: 闈?Strict Mode
+ * - 7.3: 瑙勫垯 action 鏄犲皠琛紙楠岃瘉淇鐨勭‖缂栫爜闂锛?
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as vscode from 'vscode';
 import { ReviewEngine } from '../../core/reviewEngine';
 import { createMockConfigManager } from '../helpers/mockConfigManager';
 import { createStrictModeConfig, createNamingConventionConfig, createCodeQualityConfig } from '../helpers/testFixtures';
@@ -38,15 +39,15 @@ describe('ReviewEngine', () => {
         }
     });
 
-    describe('测试用例 7.1: Strict Mode', () => {
-        it('严格模式下所有错误都应该阻止提交', async () => {
+    describe('娴嬭瘯鐢ㄤ緥 7.1: Strict Mode', () => {
+        it('涓ユ牸妯″紡涓嬫墍鏈夐敊璇兘搴旇闃绘鎻愪氦', async () => {
             const configManager = createMockConfigManager({
                 rules: {
                     enabled: true,
                     strict_mode: true,
                     code_quality: {
                         enabled: true,
-                        action: 'block_commit', // 在严格模式下，使用 block_commit 来产生 errors
+                        action: 'block_commit', // 鍦ㄤ弗鏍兼ā寮忎笅锛屼娇鐢?block_commit 鏉ヤ骇鐢?errors
                         no_todo: true,
                     },
                 },
@@ -54,28 +55,28 @@ describe('ReviewEngine', () => {
             reviewEngine = new ReviewEngine(configManager);
             await reviewEngine.initialize();
             
-            // 创建包含 TODO 的文件（action 为 block_commit，会产生 errors）
+            // 鍒涘缓鍖呭惈 TODO 鐨勬枃浠讹紙action 涓?block_commit锛屼細浜х敓 errors锛?
             const file1 = await tempFs.createFile('test.ts', createTestFileContent.withTodo());
             
             const result = await reviewEngine.review([file1]);
             
-            // 在严格模式下，所有 errors 都会阻止提交
+            // 鍦ㄤ弗鏍兼ā寮忎笅锛屾墍鏈?errors 閮戒細闃绘鎻愪氦
             expect(result.errors.length).toBeGreaterThan(0);
             expect(result.passed).toBe(false);
         });
 
-        it('严格模式下即使只有 warning 也应该阻止提交', async () => {
-            // 注意：根据当前实现，strict_mode 只检查 errors.length
-            // 如果只有 warnings（action 为 warning），它们不会被归类为 errors
-            // 所以这个测试用例需要调整：要么修改代码逻辑，要么调整测试预期
-            // 这里我们测试：如果有 errors，严格模式应该阻止提交
+        it('strict_mode 存在 error 时应阻止提交', async () => {
+            // 娉ㄦ剰锛氭牴鎹綋鍓嶅疄鐜帮紝strict_mode 鍙鏌?errors.length
+            // 濡傛灉鍙湁 warnings锛坅ction 涓?warning锛夛紝瀹冧滑涓嶄細琚綊绫讳负 errors
+            // 鎵€浠ヨ繖涓祴璇曠敤渚嬮渶瑕佽皟鏁达細瑕佷箞淇敼浠ｇ爜閫昏緫锛岃涔堣皟鏁存祴璇曢鏈?
+            // 杩欓噷鎴戜滑娴嬭瘯锛氬鏋滄湁 errors锛屼弗鏍兼ā寮忓簲璇ラ樆姝㈡彁浜?
             const configManager = createMockConfigManager({
                 rules: {
                     enabled: true,
                     strict_mode: true,
                     naming_convention: {
                         enabled: true,
-                        action: 'block_commit', // 产生 errors
+                        action: 'block_commit', // 浜х敓 errors
                         no_space_in_filename: true,
                     },
                 },
@@ -83,19 +84,19 @@ describe('ReviewEngine', () => {
             reviewEngine = new ReviewEngine(configManager);
             await reviewEngine.initialize();
             
-            // 创建包含文件名空格的文件（会产生 errors）
+            // 鍒涘缓鍖呭惈鏂囦欢鍚嶇┖鏍肩殑鏂囦欢锛堜細浜х敓 errors锛?
             const file1 = await tempFs.createFile('test file.ts', createTestFileContent.clean());
             
             const result = await reviewEngine.review([file1]);
             
-            // 严格模式下，有 errors 应该阻止提交
+            // 涓ユ牸妯″紡涓嬶紝鏈?errors 搴旇闃绘鎻愪氦
             expect(result.errors.length).toBeGreaterThan(0);
             expect(result.passed).toBe(false);
         });
     });
 
-    describe('测试用例 7.2: 非 Strict Mode', () => {
-        it('非严格模式下只有 block_commit 的错误才阻止提交', async () => {
+    describe('娴嬭瘯鐢ㄤ緥 7.2: 闈?Strict Mode', () => {
+        it('闈炰弗鏍兼ā寮忎笅鍙湁 block_commit 鐨勯敊璇墠闃绘鎻愪氦', async () => {
             const configManager = createMockConfigManager({
                 rules: {
                     enabled: true,
@@ -115,32 +116,32 @@ describe('ReviewEngine', () => {
             reviewEngine = new ReviewEngine(configManager);
             await reviewEngine.initialize();
             
-            // 创建包含 warning 级别问题的文件（TODO）
+            // 鍒涘缓鍖呭惈 warning 绾у埆闂鐨勬枃浠讹紙TODO锛?
             const file1 = await tempFs.createFile('test.ts', createTestFileContent.withTodo());
             
             const result = await reviewEngine.review([file1]);
             
-            // warning 级别的错误不应该阻止提交
+            // warning 绾у埆鐨勯敊璇笉搴旇闃绘鎻愪氦
             expect(result.warnings.length).toBeGreaterThan(0);
             expect(result.passed).toBe(true);
         });
 
-        it('非严格模式下 block_commit 的错误应该阻止提交', async () => {
+        it('非 strict_mode 下 block_commit error 应阻止提交', async () => {
             const configManager = createMockConfigManager(createNamingConventionConfig('block_commit'));
             reviewEngine = new ReviewEngine(configManager);
             await reviewEngine.initialize();
             
-            // 创建包含 block_commit 级别问题的文件（文件名空格）
+            // 鍒涘缓鍖呭惈 block_commit 绾у埆闂鐨勬枃浠讹紙鏂囦欢鍚嶇┖鏍硷級
             const file1 = await tempFs.createFile('test file.ts', createTestFileContent.clean());
             
             const result = await reviewEngine.review([file1]);
             
-            // block_commit 级别的错误应该阻止提交
+            // block_commit 绾у埆鐨勯敊璇簲璇ラ樆姝㈡彁浜?
             expect(result.errors.length).toBeGreaterThan(0);
             expect(result.passed).toBe(false);
         });
 
-        it('非严格模式下 warning 级别的错误不应该阻止提交', async () => {
+        it('闈炰弗鏍兼ā寮忎笅 warning 绾у埆鐨勯敊璇笉搴旇闃绘鎻愪氦', async () => {
             const configManager = createMockConfigManager(createNamingConventionConfig('warning'));
             reviewEngine = new ReviewEngine(configManager);
             await reviewEngine.initialize();
@@ -149,14 +150,14 @@ describe('ReviewEngine', () => {
             
             const result = await reviewEngine.review([file1]);
             
-            // warning 级别不应该阻止提交
+            // warning 绾у埆涓嶅簲璇ラ樆姝㈡彁浜?
             expect(result.warnings.length).toBeGreaterThan(0);
             expect(result.passed).toBe(true);
         });
     });
 
     describe('测试用例 7.3: 规则 action 映射表', () => {
-        it('应该使用映射表而不是硬编码来检查规则 action', async () => {
+        it('搴旇浣跨敤鏄犲皠琛ㄨ€屼笉鏄‖缂栫爜鏉ユ鏌ヨ鍒?action', async () => {
             const configManager = createMockConfigManager({
                 rules: {
                     enabled: true,
@@ -176,12 +177,12 @@ describe('ReviewEngine', () => {
             reviewEngine = new ReviewEngine(configManager);
             await reviewEngine.initialize();
             
-            // 创建包含两种问题的文件
+            // 鍒涘缓鍖呭惈涓ょ闂鐨勬枃浠?
             const file1 = await tempFs.createFile('test file.ts', createTestFileContent.withTodo());
             
             const result = await reviewEngine.review([file1]);
             
-            // 应该正确识别 block_commit 和 warning 的区别
+            // 搴旇姝ｇ‘璇嗗埆 block_commit 鍜?warning 鐨勫尯鍒?
             const blockingErrors = result.errors.filter(e => 
                 e.rule === 'no_space_in_filename' && e.severity === 'error'
             );
@@ -192,11 +193,11 @@ describe('ReviewEngine', () => {
             expect(blockingErrors.length).toBeGreaterThan(0);
             expect(warnings.length).toBeGreaterThan(0);
             
-            // block_commit 应该阻止提交
+            // block_commit 搴旇闃绘鎻愪氦
             expect(result.passed).toBe(false);
         });
 
-        it('应该正确处理 AI 审查规则的 action', async () => {
+        it('搴旇姝ｇ‘澶勭悊 AI 瀹℃煡瑙勫垯鐨?action', async () => {
             const configManager = createMockConfigManager({
                 rules: {
                     enabled: true,
@@ -213,17 +214,17 @@ describe('ReviewEngine', () => {
             reviewEngine = new ReviewEngine(configManager);
             await reviewEngine.initialize();
             
-            // 这个测试主要验证映射表中包含 AI 审查规则
-            // 实际的 AI 审查测试需要 mock AIReviewer
+            // 杩欎釜娴嬭瘯涓昏楠岃瘉鏄犲皠琛ㄤ腑鍖呭惈 AI 瀹℃煡瑙勫垯
+            // 瀹為檯鐨?AI 瀹℃煡娴嬭瘯闇€瑕?mock AIReviewer
             const file1 = await tempFs.createFile('test.ts', createTestFileContent.clean());
             const result = await reviewEngine.review([file1]);
             
-            // 验证审查流程正常执行
+            // 楠岃瘉瀹℃煡娴佺▼姝ｅ父鎵ц
             expect(result).toBeDefined();
             expect(result.passed).toBeDefined();
         });
 
-        it('应该正确处理未映射的规则（返回 false，不阻止提交）', async () => {
+        it('未映射规则不应阻止提交', async () => {
             const configManager = createMockConfigManager({
                 rules: {
                     enabled: true,
@@ -233,16 +234,16 @@ describe('ReviewEngine', () => {
             reviewEngine = new ReviewEngine(configManager);
             await reviewEngine.initialize();
             
-            // 创建一个没有问题的文件
+            // 鍒涘缓涓€涓病鏈夐棶棰樼殑鏂囦欢
             const file1 = await tempFs.createFile('test.ts', createTestFileContent.clean());
             const result = await reviewEngine.review([file1]);
             
-            // 没有错误应该通过
+            // 娌℃湁閿欒搴旇閫氳繃
             expect(result.passed).toBe(true);
             expect(result.errors.length).toBe(0);
         });
 
-        it('no_debugger 为 block_commit 时应阻止提交', async () => {
+        it('no_debugger 涓?block_commit 鏃跺簲闃绘鎻愪氦', async () => {
             const configManager = createMockConfigManager({
                 rules: {
                     enabled: true,
@@ -266,3 +267,4 @@ describe('ReviewEngine', () => {
         });
     });
 });
+

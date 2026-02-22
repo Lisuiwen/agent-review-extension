@@ -33,7 +33,7 @@ export const registerIgnoreIssueCommand = (deps: CommandContext): vscode.Disposa
             return;
         }
 
-        const workspaceRoot = getEffectiveWorkspaceRoot()?.uri.fsPath;
+        const workspaceRoot = issue.workspaceRoot || getEffectiveWorkspaceRoot()?.uri.fsPath;
         if (workspaceRoot) {
             let content: string;
             try {

@@ -1087,7 +1087,10 @@ describe('Phase3: 保存触发复审链路', () => {
         await flushPromises();
 
         expect(reviewSavedFileWithPendingDiffContextMock).toHaveBeenCalledTimes(1);
-        expect(reviewSavedFileWithPendingDiffContextMock).toHaveBeenCalledWith('d:\\demo\\save.ts');
+        expect(reviewSavedFileWithPendingDiffContextMock).toHaveBeenCalledWith(
+            'd:\\demo\\save.ts',
+            { workspaceRoot: undefined }
+        );
     });
 });
 
