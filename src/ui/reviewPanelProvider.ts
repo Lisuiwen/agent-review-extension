@@ -23,8 +23,9 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
     private status: 'idle' | 'reviewing' | 'completed' | 'error' = 'idle';
     private statusMessage: string | null = null;
     private emptyStateHint: string | null = null;
-    /** 根下分组节点缓存，用于局部刷新时 fire(分组节点) 及 Panel 侧 reveal */
-    private groupNodeCache: { rule: ReviewTreeItem | null; ai: ReviewTreeItem | null } = { rule: null, ai: null };
+    /** 分组节点缓存（项目+来源），用于局部刷新时 fire(分组节点) 及 Panel 侧 reveal */
+    private groupNodeCache: Map<string, ReviewTreeItem> = new Map();
+    private static readonly UNASSIGNED_PROJECT_KEY = '__agentreview_unassigned_project__';
 
     private getAllIssues = (): ReviewIssue[] => {
         if (!this.reviewResult) return [];
@@ -37,8 +38,8 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         this._onDidChangeTreeData.fire();
     }
 
-    refreshGroup(groupKey: 'rule' | 'ai'): void {
-        const node = this.groupNodeCache[groupKey];
+    refreshGroup(groupKey: string): void {
+        const node = this.groupNodeCache.get(groupKey);
         if (node) {
             this._onDidChangeTreeData.fire(node);
         } else {
@@ -46,8 +47,8 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         }
     }
 
-    getCachedGroupNode(groupKey: 'rule' | 'ai'): ReviewTreeItem | null {
-        return this.groupNodeCache[groupKey] ?? null;
+    getCachedGroupNode(groupKey: string): ReviewTreeItem | null {
+        return this.groupNodeCache.get(groupKey) ?? null;
     }
 
     updateResult(
@@ -75,7 +76,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         return this.reviewResult;
     }
 
-    removeIssue(issue: ReviewIssue): 'rule' | 'ai' | undefined {
+    removeIssue(issue: ReviewIssue): string | undefined {
         if (!this.reviewResult) return undefined;
         const match = (a: ReviewIssue) => isSameIssue(a, issue);
         const errors = this.reviewResult.errors.filter(i => !match(i));
@@ -87,7 +88,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
             warnings,
             info,
         };
-        const groupKey = isAiIssue(issue) ? 'ai' : 'rule';
+        const groupKey = this.buildSourceNodeKey(this.getProjectRootKey(issue), isAiIssue(issue) ? 'ai' : 'rule');
         this.refresh();
         return groupKey;
     }
@@ -109,7 +110,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
 
     getChildren(element?: ReviewTreeItem): ReviewTreeItem[] {
         if (!this.reviewResult) {
-            this.groupNodeCache = { rule: null, ai: null };
+            this.groupNodeCache.clear();
             const statusItem = this.status !== 'reviewing' ? this.createStatusMessageItem() : null;
             return statusItem ? [statusItem] : [new ReviewTreeItem('点击刷新按钮开始复审', vscode.TreeItemCollapsibleState.None)];
         }
@@ -125,7 +126,7 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                 this.reviewResult.warnings.length +
                 this.reviewResult.info.length;
             if (this.reviewResult.passed && totalIssues === 0) {
-                this.groupNodeCache = { rule: null, ai: null };
+                this.groupNodeCache.clear();
                 items.push(
                     new ReviewTreeItem(
                         this.emptyStateHint ?? '无 staged 变更',
@@ -139,42 +140,37 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                 : `审查未通过 (${this.reviewResult.errors.length}个错误, ${this.reviewResult.warnings.length}个警告)`;
             items.push(new ReviewTreeItem(statusText, vscode.TreeItemCollapsibleState.None));
 
-            const allIssues = this.getAllIssues();
-            const ruleIssues = allIssues.filter(issue => !isAiIssue(issue));
-            const aiIssues = allIssues.filter(issue => isAiIssue(issue));
-            const ruleNode = new ReviewTreeItem(
-                `规则检测错误 (${ruleIssues.length})`,
-                vscode.TreeItemCollapsibleState.Expanded,
-                undefined,
-                undefined,
-                'rule'
-            );
-            const aiNode = new ReviewTreeItem(
-                `AI检测错误 (${aiIssues.length})`,
-                vscode.TreeItemCollapsibleState.Collapsed,
-                undefined,
-                undefined,
-                'ai'
-            );
-            this.groupNodeCache = { rule: ruleNode, ai: aiNode };
-            items.push(ruleNode);
-            items.push(aiNode);
+            const projectNodes = this.buildProjectNodes(this.getAllIssues());
+            this.groupNodeCache.clear();
+            items.push(...projectNodes);
             return items;
         }
 
-        if (element.groupKey && !element.filePath) {
-            const groupIssues = this.getIssuesByGroup(element.groupKey);
-            return this.buildFileItems(groupIssues, element.groupKey);
+        if (element.nodeType === 'project') {
+            const projectRootKey = element.projectRoot ?? ReviewPanelProvider.UNASSIGNED_PROJECT_KEY;
+            return this.buildSourceNodes(projectRootKey);
         }
 
-        if (element.filePath) {
-            const groupIssues = element.groupKey ? this.getIssuesByGroup(element.groupKey) : this.getAllIssues();
-            const fileIssues = groupIssues.filter(issue => issue.file === element.filePath);
+        if (element.nodeType === 'source' && element.groupKey) {
+            const projectRootKey = element.projectRoot ?? ReviewPanelProvider.UNASSIGNED_PROJECT_KEY;
+            const groupIssues = this.getIssuesByProjectAndGroup(projectRootKey, element.groupKey);
+            return this.buildFileItems(groupIssues, element.groupKey, projectRootKey);
+        }
+
+        if (element.nodeType === 'file' && element.filePath) {
+            const groupIssues = element.groupKey
+                ? this.getIssuesByProjectAndGroup(element.projectRoot ?? ReviewPanelProvider.UNASSIGNED_PROJECT_KEY, element.groupKey)
+                : this.getIssuesByProject(element.projectRoot ?? ReviewPanelProvider.UNASSIGNED_PROJECT_KEY);
+            const fileIssues = groupIssues.filter(issue => path.normalize(issue.file) === path.normalize(element.filePath!));
             return fileIssues.map(issue =>
                 new ReviewTreeItem(
                     `${issue.ignored ? '【已放行】' : ''}${issue.stale ? '【待复审】' : ''}${issue.message} [${issue.rule}]`,
                     vscode.TreeItemCollapsibleState.None,
-                    issue
+                    issue,
+                    undefined,
+                    undefined,
+                    'issue',
+                    this.getProjectRootKey(issue)
                 )
             );
         }
@@ -182,14 +178,127 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
         return [];
     }
 
-    private getIssuesByGroup = (groupKey: 'rule' | 'ai'): ReviewIssue[] => {
-        if (!this.reviewResult) return [];
-        const allIssues = this.getAllIssues();
-        if (groupKey === 'ai') return allIssues.filter(issue => isAiIssue(issue));
-        return allIssues.filter(issue => !isAiIssue(issue));
+    private getProjectRootKey = (issue: ReviewIssue): string =>
+        issue.workspaceRoot ? path.normalize(issue.workspaceRoot) : ReviewPanelProvider.UNASSIGNED_PROJECT_KEY;
+
+    private getIssuesByProject = (projectRootKey: string): ReviewIssue[] =>
+        this.getAllIssues().filter(issue => this.getProjectRootKey(issue) === projectRootKey);
+
+    private getIssuesByProjectAndGroup = (projectRootKey: string, groupKey: 'rule' | 'ai'): ReviewIssue[] => {
+        const projectIssues = this.getIssuesByProject(projectRootKey);
+        if (groupKey === 'ai') return projectIssues.filter(issue => isAiIssue(issue));
+        return projectIssues.filter(issue => !isAiIssue(issue));
     };
 
-    private buildFileItems = (issues: ReviewIssue[], groupKey?: 'rule' | 'ai'): ReviewTreeItem[] => {
+    private buildSourceNodeKey = (projectRootKey: string, groupKey: 'rule' | 'ai'): string =>
+        `${projectRootKey}::${groupKey}`;
+
+    private getProjectLabelMap = (projectRootKeys: string[]): Map<string, string> => {
+        const labelMap = new Map<string, string>();
+        const uniqueKeys = Array.from(new Set(projectRootKeys));
+        const realRoots = uniqueKeys.filter(key => key !== ReviewPanelProvider.UNASSIGNED_PROJECT_KEY);
+        const rootsByBaseName = new Map<string, string[]>();
+        for (const rootKey of realRoots) {
+            const baseName = path.basename(rootKey) || rootKey;
+            if (!rootsByBaseName.has(baseName)) rootsByBaseName.set(baseName, []);
+            rootsByBaseName.get(baseName)!.push(rootKey);
+        }
+
+        labelMap.set(ReviewPanelProvider.UNASSIGNED_PROJECT_KEY, '未归属项目');
+
+        for (const [baseName, roots] of rootsByBaseName.entries()) {
+            if (roots.length === 1) {
+                labelMap.set(roots[0], baseName);
+                continue;
+            }
+
+            const rootToSegments = new Map<string, string[]>();
+            let maxDepth = 1;
+            for (const root of roots) {
+                const normalized = root.replace(/\\/g, '/');
+                const segments = normalized.split('/').filter(Boolean);
+                const parentSegments = segments.slice(0, -1);
+                rootToSegments.set(root, parentSegments);
+                maxDepth = Math.max(maxDepth, parentSegments.length);
+            }
+
+            let selectedDepth = maxDepth;
+            for (let depth = 1; depth <= maxDepth; depth++) {
+                const suffixes = roots.map(root => {
+                    const segments = rootToSegments.get(root) ?? [];
+                    return segments.slice(-depth).join('/');
+                });
+                const uniqueCount = new Set(suffixes).size;
+                if (uniqueCount === roots.length) {
+                    selectedDepth = depth;
+                    break;
+                }
+            }
+
+            for (const root of roots) {
+                const segments = rootToSegments.get(root) ?? [];
+                const suffix = segments.slice(-selectedDepth).join('/');
+                labelMap.set(root, suffix ? `${baseName} (${suffix})` : baseName);
+            }
+        }
+
+        return labelMap;
+    };
+
+    private buildProjectNodes = (issues: ReviewIssue[]): ReviewTreeItem[] => {
+        const byProject = new Map<string, ReviewIssue[]>();
+        for (const issue of issues) {
+            const key = this.getProjectRootKey(issue);
+            const list = byProject.get(key);
+            if (list) list.push(issue);
+            else byProject.set(key, [issue]);
+        }
+
+        const projectKeys = Array.from(byProject.keys());
+        const labelMap = this.getProjectLabelMap(projectKeys);
+
+        return projectKeys.map(projectRootKey =>
+            new ReviewTreeItem(
+                labelMap.get(projectRootKey) ?? projectRootKey,
+                vscode.TreeItemCollapsibleState.Expanded,
+                undefined,
+                undefined,
+                undefined,
+                'project',
+                projectRootKey
+            )
+        );
+    };
+
+    private buildSourceNodes = (projectRootKey: string): ReviewTreeItem[] => {
+        const ruleIssues = this.getIssuesByProjectAndGroup(projectRootKey, 'rule');
+        const aiIssues = this.getIssuesByProjectAndGroup(projectRootKey, 'ai');
+
+        const ruleNode = new ReviewTreeItem(
+            `规则检测错误 (${ruleIssues.length})`,
+            vscode.TreeItemCollapsibleState.Expanded,
+            undefined,
+            undefined,
+            'rule',
+            'source',
+            projectRootKey
+        );
+        const aiNode = new ReviewTreeItem(
+            `AI检测错误 (${aiIssues.length})`,
+            vscode.TreeItemCollapsibleState.Collapsed,
+            undefined,
+            undefined,
+            'ai',
+            'source',
+            projectRootKey
+        );
+
+        this.groupNodeCache.set(this.buildSourceNodeKey(projectRootKey, 'rule'), ruleNode);
+        this.groupNodeCache.set(this.buildSourceNodeKey(projectRootKey, 'ai'), aiNode);
+        return [ruleNode, aiNode];
+    };
+
+    private buildFileItems = (issues: ReviewIssue[], groupKey?: 'rule' | 'ai', projectRootKey?: string): ReviewTreeItem[] => {
         const fileMap = new Map<string, ReviewIssue[]>();
         for (const issue of issues) {
             const list = fileMap.get(issue.file);
@@ -222,7 +331,9 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                     vscode.TreeItemCollapsibleState.Collapsed,
                     undefined,
                     filePath,
-                    groupKey
+                    groupKey,
+                    'file',
+                    projectRootKey
                 )
             );
         }

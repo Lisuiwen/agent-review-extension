@@ -209,6 +209,18 @@ export class ReviewPanel {
         this.syncTreeViewBadgeAndDescription();
     }
 
+    clearIssuesForFile(filePath: string): void {
+        const currentResult = this.provider.getCurrentResult();
+        if (!currentResult) return;
+        const normalizedTarget = path.normalize(filePath);
+        const allIssues = getAllIssuesFromResult(currentResult);
+        const filtered = allIssues.filter(issue => path.normalize(issue.file) !== normalizedTarget);
+        if (filtered.length === allIssues.length) return;
+        const nextResult = normalizeResultForDisplay(buildResultFromIssues(filtered));
+        this.provider.updateResult(nextResult, this.provider.getStatus());
+        this.syncTreeViewBadgeAndDescription();
+    }
+
     configureLocalRebase(options: { enabled?: boolean; largeChangeLineThreshold?: number }): void {
         if (options.enabled !== undefined) this.enableLocalRebase = options.enabled;
         if (

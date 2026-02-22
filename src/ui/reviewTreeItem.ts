@@ -14,7 +14,15 @@ export class ReviewTreeItem extends vscode.TreeItem {
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
         public readonly issue?: ReviewIssue,
         public readonly filePath?: string,
-        public readonly groupKey?: 'rule' | 'ai'
+        public readonly groupKey?: 'rule' | 'ai',
+        public readonly nodeType: 'project' | 'source' | 'file' | 'issue' | 'status' = issue
+            ? 'issue'
+            : filePath
+                ? 'file'
+                : groupKey
+                    ? 'source'
+                    : 'status',
+        public readonly projectRoot?: string
     ) {
         super(label, collapsibleState);
 
@@ -59,6 +67,8 @@ export class ReviewTreeItem extends vscode.TreeItem {
             this.contextValue = 'reviewFile';
         } else if (groupKey) {
             this.contextValue = 'reviewGroup';
+        } else if (nodeType === 'project') {
+            this.contextValue = 'reviewProject';
         }
     }
 }

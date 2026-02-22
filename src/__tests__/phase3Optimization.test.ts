@@ -582,7 +582,9 @@ describe('Phase3: 放行后本地同步与标记', () => {
         }, 'completed');
 
         const rootItems = provider.getChildren();
-        const ruleGroup = rootItems.find(item => item.groupKey === 'rule');
+        const projectNode = rootItems.find(item => item.nodeType === 'project');
+        expect(projectNode).toBeDefined();
+        const ruleGroup = provider.getChildren(projectNode).find(item => item.groupKey === 'rule');
         expect(ruleGroup).toBeDefined();
         const fileItems = provider.getChildren(ruleGroup);
         expect(fileItems.length).toBe(1);

@@ -107,7 +107,7 @@ describe('autoReviewGate', () => {
         expect(decision.reason).toBe('diagnostic_funnel');
     });
 
-    it('小改动且未命中风险特征时应跳过 small_low_risk_change', () => {
+    it('小改动且未命中风险特征时不应跳过（修改代码少不触发跳过）', () => {
         const decision = evaluateAutoReviewGate({
             trigger: 'save',
             savedContentHash: 'abc',
@@ -121,8 +121,8 @@ describe('autoReviewGate', () => {
             config: baseConfig,
         });
 
-        expect(decision.skip).toBe(true);
-        expect(decision.reason).toBe('small_low_risk_change');
+        expect(decision.skip).toBe(false);
+        expect(decision.riskMatched).toBe(false);
     });
 
     it('小改动但命中风险特征时不应跳过', () => {

@@ -2,7 +2,7 @@
 
 统一 `agentreview.run` 与 `agentreview.runStaged` 的已审内容哈希持久化语义，确保撤销未保存改动时可基于现有逻辑清理待复审标记。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: run 入口成功应用后必须持久化已审内容哈希
 

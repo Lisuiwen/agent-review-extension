@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AutoReviewGateDecision } from '../../core/autoReviewGate';
 
 const createContentHash = (content: string): string =>
     createHash('sha1').update(content, 'utf8').digest('hex');
@@ -18,13 +19,14 @@ const mocked = vi.hoisted(() => {
     }));
     const applyFileReviewPatchMock = vi.fn();
     const clearFileStaleMarkersMock = vi.fn();
+    const clearIssuesForFileMock = vi.fn();
     const runtimeFlushMock = vi.fn(async () => {});
     const configDisposeMock = vi.fn();
     const panelDisposeMock = vi.fn();
     const statusDisposeMock = vi.fn();
     const isFileStaleMock = vi.fn(() => true);
     const getPendingDiffMock = vi.fn(async () => new Map());
-    const evaluateAutoReviewGateMock = vi.fn(() => ({
+    const evaluateAutoReviewGateMock = vi.fn((): AutoReviewGateDecision => ({
         skip: false,
         effectiveChangedLines: 1,
         riskMatched: false,
@@ -57,6 +59,7 @@ const mocked = vi.hoisted(() => {
         reviewSavedFileWithPendingDiffContextMock,
         applyFileReviewPatchMock,
         clearFileStaleMarkersMock,
+        clearIssuesForFileMock,
         runtimeFlushMock,
         configDisposeMock,
         panelDisposeMock,
@@ -185,6 +188,7 @@ vi.mock('../../ui/reviewPanel', () => ({
         getCurrentResult = vi.fn(() => ({ passed: true, errors: [], warnings: [], info: [] }));
         isFileStale = mocked.isFileStaleMock;
         clearFileStaleMarkers = mocked.clearFileStaleMarkersMock;
+        clearIssuesForFile = mocked.clearIssuesForFileMock;
         applyFileReviewPatch = mocked.applyFileReviewPatchMock;
         dispose = mocked.panelDisposeMock;
     },
@@ -274,6 +278,7 @@ describe('autoReviewController', () => {
         });
         mocked.applyFileReviewPatchMock.mockReset();
         mocked.clearFileStaleMarkersMock.mockReset();
+        mocked.clearIssuesForFileMock.mockReset();
         mocked.runtimeFlushMock.mockReset();
         mocked.isFileStaleMock.mockReset();
         mocked.isFileStaleMock.mockReturnValue(true);
@@ -658,6 +663,41 @@ describe('autoReviewController', () => {
         );
         expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith('d:\\ws\\same.ts');
     });
+
+    it('no_pending_diff 时调用 clearIssuesForFile 清除该文件 issue', async () => {
+        const content = 'const x = 1;';
+        const filePath = 'd:/ws/no-pending.ts';
+        mocked.mockConfig = {
+            ...mocked.mockConfig,
+            ai_review: {
+                ...mocked.mockConfig.ai_review,
+                enabled: true,
+                run_on_save: true,
+                run_on_save_debounce_ms: 0,
+            },
+        };
+        mocked.evaluateAutoReviewGateMock.mockReturnValue({
+            skip: true,
+            reason: 'no_pending_diff',
+            effectiveChangedLines: 0,
+            riskMatched: false,
+        });
+        await activate(createContext());
+        mocked.clearIssuesForFileMock.mockClear();
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: { uri: { scheme: 'file', fsPath: filePath }, getText: () => content },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'a' }],
+            })
+        );
+        mocked.saveListeners.forEach(listener =>
+            listener({ uri: { scheme: 'file', fsPath: filePath }, getText: () => content })
+        );
+        await flushPromises();
+        expect(mocked.clearIssuesForFileMock).toHaveBeenCalledTimes(1);
+        expect(mocked.clearIssuesForFileMock).toHaveBeenCalledWith(path.normalize(filePath));
+    });
+
     it('2.4 run 路径下编辑后撤销未保存改动可触发 clearFileStaleMarkers', async () => {
         let persistFn: ((path: string, hash: string) => void) | null = null;
         const ctx = createContext({

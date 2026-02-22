@@ -2,7 +2,7 @@
 
 手动/空闲评审完成后持久化「已评审内容」哈希，使文档撤销回已评审内容时能清除陈旧标记。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 手动与空闲评审完成后持久化已评审内容哈希
 

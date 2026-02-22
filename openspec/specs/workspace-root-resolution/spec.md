@@ -26,6 +26,10 @@
 - **THEN** 系统返回该文件所属的 workspace folder
 - **AND** 若文件不属于任何 folder，则返回无归属结果
 
+#### Scenario: 多根工作区（兼容预留）
+- **WHEN** `workspaceFolders` 有多个元素
+- **THEN** 单一有效根解析结果 SHALL 有明确约定（本次实现采用与单根一致策略：取第一个 folder），以便调用方行为可预测；后续可扩展为「活动编辑器所在 folder」而不改变本规格的对外行为约定
+
 ### Requirement: 调用方必须通过统一解析能力获取根上下文
 
 ConfigManager、FileScanner、ReviewEngine、extension、ignoreIssueCommand、runtimeLogPath、reviewEngine.runSummary 等调用点 SHALL 通过统一解析能力获取根上下文。需要多根语义的流程 MUST 使用“枚举/定位”能力，而非固定依赖第一个 folder。单根场景下对外行为 MUST 保持不变。

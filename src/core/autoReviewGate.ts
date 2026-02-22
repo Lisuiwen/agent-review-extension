@@ -160,19 +160,7 @@ export const evaluateAutoReviewGate = (input: AutoReviewGateInput): AutoReviewGa
         };
     }
 
-    if (
-        input.config.minEffectiveChangedLines > 0
-        && effectiveChangedLines < input.config.minEffectiveChangedLines
-        && !riskMatched
-    ) {
-        return {
-            skip: true,
-            reason: 'small_low_risk_change',
-            effectiveChangedLines,
-            riskMatched,
-        };
-    }
-
+    // 仅正则风险匹配、注释/格式变化等可判定跳过；修改代码少不再作为跳过条件
     return {
         skip: false,
         effectiveChangedLines,

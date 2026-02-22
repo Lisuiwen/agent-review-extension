@@ -61,6 +61,7 @@ import type { ReviewResult } from '../../types/review';
 const createResult = (): ReviewResult => ({
     passed: false,
     errors: [{
+        workspaceRoot: 'd:/workspace/project-single',
         file: 'src/rule.ts',
         line: 3,
         column: 1,
@@ -69,6 +70,7 @@ const createResult = (): ReviewResult => ({
         severity: 'error',
     }],
     warnings: [{
+        workspaceRoot: 'd:/workspace/project-single',
         file: 'src/ai.ts',
         line: 10,
         column: 1,
@@ -79,22 +81,49 @@ const createResult = (): ReviewResult => ({
     info: [],
 });
 
+const createMultiRootResult = (): ReviewResult => ({
+    passed: false,
+    errors: [{
+        workspaceRoot: 'd:/workspace/project-a',
+        file: 'd:/workspace/project-a/src/a.ts',
+        line: 3,
+        column: 1,
+        message: '规则错误A',
+        rule: 'no_todo',
+        severity: 'error',
+    }],
+    warnings: [{
+        workspaceRoot: 'd:/workspace/project-b',
+        file: 'd:/workspace/project-b/src/b.ts',
+        line: 10,
+        column: 1,
+        message: 'AI警告B',
+        rule: 'ai_review',
+        severity: 'warning',
+    }],
+    info: [],
+});
+
 describe('ReviewPanelProvider 来源分栏', () => {
-    it('根节点应出现规则检测错误与AI检测错误两个分组', () => {
+    it('根节点应显示状态与项目节点', () => {
         const provider = new ReviewPanelProvider({} as never);
         provider.updateResult(createResult(), 'completed');
 
         const labels = provider.getChildren().map(item => item.label);
         expect(labels.some(label => label.includes('审查未通过'))).toBe(true);
-        expect(labels.some(label => label.includes('规则检测错误'))).toBe(true);
-        expect(labels.some(label => label.includes('AI检测错误'))).toBe(true);
+        expect(labels.some(label => label === 'project-single')).toBe(true);
+        expect(labels.some(label => label.includes('规则检测错误'))).toBe(false);
+        expect(labels.some(label => label.includes('AI检测错误'))).toBe(false);
     });
 
-    it('分组节点应按来源展示文件与问题', () => {
+    it('项目节点下应按来源展示文件与问题', () => {
         const provider = new ReviewPanelProvider({} as never);
         provider.updateResult(createResult(), 'completed');
 
-        const groupNodes = provider.getChildren().filter(item => item.groupKey);
+        const projectNode = provider.getChildren().find(item => item.nodeType === 'project');
+        expect(projectNode).toBeDefined();
+
+        const groupNodes = provider.getChildren(projectNode);
         const ruleGroup = groupNodes.find(item => item.groupKey === 'rule');
         const aiGroup = groupNodes.find(item => item.groupKey === 'ai');
         expect(ruleGroup).toBeDefined();
@@ -116,11 +145,13 @@ describe('ReviewPanelProvider 来源分栏', () => {
         expect(aiIssues[0].issue?.rule).toBe('ai_review');
     });
 
-    it('分组数量应正确反映结果中的规则与 AI 问题', () => {
+    it('项目内分组数量应正确反映结果中的规则与 AI 问题', () => {
         const provider = new ReviewPanelProvider({} as never);
         provider.updateResult(createResult(), 'completed');
 
-        const labels = provider.getChildren().map(item => item.label);
+        const projectNode = provider.getChildren().find(item => item.nodeType === 'project');
+        expect(projectNode).toBeDefined();
+        const labels = provider.getChildren(projectNode).map(item => item.label);
         expect(labels.some(label => label.includes('规则检测错误 (1)'))).toBe(true);
         expect(labels.some(label => label.includes('AI检测错误 (1)'))).toBe(true);
     });
@@ -144,11 +175,13 @@ describe('ReviewPanelProvider 来源分栏', () => {
         expect(labels.some(label => label.includes('没有staged文件需要审查'))).toBe(false);
     });
 
-    it('忽略移除问题后应同步更新根节点分组数量', () => {
+    it('忽略移除问题后应同步更新项目内分组数量', () => {
         const provider = new ReviewPanelProvider({} as never);
         provider.updateResult(createResult(), 'completed');
 
-        const before = provider.getChildren().map(item => item.label);
+        const projectNode = provider.getChildren().find(item => item.nodeType === 'project');
+        expect(projectNode).toBeDefined();
+        const before = provider.getChildren(projectNode).map(item => item.label);
         expect(before.some(label => label.includes('规则检测错误 (1)'))).toBe(true);
 
         provider.removeIssue({
@@ -160,7 +193,116 @@ describe('ReviewPanelProvider 来源分栏', () => {
             severity: 'error',
         });
 
-        const after = provider.getChildren().map(item => item.label);
+        const after = provider.getChildren(projectNode).map(item => item.label);
         expect(after.some(label => label.includes('规则检测错误 (0)'))).toBe(true);
+    });
+
+    it('多根场景顶层应优先展示项目节点，而不是全局规则/AI分组', () => {
+        const provider = new ReviewPanelProvider({} as never);
+        provider.updateResult(createMultiRootResult(), 'completed');
+
+        const labels = provider.getChildren().map(item => item.label);
+        expect(labels.some(label => label === 'project-a')).toBe(true);
+        expect(labels.some(label => label === 'project-b')).toBe(true);
+        expect(labels.some(label => label.includes('规则检测错误'))).toBe(false);
+        expect(labels.some(label => label.includes('AI检测错误'))).toBe(false);
+    });
+
+    it('项目目录名重名时应追加路径后缀，目录名唯一时仅显示目录名', () => {
+        const provider = new ReviewPanelProvider({} as never);
+        provider.updateResult({
+            passed: false,
+            errors: [
+                {
+                    workspaceRoot: 'd:/workspace/services/a/project-a',
+                    file: 'd:/workspace/services/a/project-a/src/a.ts',
+                    line: 1,
+                    column: 1,
+                    message: 'e1',
+                    rule: 'no_todo',
+                    severity: 'error',
+                },
+                {
+                    workspaceRoot: 'd:/workspace/apps/a/project-a',
+                    file: 'd:/workspace/apps/a/project-a/src/b.ts',
+                    line: 2,
+                    column: 1,
+                    message: 'e2',
+                    rule: 'no_todo',
+                    severity: 'error',
+                },
+                {
+                    workspaceRoot: 'd:/workspace/project-unique',
+                    file: 'd:/workspace/project-unique/src/c.ts',
+                    line: 3,
+                    column: 1,
+                    message: 'e3',
+                    rule: 'no_todo',
+                    severity: 'error',
+                },
+            ],
+            warnings: [],
+            info: [],
+        }, 'completed');
+
+        const labels = provider.getChildren().map(item => item.label);
+        expect(labels.some(label => label === 'project-unique')).toBe(true);
+        expect(labels.some(label => label === 'project-a (services/a)')).toBe(true);
+        expect(labels.some(label => label === 'project-a (apps/a)')).toBe(true);
+    });
+
+    it('跨项目同名文件不串组，且缺失 workspaceRoot 进入未归属项目', () => {
+        const provider = new ReviewPanelProvider({} as never);
+        provider.updateResult({
+            passed: false,
+            errors: [
+                {
+                    workspaceRoot: 'd:/workspace/project-a',
+                    file: 'd:/workspace/project-a/src/index.ts',
+                    line: 1,
+                    column: 1,
+                    message: 'a',
+                    rule: 'no_todo',
+                    severity: 'error',
+                },
+                {
+                    workspaceRoot: 'd:/workspace/project-b',
+                    file: 'd:/workspace/project-b/src/index.ts',
+                    line: 2,
+                    column: 1,
+                    message: 'b',
+                    rule: 'no_todo',
+                    severity: 'error',
+                },
+                {
+                    file: 'd:/workspace/unknown/src/index.ts',
+                    line: 3,
+                    column: 1,
+                    message: 'u',
+                    rule: 'no_todo',
+                    severity: 'error',
+                },
+            ],
+            warnings: [],
+            info: [],
+        }, 'completed');
+
+        const rootNodes = provider.getChildren().filter(item => item.nodeType === 'project');
+        const projectA = rootNodes.find(item => item.label === 'project-a');
+        const projectB = rootNodes.find(item => item.label === 'project-b');
+        const unassigned = rootNodes.find(item => item.label === '未归属项目');
+        expect(projectA).toBeDefined();
+        expect(projectB).toBeDefined();
+        expect(unassigned).toBeDefined();
+
+        const projectAGroup = provider.getChildren(projectA).find(item => item.groupKey === 'rule');
+        const projectBGroup = provider.getChildren(projectB).find(item => item.groupKey === 'rule');
+        expect(projectAGroup).toBeDefined();
+        expect(projectBGroup).toBeDefined();
+
+        const projectAFiles = provider.getChildren(projectAGroup).map(item => item.filePath);
+        const projectBFiles = provider.getChildren(projectBGroup).map(item => item.filePath);
+        expect(projectAFiles).toEqual(['d:/workspace/project-a/src/index.ts']);
+        expect(projectBFiles).toEqual(['d:/workspace/project-b/src/index.ts']);
     });
 });

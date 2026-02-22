@@ -411,6 +411,9 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                                 lastReviewedHashPrefix: ensureState(nextPath).lastReviewedContentHash?.slice(0, 8),
                             });
                         } else {
+                            if (gateDecision.reason === 'no_pending_diff') {
+                                readyReviewPanel.clearIssuesForFile(path.normalize(nextPath));
+                            }
                             logger.important('[SaveTrace] 保存门控跳过', { file: nextPath, reason: gateDecision.reason });
                         }
                         const message = getSkipReasonMessage(gateDecision.reason);
