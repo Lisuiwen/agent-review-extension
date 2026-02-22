@@ -23,10 +23,12 @@ export interface AffectedScopeResult {
 
 /**
  * AST 片段解析选项
+ * - mergeSnippetGapLines：相邻片段行间隔 ≤ 该值时合并为一段，默认 1；小于 0 时关闭合并。
  */
 export interface AstScopeOptions {
     maxNodeLines?: number;
     maxFileLines?: number;
+    mergeSnippetGapLines?: number;
 }
 
 export type AstFallbackReason =
@@ -124,14 +126,15 @@ export const getAffectedScopeWithDiagnostics = (
         }
     }
 
-    // 7. 将每个节点转为 AffectedScopeSnippet，截取源码并检查 maxNodeLines
+    // 7. 将每个节点转为 AffectedScopeSnippet；超 maxNodeLines 时截断为前 maxNodeLines 行并继续，不回退整文件
     const rawSnippets: AffectedScopeSnippet[] = [];
+    const maxNodeLines = options?.maxNodeLines;
     for (const { startLine, endLine } of uniqueNodes.values()) {
         const normalizedStart = Math.max(1, startLine);
-        const normalizedEnd = Math.min(lines.length, endLine);
+        let normalizedEnd = Math.min(lines.length, endLine);
         const lineCount = normalizedEnd - normalizedStart + 1;
-        if (options?.maxNodeLines && lineCount > options.maxNodeLines) {
-            return { result: null, fallbackReason: 'maxNodeLines' };
+        if (maxNodeLines != null && lineCount > maxNodeLines) {
+            normalizedEnd = normalizedStart + maxNodeLines - 1;
         }
         const source = lines.slice(normalizedStart - 1, normalizedEnd).join('\n');
         rawSnippets.push({ startLine: normalizedStart, endLine: normalizedEnd, source });
@@ -151,7 +154,38 @@ export const getAffectedScopeWithDiagnostics = (
     // 9. 按文件行号排序，输出顺序与源码一致
     snippets.sort((a, b) => a.startLine !== b.startLine ? a.startLine - b.startLine : a.endLine - b.endLine);
 
-    return { result: { snippets } };
+    // 10. 相邻片段合并（间隔 ≤ K 则合并，K<0 关闭）
+    const merged = mergeAdjacentSnippets(snippets, lines, options?.mergeSnippetGapLines ?? 1);
+    return { result: { snippets: merged } };
+};
+
+/**
+ * 将已排序的相邻片段合并：两段间隔（后段 startLine - 前段 endLine - 1）≤ gapLines 时合并为一段。
+ * gapLines < 0 时不合并，原样返回。合并后的 source 从 lines 按 startLine/endLine 重新截取。
+ */
+const mergeAdjacentSnippets = (
+    snippets: AffectedScopeSnippet[],
+    lines: string[],
+    gapLines: number
+): AffectedScopeSnippet[] => {
+    if (gapLines < 0 || snippets.length <= 1) {
+        return snippets;
+    }
+    const merged: AffectedScopeSnippet[] = [];
+    let current = { ...snippets[0] };
+    for (let i = 1; i < snippets.length; i++) {
+        const next = snippets[i];
+        const gap = next.startLine - current.endLine - 1;
+        if (gap <= gapLines) {
+            current.endLine = Math.max(current.endLine, next.endLine);
+            current.source = lines.slice(current.startLine - 1, current.endLine).join('\n');
+        } else {
+            merged.push(current);
+            current = { ...next };
+        }
+    }
+    merged.push(current);
+    return merged;
 };
 
 /**
@@ -314,9 +348,11 @@ const getAffectedScopeVueSfcWithDiagnostics = (
         }
         for (const { startLine, endLine } of uniqueNodes.values()) {
             const normalizedStart = Math.max(1, startLine);
-            const normalizedEnd = Math.min(lines.length, endLine);
+            let normalizedEnd = Math.min(lines.length, endLine);
             const lineCount = normalizedEnd - normalizedStart + 1;
-            if (options?.maxNodeLines && lineCount > options.maxNodeLines) continue;
+            if (options?.maxNodeLines != null && lineCount > options.maxNodeLines) {
+                normalizedEnd = normalizedStart + options.maxNodeLines - 1;
+            }
             const source = lines.slice(normalizedStart - 1, normalizedEnd).join('\n');
             allSnippets.push({ startLine: normalizedStart, endLine: normalizedEnd, source });
         }
@@ -344,9 +380,11 @@ const getAffectedScopeVueSfcWithDiagnostics = (
             }
             for (const { startLine, endLine } of uniqueNodes.values()) {
                 const normalizedStart = Math.max(1, startLine);
-                const normalizedEnd = Math.min(lines.length, endLine);
+                let normalizedEnd = Math.min(lines.length, endLine);
                 const lineCount = normalizedEnd - normalizedStart + 1;
-                if (options?.maxNodeLines && lineCount > options.maxNodeLines) continue;
+                if (options?.maxNodeLines != null && lineCount > options.maxNodeLines) {
+                    normalizedEnd = normalizedStart + options.maxNodeLines - 1;
+                }
                 const source = lines.slice(normalizedStart - 1, normalizedEnd).join('\n');
                 allSnippets.push({ startLine: normalizedStart, endLine: normalizedEnd, source });
             }
@@ -365,7 +403,9 @@ const getAffectedScopeVueSfcWithDiagnostics = (
         return { result: null, fallbackReason: 'emptyResult' };
     }
     snippets.sort((a, b) => (a.startLine !== b.startLine ? a.startLine - b.startLine : a.endLine - b.endLine));
-    return { result: { snippets } };
+    const gapK = options?.mergeSnippetGapLines ?? 1;
+    const merged = mergeAdjacentSnippets(snippets, lines, gapK);
+    return { result: { snippets: merged } };
 };
 
 /**

@@ -25,6 +25,7 @@ export interface AIReviewConfig {
     batching_mode?: 'file_count' | 'ast_snippet';
     ast_snippet_budget?: number;
     ast_chunk_strategy?: 'even' | 'contiguous';
+    ast_chunk_weight_by?: 'snippet_count' | 'chars';
     batch_concurrency?: number;
     max_request_chars?: number;
     run_on_save?: boolean;
@@ -111,6 +112,8 @@ export const DEFAULT_BATCHING_MODE: NonNullable<AIReviewConfig['batching_mode']>
 export const DEFAULT_AST_SNIPPET_BUDGET = 25;
 /** 默认 ast_chunk_strategy */
 export const DEFAULT_AST_CHUNK_STRATEGY: NonNullable<AIReviewConfig['ast_chunk_strategy']> = 'even';
+/** 默认批预算权重方式 */
+export const DEFAULT_AST_CHUNK_WEIGHT_BY: NonNullable<AIReviewConfig['ast_chunk_weight_by']> = 'snippet_count';
 /** 默认批处理并发数 */
 export const DEFAULT_BATCH_CONCURRENCY = 2;
 /** 单次请求最大字符数（超长时二分批次） */

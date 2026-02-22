@@ -828,4 +828,107 @@ describe('ReviewEngine 优化逻辑', () => {
         expect(secondOptions.astSnippetsByFileOverride).toBeUndefined();
         expect(result.warnings.length).toBe(1);
     });
+
+    describe('AST 切片多文件并发（optimize-ast-slice）', () => {
+        const fileA = path.normalize('src/a.ts');
+        const fileB = path.normalize('src/b.ts');
+        const contentA = ['const a = 1;', 'function fa() { return a; }'].join('\n');
+        const contentB = ['const b = 2;', 'function fb() { return b; }'].join('\n');
+
+        const makeDiff = (pathKey: string, newStart: number, lines: string[]): FileDiff => ({
+            path: pathKey,
+            hunks: [{ newStart, newCount: lines.length, lines }],
+            formatOnly: false,
+            commentOnly: false,
+        });
+
+        it('多文件并发且结果正确：返回 Map 中每路径对应该文件的 AffectedScopeResult', async () => {
+            const configManager = createMockConfigManager({
+                rules: { enabled: false, strict_mode: false, diff_only: true },
+                ai_review: {
+                    enabled: true,
+                    api_format: 'openai',
+                    api_endpoint: 'https://api.example.com',
+                    timeout: 1000,
+                    action: 'warning',
+                    diff_only: true,
+                },
+                ast: {
+                    enabled: true,
+                    max_node_lines: 200,
+                    max_file_lines: 2000,
+                    slice_concurrency: 4,
+                },
+            });
+            readFileMock.mockImplementation(async (filePath: string) => {
+                if (path.normalize(filePath) === fileA) return contentA;
+                if (path.normalize(filePath) === fileB) return contentB;
+                return '';
+            });
+            const diffByFile = new Map<string, FileDiff>([
+                [fileA, makeDiff(fileA, 2, ['function fa() { return a; }'])],
+                [fileB, makeDiff(fileB, 2, ['function fb() { return b; }'])],
+            ]);
+            ruleEngineCheckFilesMock.mockResolvedValue([]);
+            aiReviewerReviewMock.mockResolvedValue([]);
+
+            const reviewEngine = new ReviewEngine(configManager);
+            vi.spyOn(reviewEngine as unknown as { collectDiagnosticsByFile: () => Map<string, Array<{ line: number; message: string }>> }, 'collectDiagnosticsByFile').mockReturnValue(new Map());
+            await reviewEngine.initialize();
+
+            await reviewEngine.review([fileA, fileB], { diffByFile });
+
+            expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);
+            const request = aiReviewerReviewMock.mock.calls[0][0] as { astSnippetsByFile?: Map<string, { snippets: Array<{ startLine: number; endLine: number; source: string }> }> };
+            expect(request.astSnippetsByFile).toBeDefined();
+            expect(request.astSnippetsByFile!.size).toBe(2);
+            expect(request.astSnippetsByFile!.get(fileA)).toBeDefined();
+            expect(request.astSnippetsByFile!.get(fileB)).toBeDefined();
+            expect(request.astSnippetsByFile!.get(fileA)!.snippets.length).toBeGreaterThan(0);
+            expect(request.astSnippetsByFile!.get(fileB)!.snippets.length).toBeGreaterThan(0);
+        });
+
+        it('并发数为 1 时顺序执行：结果与多文件一致', async () => {
+            const configManager = createMockConfigManager({
+                rules: { enabled: false, strict_mode: false, diff_only: true },
+                ai_review: {
+                    enabled: true,
+                    api_format: 'openai',
+                    api_endpoint: 'https://api.example.com',
+                    timeout: 1000,
+                    action: 'warning',
+                    diff_only: true,
+                },
+                ast: {
+                    enabled: true,
+                    max_node_lines: 200,
+                    max_file_lines: 2000,
+                    slice_concurrency: 1,
+                },
+            });
+            readFileMock.mockImplementation(async (filePath: string) => {
+                if (path.normalize(filePath) === fileA) return contentA;
+                if (path.normalize(filePath) === fileB) return contentB;
+                return '';
+            });
+            const diffByFile = new Map<string, FileDiff>([
+                [fileA, makeDiff(fileA, 2, ['function fa() { return a; }'])],
+                [fileB, makeDiff(fileB, 2, ['function fb() { return b; }'])],
+            ]);
+            ruleEngineCheckFilesMock.mockResolvedValue([]);
+            aiReviewerReviewMock.mockResolvedValue([]);
+
+            const reviewEngine = new ReviewEngine(configManager);
+            vi.spyOn(reviewEngine as unknown as { collectDiagnosticsByFile: () => Map<string, Array<{ line: number; message: string }>> }, 'collectDiagnosticsByFile').mockReturnValue(new Map());
+            await reviewEngine.initialize();
+
+            await reviewEngine.review([fileA, fileB], { diffByFile });
+
+            expect(aiReviewerReviewMock).toHaveBeenCalledTimes(1);
+            const request = aiReviewerReviewMock.mock.calls[0][0] as { astSnippetsByFile?: Map<string, { snippets: Array<{ startLine: number; endLine: number; source: string }> }> };
+            expect(request.astSnippetsByFile!.size).toBe(2);
+            expect(request.astSnippetsByFile!.get(fileA)!.snippets.length).toBeGreaterThan(0);
+            expect(request.astSnippetsByFile!.get(fileB)!.snippets.length).toBeGreaterThan(0);
+        });
+    });
 });

@@ -11,6 +11,7 @@ import type { AIReviewConfig, ReviewUnit, ReviewUnitSourceType } from './aiRevie
 import {
     DEFAULT_AST_SNIPPET_BUDGET,
     DEFAULT_AST_CHUNK_STRATEGY,
+    DEFAULT_AST_CHUNK_WEIGHT_BY,
     DEFAULT_BATCH_CONCURRENCY,
     DEFAULT_MAX_REQUEST_CHARS,
     DEFAULT_BATCH_SIZE,
@@ -75,14 +76,22 @@ export function chunkAstSnippets(
     return chunks.filter((chunk) => chunk.length > 0);
 }
 
-/** 按 snippet 权重将单元分组，每批权重不超过 budget */
-export function splitUnitsBySnippetBudget(units: ReviewUnit[], snippetBudget: number): ReviewUnit[][] {
-    const budget = Math.max(1, snippetBudget);
+/** 按 snippet 或字符数权重将单元分组，每批权重不超过 budget；config 为 null 或 ast_chunk_weight_by 非 chars 时按片段数 */
+export function splitUnitsBySnippetBudget(
+    units: ReviewUnit[],
+    snippetBudget: number,
+    config: AIReviewConfig | null = null
+): ReviewUnit[][] {
+    const weightBy = config?.ast_chunk_weight_by ?? DEFAULT_AST_CHUNK_WEIGHT_BY;
+    const useChars = weightBy === 'chars';
+    const budget = useChars ? getMaxRequestChars(config) : Math.max(1, snippetBudget);
     const batches: ReviewUnit[][] = [];
     let current: ReviewUnit[] = [];
     let currentWeight = 0;
     for (const unit of units) {
-        const weight = Math.max(1, unit.snippetCount);
+        const weight = useChars
+            ? Math.max(1, unit.content.length)
+            : Math.max(1, unit.snippetCount);
         if (current.length > 0 && currentWeight + weight > budget) {
             batches.push(current);
             current = [];

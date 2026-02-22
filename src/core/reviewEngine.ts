@@ -176,26 +176,50 @@ export class ReviewEngine {
                     fallbackCounts[normalizedReason] += 1;
                 };
 
-                for (const filePath of targetFiles) {
+                const filesWithDiff = targetFiles.filter((filePath) => {
                     const normalizedPath = path.normalize(filePath);
                     const fileDiff = options.diffByFile.get(normalizedPath) ?? options.diffByFile.get(filePath);
-                    if (!fileDiff?.hunks?.length) {
-                        continue;
-                    }
-                    attemptedFiles++;
+                    return !!fileDiff?.hunks?.length;
+                });
+
+                const processOne = async (filePath: string): Promise<{ filePath: string; scopeResult: ReturnType<typeof getAffectedScopeWithDiagnostics> }> => {
+                    const fileDiff = options.diffByFile!.get(path.normalize(filePath)) ?? options.diffByFile!.get(filePath)!;
                     try {
                         const content = await this.fileScanner.readFile(filePath);
                         const scopeResult = getAffectedScopeWithDiagnostics(filePath, content, fileDiff, {
                             maxFileLines: config.ast?.max_file_lines,
                             maxNodeLines: config.ast?.max_node_lines,
+                            mergeSnippetGapLines: config.ast?.merge_snippet_gap_lines ?? 1,
                         });
+                        return { filePath, scopeResult };
+                    } catch {
+                        return { filePath, scopeResult: { result: null, fallbackReason: 'parseFailed' as const } };
+                    }
+                };
+
+                const concurrency = config.ast?.slice_concurrency ?? 4;
+                if (concurrency <= 1) {
+                    for (const filePath of filesWithDiff) {
+                        attemptedFiles++;
+                        const { filePath: fp, scopeResult } = await processOne(filePath);
                         if (scopeResult.result?.snippets?.length) {
-                            snippetsByFile.set(filePath, scopeResult.result);
+                            snippetsByFile.set(fp, scopeResult.result);
                         } else {
                             addFallback(scopeResult.fallbackReason);
                         }
-                    } catch {
-                        addFallback('parseFailed');
+                    }
+                } else {
+                    for (let i = 0; i < filesWithDiff.length; i += concurrency) {
+                        const chunk = filesWithDiff.slice(i, i + concurrency);
+                        const results = await Promise.all(chunk.map(processOne));
+                        for (const { filePath: fp, scopeResult } of results) {
+                            attemptedFiles++;
+                            if (scopeResult.result?.snippets?.length) {
+                                snippetsByFile.set(fp, scopeResult.result);
+                            } else {
+                                addFallback(scopeResult.fallbackReason);
+                            }
+                        }
                     }
                 }
 

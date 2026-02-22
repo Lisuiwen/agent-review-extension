@@ -206,6 +206,15 @@
           "default": "even",
           "description": "同一文件 AST 片段拆分策略：even（均匀）或 contiguous（连续）"
         },
+        "agentreview.ai.astChunkWeightBy": {
+          "type": "string",
+          "enum": [
+            "snippet_count",
+            "chars"
+          ],
+          "default": "snippet_count",
+          "description": "批预算权重方式：snippet_count（按片段数）或 chars（按字符数，受 maxRequestChars 约束）"
+        },
         "agentreview.ai.batchConcurrency": {
           "type": "number",
           "default": 2,

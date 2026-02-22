@@ -47,6 +47,7 @@ export interface AgentReviewConfig {
         batching_mode?: 'file_count' | 'ast_snippet'; // 批次模式
         ast_snippet_budget?: number;        // AST 片段预算（每批次片段数量上限）
         ast_chunk_strategy?: 'even' | 'contiguous'; // 同一文件片段拆分策略
+        ast_chunk_weight_by?: 'snippet_count' | 'chars'; // 批预算权重：按片段数或按字符数，默认 snippet_count
         batch_concurrency?: number;         // 批次并发数
         max_request_chars?: number;         // 单次请求字符数上限
         run_on_save?: boolean;              // 保存文件时自动触发审查（默认 false）
@@ -73,6 +74,8 @@ export interface AgentReviewConfig {
         enabled?: boolean;          // 是否启用 AST 片段模式（默认 false）
         max_node_lines?: number;   // 单个 AST 节点的最大行数
         max_file_lines?: number;   // 文件总行数超过阈值则回退
+        merge_snippet_gap_lines?: number; // 相邻片段行间隔 ≤ 该值时合并为一段，默认 1；<0 关闭合并
+        slice_concurrency?: number;    // AST 切片多文件并发数，默认 4；1 为顺序执行
         include_lsp_context?: boolean; // 是否通过 LSP 补充外部定义上下文（默认 true）
         preview_only?: boolean;     // 为 true 时不调用大模型，仅打印将发送的 AST/变更切片内容
         vue_include_related_blocks?: boolean;   // Vue：审 script 时带 template、审 template 时带 script（默认 true），不送 style

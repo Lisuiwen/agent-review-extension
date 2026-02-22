@@ -22,6 +22,7 @@ import {
     DEFAULT_BATCHING_MODE,
     DEFAULT_AST_SNIPPET_BUDGET,
     DEFAULT_AST_CHUNK_STRATEGY,
+    DEFAULT_AST_CHUNK_WEIGHT_BY,
     DEFAULT_MAX_RETRIES,
     DEFAULT_RETRY_DELAY,
     DEFAULT_TEMPERATURE,
@@ -156,6 +157,7 @@ export class AIReviewer {
             batching_mode: config.ai_review.batching_mode ?? DEFAULT_BATCHING_MODE,
             ast_snippet_budget: config.ai_review.ast_snippet_budget ?? DEFAULT_AST_SNIPPET_BUDGET,
             ast_chunk_strategy: config.ai_review.ast_chunk_strategy ?? DEFAULT_AST_CHUNK_STRATEGY,
+            ast_chunk_weight_by: config.ai_review.ast_chunk_weight_by ?? DEFAULT_AST_CHUNK_WEIGHT_BY,
             batch_concurrency: config.ai_review.batch_concurrency ?? DEFAULT_BATCH_CONCURRENCY,
             max_request_chars: config.ai_review.max_request_chars ?? DEFAULT_MAX_REQUEST_CHARS,
             action: config.ai_review.action
@@ -417,7 +419,7 @@ export class AIReviewer {
 
             const useAstSnippetBatching = useAstSnippets && this.config?.batching_mode === 'ast_snippet';
             const batches = useAstSnippetBatching
-                ? splitUnitsBySnippetBudget(reviewUnits, getAstSnippetBudget(this.config))
+                ? splitUnitsBySnippetBudget(reviewUnits, getAstSnippetBudget(this.config), this.config)
                 : splitIntoBatches(reviewUnits, DEFAULT_BATCH_SIZE);
 
             const issues = await this.processReviewUnitBatches(batches, {

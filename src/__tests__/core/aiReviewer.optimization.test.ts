@@ -8,6 +8,7 @@
  * 4. 并发池上限控制
  * 5. max_request_chars 超限自动降载二分
  * 6. 截断响应续写回归
+ * 7. ast_chunk_weight_by=chars 时按字符数分批且与 batch_concurrency 配合
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -347,5 +348,113 @@ describe('AIReviewer 批处理优化', () => {
         expect(response.issues.length).toBe(2);
         expect(response.issues[0].file).toBe('src/a.ts');
         expect(response.issues[1].file).toBe('src/b.ts');
+    });
+
+    it('ast_chunk_weight_by=chars 时按字符数分批且每批不超过 max_request_chars', async () => {
+        const charBudget = 500;
+        const configManager = createMockConfigManager({
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                api_key: 'test-api-key',
+                model: 'test-model',
+                timeout: 1000,
+                action: 'warning',
+                batching_mode: 'ast_snippet',
+                ast_snippet_budget: 25,
+                ast_chunk_weight_by: 'chars',
+                max_request_chars: charBudget,
+                batch_concurrency: 2,
+            },
+        });
+
+        const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
+
+        // 每个 snippet 约 30 字符，5 个 snippet 一单元 => 每单元约 150 字符；设 4 单元 => 约 600 字符，按 500 上限应拆成多批
+        const filePath = 'src/foo.ts';
+        const astSnippetsByFile = new Map<string, AffectedScopeResult>([
+            [filePath, createAstResult(20, 1)], // 20 片段会按 even 拆成多 chunk，每 chunk 一 unit
+        ]);
+
+        const callApiSpy = vi
+            .spyOn(aiReviewer as unknown as { callAPI: (input: CallApiInput) => Promise<{ issues: Array<any> }> }, 'callAPI')
+            .mockImplementation(async (input) => ({
+                issues: [{
+                    file: input.files[0].path,
+                    line: 1,
+                    column: 1,
+                    message: 'ok',
+                    severity: 'warning',
+                }],
+            }));
+
+        await aiReviewer.review({
+            files: [{ path: filePath }],
+            astSnippetsByFile,
+        });
+
+        const calls = callApiSpy.mock.calls;
+        expect(calls.length).toBeGreaterThanOrEqual(1);
+        for (const call of calls) {
+            const totalChars = call[0].files.reduce((sum, f) => sum + f.path.length + f.content.length, 0);
+            expect(totalChars).toBeLessThanOrEqual(charBudget + 2000);
+        }
+    });
+
+    it('ast_chunk_weight_by=chars 时与 batch_concurrency 配合并发数生效', async () => {
+        const configManager = createMockConfigManager({
+            ai_review: {
+                enabled: true,
+                api_format: 'openai',
+                api_endpoint: 'https://api.example.com',
+                api_key: 'test-api-key',
+                model: 'test-model',
+                timeout: 1000,
+                action: 'warning',
+                batching_mode: 'ast_snippet',
+                ast_snippet_budget: 25,
+                ast_chunk_weight_by: 'chars',
+                max_request_chars: 400,
+                batch_concurrency: 2,
+            },
+        });
+
+        const aiReviewer = new AIReviewer(configManager);
+        await aiReviewer.initialize();
+
+        const filePath = 'src/bar.ts';
+        const astSnippetsByFile = new Map<string, AffectedScopeResult>([
+            [filePath, createAstResult(30, 1)],
+        ]);
+
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const callApiSpy = vi
+            .spyOn(aiReviewer as unknown as { callAPI: (input: CallApiInput) => Promise<{ issues: Array<any> }> }, 'callAPI')
+            .mockImplementation(async (input) => {
+                inFlight++;
+                maxInFlight = Math.max(maxInFlight, inFlight);
+                await new Promise(resolve => setTimeout(resolve, 30));
+                inFlight--;
+                return {
+                    issues: [{
+                        file: input.files[0].path,
+                        line: 1,
+                        column: 1,
+                        message: 'ok',
+                        severity: 'warning',
+                    }],
+                };
+            });
+
+        await aiReviewer.review({
+            files: [{ path: filePath }],
+            astSnippetsByFile,
+        });
+
+        expect(callApiSpy).toHaveBeenCalled();
+        expect(maxInFlight).toBeLessThanOrEqual(2);
     });
 });

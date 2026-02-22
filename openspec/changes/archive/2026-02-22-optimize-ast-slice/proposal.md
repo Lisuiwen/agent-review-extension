@@ -23,6 +23,7 @@
 
 ## Impact
 
+- **测试**：需新增多文件并发、大节点截断与相邻合并的单测，与 design「测试与验证」及 tasks 一致。
 - **受影响代码**：`src/core/reviewEngine.ts`（`buildAstSnippetsByFile` 的并行与调用方式）、`src/utils/astScope.ts`（大节点截断、可选相邻合并与少解析相关逻辑）、`src/ai/aiReviewer.batching.ts`（批预算按字符/预估 token 的可选策略）。
 - **配置**：可能新增或复用 AST/审查相关配置项（如并行度、是否合并相邻片段、大文件是否跳过 AST 等），具体在 design 与 tasks 中落实。
 - **API/依赖**：不引入新运行时依赖；仅使用现有 Babel/Vue 解析与 Node/VSCode API。

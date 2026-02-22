@@ -29,7 +29,7 @@ export const mergeConfig = (
 ): AgentReviewConfig => {
     const defaultRules = defaultConfig.rules;
     const userRules = resolvedUserConfig.rules;
-    const defaultAst = defaultConfig.ast ?? { enabled: false, max_node_lines: 200, max_file_lines: 2000, preview_only: false };
+    const defaultAst = defaultConfig.ast ?? { enabled: false, max_node_lines: 200, max_file_lines: 2000, merge_snippet_gap_lines: 1, slice_concurrency: 4, preview_only: false };
     const defaultRuntimeLog = defaultConfig.runtime_log ?? DEFAULT_RUNTIME_LOG;
     const userRuntime = resolvedUserConfig.runtime_log;
 
@@ -53,6 +53,8 @@ export const mergeConfig = (
                 enabled: resolvedUserConfig.ast.enabled ?? defaultAst.enabled,
                 max_node_lines: resolvedUserConfig.ast.max_node_lines ?? defaultAst.max_node_lines,
                 max_file_lines: resolvedUserConfig.ast.max_file_lines ?? defaultAst.max_file_lines,
+                merge_snippet_gap_lines: resolvedUserConfig.ast.merge_snippet_gap_lines ?? defaultAst.merge_snippet_gap_lines ?? 1,
+                slice_concurrency: resolvedUserConfig.ast.slice_concurrency ?? defaultAst.slice_concurrency ?? 4,
                 preview_only: resolvedUserConfig.ast.preview_only ?? defaultAst.preview_only,
             }
             : defaultAst,

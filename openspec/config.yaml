@@ -10,6 +10,7 @@ context: |
   OpenSpec 流程中的测试约定：
   - design.md 必须包含「测试与验证」小节；其格式（Scenario 列表、覆盖策略、每条用例设计的测什么/条件/期望/断言要点）见 openspec/测试用例设计与实现规范.md 的「设计怎么写」； 若该任务无需单元测试则说明无需更改或新增测试。 本节需要额外判断是否可以使用TDD 参考[tdd-workflow.md](.cursor/skills/tdd-workflow.md)。
   - tasks.md 必须包含至少一项与测试相关的任务（新增/修改测试或明确说明无需测试），并与 design 中「测试与验证」一致；需新增的测试在 tasks 中应有对应可勾选任务，实现后勾选，并可在 design 中更新「已有覆盖」。
+  - 若 design「测试与验证」标明某逻辑采用 TDD，执行实现（apply）时应对应任务按「先写失败用例再实现」顺序执行，参考 .cursor/skills/tdd-workflow.md。
 
 # 各产物规则：key 需与 schema 中 artifact id 一致（proposal / specs / design / tasks）
 rules:
@@ -21,3 +22,4 @@ rules:
     - 必须包含「测试与验证」小节：列出本变更涉及的 spec Scenario、已有/需新增覆盖及目标文件；每条用例设计须含测什么、条件、期望、断言要点（格式与表格见 openspec/测试用例设计与实现规范.md §2）；若有特殊 mock/fixture 可在此说明。
   tasks:
     - 必须包含至少一项与测试相关的任务（新增/修改测试或明确说明无需测试），并与 design 中「测试与验证」一致；凡「需新增」的测试在 tasks 中应有对应可勾选任务。
+    - 若 design「测试与验证」标明某逻辑采用 TDD，tasks 中相关实现任务须体现先测后实现：要么将「先写该行为的失败单测」作为独立任务排在对应实现任务之前，要么在实现任务描述中注明「按 TDD：先写失败用例再实现」。

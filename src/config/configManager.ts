@@ -178,6 +178,7 @@ export class ConfigManager implements vscode.Disposable {
             { key: 'ai.batchingMode', configKey: 'batching_mode' },
             { key: 'ai.astSnippetBudget', configKey: 'ast_snippet_budget' },
             { key: 'ai.astChunkStrategy', configKey: 'ast_chunk_strategy' },
+            { key: 'ai.astChunkWeightBy', configKey: 'ast_chunk_weight_by' },
             { key: 'ai.batchConcurrency', configKey: 'batch_concurrency' },
             { key: 'ai.maxRequestChars', configKey: 'max_request_chars' },
             { key: 'ai.runOnSave', configKey: 'run_on_save' },
@@ -396,6 +397,7 @@ export class ConfigManager implements vscode.Disposable {
                     batching_mode: settingsAIConfig.batching_mode ?? existingAIConfig?.batching_mode ?? 'file_count',
                     ast_snippet_budget: settingsAIConfig.ast_snippet_budget ?? existingAIConfig?.ast_snippet_budget ?? 25,
                     ast_chunk_strategy: settingsAIConfig.ast_chunk_strategy ?? existingAIConfig?.ast_chunk_strategy ?? 'even',
+                    ast_chunk_weight_by: settingsAIConfig.ast_chunk_weight_by ?? existingAIConfig?.ast_chunk_weight_by ?? 'snippet_count',
                     batch_concurrency: settingsAIConfig.batch_concurrency ?? existingAIConfig?.batch_concurrency ?? 2,
                     max_request_chars: settingsAIConfig.max_request_chars ?? existingAIConfig?.max_request_chars ?? 50000,
                 };
@@ -612,6 +614,8 @@ export class ConfigManager implements vscode.Disposable {
                 enabled: true,
                 max_node_lines: 200,
                 max_file_lines: 2000,
+                merge_snippet_gap_lines: 1,  // 相邻片段间隔 ≤ 该行数则合并，<0 关闭
+                slice_concurrency: 4,  // 多文件 AST 切片并发数，1 为顺序
                 include_lsp_context: true, // 默认启用：为 AST 片段补充一层局部定义上下文
                 preview_only: false,  // 默认 false：正常请求大模型；true 时仅打印切片不请求
                 vue_include_related_blocks: true,  // Vue 审 script 时带 template、审 template 时带 script，不送 style

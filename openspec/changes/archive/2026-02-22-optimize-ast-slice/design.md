@@ -66,22 +66,35 @@
 
 ## 测试与验证
 
-本变更涉及的 spec Scenario 及测试覆盖策略如下（与 specs/ast-slice-optimization/spec.md 对应）。
+本变更涉及的 spec Scenario、覆盖策略及目标文件见下表（与 specs/ast-slice-optimization/spec.md 对应）。需新增的用例设计采用「测什么 / 条件 / 期望 / 断言要点」格式（见 openspec/测试用例设计与实现规范.md §2）；是否采用 TDD：截断与相邻合并逻辑可先写断言再实现，适合 TDD，可参考 .cursor/skills/tdd-workflow.md。
 
-| Scenario（要点） | 覆盖策略 | 对应测试 |
-|------------------|----------|----------|
-| 多文件时并发执行且结果正确 | 需新增 | reviewEngine 或集成层单测（tasks 4.1） |
-| 并发数为 1 时顺序执行 | 需新增 | 同上，并发数=1 分支 |
-| 单节点超 maxNodeLines 时截断并继续 | 需新增/调整 | astScope.test.ts：截断不回退、Vue 路径（tasks 1.4） |
+### Scenario 覆盖总览
+
+| Scenario（要点） | 覆盖策略 | 目标文件 / 任务 |
+|------------------|----------|------------------|
+| 多文件时并发执行且结果正确 | 需新增 | reviewEngine 或集成层（tasks 4.1） |
+| 并发数为 1 时顺序执行 | 需新增 | 同上（tasks 4.1） |
+| 单节点超 maxNodeLines 时截断并继续 | 需新增/调整 | astScope.test.ts（tasks 1.4） |
 | 所有节点均不超限时行为不变 | 已有 | astScope.test.ts 现有用例 |
-| 间隔不超过 K 时合并 | 需新增 | astScope.test.ts：mergeAdjacentSnippets、K≥0（tasks 1.4） |
-| 合并关闭时保持原样（K<0） | 需新增 | astScope.test.ts：K<0 不合并（tasks 1.4） |
+| 间隔不超过 K 时合并 | 需新增 | astScope.test.ts（tasks 1.4） |
+| 合并关闭时保持原样（K<0） | 需新增 | astScope.test.ts（tasks 1.4） |
 | 超过 maxFileLines 时返回 null | 已有 | astScope 现有大文件/早退相关用例 |
 | 不支持扩展名时返回 null | 已有 | astScope 扩展名相关行为 |
 | 默认按个数时行为不变 / 启用按字符时批次受字符约束 | 可选 | 若实现 5.1/5.2，则 tasks 5.2 单测 |
 
+### 需新增用例设计（测什么 / 条件 / 期望 / 断言要点）
+
+| 测什么 | 条件 | 期望 | 断言要点 |
+|--------|------|------|----------|
+| 多文件并发执行且结果正确 | targetFiles 至少 2 个有 diff 的文件，并发数 > 1；buildAstSnippetsByFile 调用 | 各文件并发执行，返回 Map 中每路径对应该文件的 AffectedScopeResult | `expect(map.size).toBe(targetFiles.length)`；每 key 对应路径；每 value 形态符合 AffectedScopeResult |
+| 并发数为 1 时顺序执行 | 并发数配置为 1，多文件调用 buildAstSnippetsByFile | 行为与顺序执行一致，结果与未并行前一致 | 结果 Map 与顺序实现结果一致（可对比 snippet 顺序或结果快照） |
+| 单节点超 maxNodeLines 时截断并继续 | 某节点行数 > options.maxNodeLines；content + fileDiff 构造出该节点 | result 非 null；该节点只取前 maxNodeLines 行；其余节点正常输出 | `expect(result).not.toBeNull()`；该 snippet 的 `endLine - startLine + 1 <= maxNodeLines`；snippets 数量/内容符合预期 |
+| 所有节点均不超限时行为不变 | 所有节点行数均 ≤ maxNodeLines | 输出片段与未引入截断逻辑前一致 | 片段数、各 snippet 的 startLine/endLine/source 与基准一致 |
+| 间隔不超过 K 时合并（K≥0） | 已排序 snippets 中两段间隔 ≤ K（K≥0） | 两段合并为一段，输出片段数减少，合并段 source 覆盖合并后行范围 | 合并后 snippets 数减少；合并段 startLine/endLine 为两段最小/最大；source 覆盖该行范围 |
+| 合并关闭时保持原样（K<0） | 合并间隔配置 K<0 或关闭合并 | 不进行合并，输出与未引入合并逻辑前一致 | snippets 数量与顺序与不合并时一致 |
+
 - **已有测试文件**：`src/__tests__/utils/astScope.test.ts`、`src/__tests__/core/reviewEngine.optimization.test.ts`。
-- **需新增/修改**：astScope 截断与合并逻辑的单测（1.4）；reviewEngine 多文件并发与并发数=1 的单测（4.1）。无特殊 mock，沿用现有 tempFileSystem / mock 即可。
+- **需新增/修改**：astScope 截断与合并逻辑的单测（tasks 1.4）；reviewEngine 多文件并发与并发数=1 的单测（tasks 4.1）。无特殊 mock，沿用现有 tempFileSystem / mock 即可。实现后可在本表或总览中更新「已有覆盖」。
 
 ## Open Questions
 
