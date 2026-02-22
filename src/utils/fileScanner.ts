@@ -26,6 +26,7 @@ import { promisify } from 'util';      // 将回调函数转换为 Promise
 import { Logger } from './logger';
 import { parseUnifiedDiff } from './diffParser';
 import type { FileDiff } from './diffTypes';
+import { getEffectiveWorkspaceRoot } from './workspaceRoot';
 
 // 将 exec 转换为 Promise 形式，方便使用 async/await
 const execAsync = promisify(exec);
@@ -55,7 +56,7 @@ export class FileScanner {
 
     constructor() {
         this.logger = new Logger('FileScanner');
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolder = getEffectiveWorkspaceRoot();
         this.workspaceRoot = workspaceFolder?.uri.fsPath;
     }
 

@@ -1,6 +1,11 @@
+import * as path from 'path';
+import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerRunReviewCommand } from '../../commands/runReviewCommand';
+
+const createContentHash = (content: string): string =>
+    createHash('sha1').update(content, 'utf8').digest('hex');
 
 type ReviewIssue = {
     file: string;
@@ -64,6 +69,7 @@ describe('runReviewCommand', () => {
             logger,
             configManager: undefined,
             getGitRoot: () => null,
+            persistLastReviewedHash: undefined as ((filePath: string, hash: string) => void) | undefined,
         } as any;
     };
 
@@ -266,5 +272,92 @@ describe('runReviewCommand', () => {
         await secondRun;
 
         expect(infoSpy).toHaveBeenCalledWith('审查进行中，已忽略重复刷新');
+    });
+
+    it('2.1 run 成功应用结果后会更新 lastReviewedContentHash', async () => {
+        const content = 'const a = 1;';
+        const expectedHash = createContentHash(content);
+        const persist = vi.fn();
+        const doc = {
+            uri: { scheme: 'file' as const, fsPath: path.normalize('d:/ws/run-file.ts') },
+            getText: () => content,
+        };
+        const workspace = {
+            textDocuments: [doc],
+            openTextDocument: vi.fn(async () => doc),
+        };
+        (vscode as any).workspace = workspace;
+
+        const deps = createDeps({
+            reviewResultContext: {
+                result: { passed: true, errors: [], warnings: [], info: [] },
+                reason: 'reviewed',
+                pendingFiles: ['d:/ws/run-file.ts'],
+            },
+            currentResult: null,
+        });
+        deps.persistLastReviewedHash = persist;
+
+        let commandHandler: (() => Promise<void>) | undefined;
+        vi.spyOn(vscode.commands, 'registerCommand').mockImplementation((_, cb) => {
+            commandHandler = cb as () => Promise<void>;
+            return { dispose: () => undefined };
+        });
+        registerRunReviewCommand(deps);
+        await commandHandler!();
+
+        expect(persist).toHaveBeenCalledWith('d:/ws/run-file.ts', expectedHash);
+    });
+
+    it('2.3 run 结果未应用（no_pending_changes）时不更新 lastReviewedContentHash', async () => {
+        const persist = vi.fn();
+        const deps = createDeps({
+            reviewResultContext: {
+                result: { passed: true, errors: [], warnings: [], info: [] },
+                reason: 'no_pending_changes',
+                pendingFiles: [],
+            },
+            currentResult: null,
+        });
+        deps.persistLastReviewedHash = persist;
+
+        let commandHandler: (() => Promise<void>) | undefined;
+        vi.spyOn(vscode.commands, 'registerCommand').mockImplementation((_, cb) => {
+            commandHandler = cb as () => Promise<void>;
+            return { dispose: () => undefined };
+        });
+        registerRunReviewCommand(deps);
+        await commandHandler!();
+
+        expect(persist).not.toHaveBeenCalled();
+    });
+
+    it('2.3 run 结果未应用（preserveHistoricalOnEmpty）时不更新 lastReviewedContentHash', async () => {
+        const persist = vi.fn();
+        const currentResult: ReviewResult = {
+            passed: false,
+            errors: [{ file: 'a.ts', line: 1, column: 1, message: 'x', rule: 'r', severity: 'error' }],
+            warnings: [],
+            info: [],
+        };
+        const deps = createDeps({
+            reviewResultContext: {
+                result: { passed: true, errors: [], warnings: [], info: [] },
+                reason: 'reviewed',
+                pendingFiles: ['a.ts'],
+            },
+            currentResult,
+        });
+        deps.persistLastReviewedHash = persist;
+
+        let commandHandler: (() => Promise<void>) | undefined;
+        vi.spyOn(vscode.commands, 'registerCommand').mockImplementation((_, cb) => {
+            commandHandler = cb as () => Promise<void>;
+            return { dispose: () => undefined };
+        });
+        registerRunReviewCommand(deps);
+        await commandHandler!();
+
+        expect(persist).not.toHaveBeenCalled();
     });
 });

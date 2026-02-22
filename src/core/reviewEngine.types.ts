@@ -30,6 +30,12 @@ export type PendingReviewContext = {
     reason: 'no_pending_changes' | 'reviewed';
 };
 
+/** staged 审查上下文：用于 runStaged 成功后写入 lastReviewedContentHash */
+export type StagedReviewContext = {
+    result: ReviewResult;
+    stagedFiles: string[];
+};
+
 /** 已复审行范围 */
 export type ReviewedRange = {
     startLine: number;

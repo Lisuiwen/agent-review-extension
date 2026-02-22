@@ -33,6 +33,7 @@ import type { AgentReviewConfig, RuleConfig } from '../types/config';
 import { loadYamlFromPath, loadPluginYaml } from './configLoader';
 import { setupConfigWatcher } from './configWatcher';
 import { resolveEnvVariables, resolveEnvInConfig } from './envResolver';
+import { getEffectiveWorkspaceRoot } from '../utils/workspaceRoot';
 import { mergeConfig as mergeConfigFn } from './configMerger';
 
 export type { AgentReviewConfig, RuleConfig } from '../types/config';
@@ -59,8 +60,8 @@ export class ConfigManager implements vscode.Disposable {
      */
     constructor() {
         this.logger = new Logger('ConfigManager');
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        this.configPath = workspaceFolder 
+        const workspaceFolder = getEffectiveWorkspaceRoot();
+        this.configPath = workspaceFolder
             ? path.join(workspaceFolder.uri.fsPath, '.agentreview.yaml')
             : '.agentreview.yaml';
         this.envPath = workspaceFolder
@@ -90,7 +91,7 @@ export class ConfigManager implements vscode.Disposable {
      * 当配置文件或 .env 文件变更时，自动重新加载配置
      */
     private setupFileWatcher(): void {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolder = getEffectiveWorkspaceRoot();
         if (!workspaceFolder) {
             this.logger.warn('未找到工作区，无法设置配置文件监视器');
             return;
@@ -478,8 +479,8 @@ export class ConfigManager implements vscode.Disposable {
 
     private async loadEnvFile(): Promise<void> {
         this.envVars.clear();
-        const folders = vscode.workspace.workspaceFolders ?? [];
-        const envPaths = folders.length > 0 ? folders.map(f => path.join(f.uri.fsPath, '.env')) : [this.envPath || '.env'];
+        const root = getEffectiveWorkspaceRoot();
+        const envPaths = root ? [path.join(root.uri.fsPath, '.env')] : [this.envPath || '.env'];
         this.logger.info(`加载 .env 文件: ${envPaths.join(', ')}`);
         try {
             for (const envPath of envPaths) {
@@ -536,7 +537,7 @@ export class ConfigManager implements vscode.Disposable {
      * 用途：检测项目是否有自己的规则文件（如 eslint）
      */
     private detectProjectRuleConfig = (): boolean => {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolder = getEffectiveWorkspaceRoot();
         if (!workspaceFolder) {
             return false;
         }

@@ -2,10 +2,15 @@
  * 命令 agentreview.run：手动触发代码审查（待提交变更）。
  */
 
+import * as path from 'path';
+import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import type { CommandContext } from './commandContext';
 import type { ReviewResult } from '../types/review';
 import { IssueDeduplicator } from '../core/issueDeduplicator';
+
+const createContentHash = (content: string): string =>
+    createHash('sha1').update(content, 'utf8').digest('hex');
 
 const countIssues = (result: ReviewResult): number =>
     result.errors.length + result.warnings.length + result.info.length;
@@ -80,7 +85,7 @@ export const registerRunReviewCommand = (deps: CommandContext): vscode.Disposabl
                     reviewPanel.setStatus('reviewing');
                     reviewPanel.reveal();
 
-                    const { result, reason } = await reviewEngine.reviewPendingChangesWithContext();
+                    const { result, reason, pendingFiles } = await reviewEngine.reviewPendingChangesWithContext();
                     logger.info('审查流程执行完成');
 
                     const finalResult = reason === 'reviewed' ? dedupeReviewedResult(result) : result;
@@ -105,6 +110,20 @@ export const registerRunReviewCommand = (deps: CommandContext): vscode.Disposabl
                             resultIssueCount === 0 ? '当前待提交变更未发现问题' : ''
                         );
                         statusBar.updateWithResult(finalResult);
+                        if (reason === 'reviewed' && pendingFiles.length > 0 && deps.persistLastReviewedHash) {
+                            const norm = (p: string) => path.normalize(p);
+                            for (const filePath of pendingFiles) {
+                                try {
+                                    const doc = vscode.workspace.textDocuments.find(
+                                        (d) => d.uri.scheme === 'file' && norm(d.uri.fsPath) === norm(filePath)
+                                    ) ?? await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+                                    const content = typeof doc.getText === 'function' ? doc.getText() : '';
+                                    deps.persistLastReviewedHash(filePath, createContentHash(content));
+                                } catch {
+                                    // 无法读取文档时跳过该文件，不写入 hash
+                                }
+                            }
+                        }
                     }
 
                     showResultNotification(finalResult, preserveHistoricalOnEmpty);

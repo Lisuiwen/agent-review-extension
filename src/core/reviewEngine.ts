@@ -26,8 +26,9 @@ import { RuntimeTraceLogger, type RuntimeTraceSession, type RunSummaryPayload } 
 import { computeIssueFingerprint } from '../utils/issueFingerprint';
 import { loadIgnoredFingerprints } from '../config/ignoreStore';
 import { formatTimeHms } from '../utils/runtimeLogExplainer';
-import type { ReviewRunOptions, ReviewedRange, SavedFileReviewContext, PendingReviewContext, ProjectDiagnosticItem, ReviewScopeHint } from './reviewEngine.types';
+import type { ReviewRunOptions, ReviewedRange, SavedFileReviewContext, PendingReviewContext, StagedReviewContext, ProjectDiagnosticItem, ReviewScopeHint } from './reviewEngine.types';
 import { buildRunSummaryPayload } from './reviewEngine.runSummary';
+import { getEffectiveWorkspaceRoot } from '../utils/workspaceRoot';
 
 export type { ReviewIssue, ReviewResult } from '../types/review';
 
@@ -102,8 +103,8 @@ export class ReviewEngine {
         const traceSession =
             options?.traceSession ?? this.runtimeTraceLogger.startRunSession(options?.diffByFile ? 'staged' : 'manual');
 
+        const workspaceRoot = getEffectiveWorkspaceRoot()?.uri.fsPath ?? '';
         try {
-            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
             const writeRunSummaryIfNeeded = async (
                 status: 'success' | 'failed',
                 opts: { errorClass?: string; ignoredByFingerprintCount: number; allowedByLineCount: number; ignoreAllowEvents?: RunSummaryPayload['ignoreAllowEvents'] }
@@ -160,6 +161,7 @@ export class ReviewEngine {
                 if (!useAstScope || !options?.diffByFile) {
                     return undefined;
                 }
+                const diffByFile = options.diffByFile;
 
                 const astStartAt = Date.now();
                 const snippetsByFile = new Map<string, AffectedScopeResult>();
@@ -178,12 +180,12 @@ export class ReviewEngine {
 
                 const filesWithDiff = targetFiles.filter((filePath) => {
                     const normalizedPath = path.normalize(filePath);
-                    const fileDiff = options.diffByFile.get(normalizedPath) ?? options.diffByFile.get(filePath);
+                    const fileDiff = diffByFile.get(normalizedPath) ?? diffByFile.get(filePath);
                     return !!fileDiff?.hunks?.length;
                 });
 
                 const processOne = async (filePath: string): Promise<{ filePath: string; scopeResult: ReturnType<typeof getAffectedScopeWithDiagnostics> }> => {
-                    const fileDiff = options.diffByFile!.get(path.normalize(filePath)) ?? options.diffByFile!.get(filePath)!;
+                    const fileDiff = diffByFile.get(path.normalize(filePath)) ?? diffByFile.get(filePath)!;
                     try {
                         const content = await this.fileScanner.readFile(filePath);
                         const scopeResult = getAffectedScopeWithDiagnostics(filePath, content, fileDiff, {
@@ -346,13 +348,12 @@ export class ReviewEngine {
         } catch (error) {
             const errorClass = error instanceof Error ? error.name : 'UnknownError';
             if (traceSession) {
-                const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
                 const { payload, logDateMs } = await buildRunSummaryPayload(
                     traceSession,
                     this.createEmptyReviewResult(),
                     'failed',
                     { errorClass, ignoredByFingerprintCount: 0, allowedByLineCount: 0, ignoreAllowEvents: [] },
-                    root,
+                    workspaceRoot,
                     reviewStartAt
                 );
                 this.runtimeTraceLogger.writeRunSummary(traceSession, payload, logDateMs);
@@ -1064,6 +1065,11 @@ export class ReviewEngine {
     }
 
     async reviewStagedFiles(): Promise<ReviewResult> {
+        const ctx = await this.reviewStagedFilesWithContext();
+        return ctx.result;
+    }
+
+    async reviewStagedFilesWithContext(): Promise<StagedReviewContext> {
         this.logger.show();
         const config = this.configManager.getConfig();
         this.applyRuntimeTraceConfig(config);
@@ -1071,17 +1077,20 @@ export class ReviewEngine {
 
         try {
             const stagedFiles = await this.fileScanner.getStagedFiles();
-            if (stagedFiles.length === 0) {
-                return await this.completeEmptyRun(traceSession, config, 'staged', 'staged');
+            const normalizedStaged = stagedFiles.map((f) => path.normalize(f));
+            if (normalizedStaged.length === 0) {
+                const result = await this.completeEmptyRun(traceSession, config, 'staged', 'staged');
+                return { result, stagedFiles: [] };
             }
 
             const useDiff = config.rules.diff_only !== false || config.ai_review?.diff_only !== false;
             let diffByFile: Map<string, FileDiff> | undefined;
             if (useDiff) {
-                diffByFile = await this.fileScanner.getStagedDiff(stagedFiles);
+                diffByFile = await this.fileScanner.getStagedDiff(normalizedStaged);
             }
 
-            return await this.review(stagedFiles, { diffByFile, traceSession });
+            const result = await this.review(normalizedStaged, { diffByFile, traceSession });
+            return { result, stagedFiles: normalizedStaged };
         } finally {
             this.runtimeTraceLogger.endRunSession(traceSession);
         }

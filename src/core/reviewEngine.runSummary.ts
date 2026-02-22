@@ -6,13 +6,13 @@
  */
 
 import * as path from 'path';
-import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { ReviewIssue, ReviewResult } from '../types/review';
 import { RuntimeTraceLogger, type RuntimeTraceSession, type RunSummaryPayload } from '../utils/runtimeTraceLogger';
 import { formatTimeHms } from '../utils/runtimeLogExplainer';
 import { getIgnoreStoreCount } from '../config/ignoreStore';
+import { getEffectiveWorkspaceRoot } from '../utils/workspaceRoot';
 
 const execAsync = promisify(exec);
 
@@ -52,7 +52,7 @@ export const buildRunSummaryPayload = async (
 ): Promise<{ payload: RunSummaryPayload; logDateMs: number }> => {
     const endedAt = Date.now();
     const durationMs = endedAt - reviewStartAt;
-    const projectName = vscode.workspace.workspaceFolders?.[0]?.name ?? (workspaceRoot ? path.basename(workspaceRoot) : '');
+    const projectName = getEffectiveWorkspaceRoot()?.name ?? (workspaceRoot ? path.basename(workspaceRoot) : '');
     const { userName, userEmail } = await getGitUser(workspaceRoot);
     const ignoreStoreCount = workspaceRoot ? await getIgnoreStoreCount(workspaceRoot) : 0;
     const runtimeTraceLogger = RuntimeTraceLogger.getInstance();

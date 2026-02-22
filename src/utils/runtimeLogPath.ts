@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentReviewConfig } from '../types/config';
+import { getEffectiveWorkspaceRoot } from './workspaceRoot';
 
 /**
  * 解析运行链路日志基础目录。
@@ -18,7 +19,7 @@ export const resolveRuntimeLogBaseDir = (
     const mode = runtimeLogConfig?.base_dir_mode ?? 'workspace_docs_logs';
 
     if (mode === 'workspace_docs_logs') {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = getEffectiveWorkspaceRoot()?.uri.fsPath;
         if (workspaceRoot) {
             return path.join(workspaceRoot, 'docs', 'logs');
         }

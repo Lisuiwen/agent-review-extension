@@ -31,6 +31,7 @@ import {
     type AutoReviewSkipReason,
     type AutoReviewDiagnosticSeverity,
 } from './core/autoReviewGate';
+import { getEffectiveWorkspaceRoot } from './utils/workspaceRoot';
 
 let reviewEngine: ReviewEngine | undefined;
 let configManager: ConfigManager | undefined;
@@ -45,6 +46,7 @@ type QueuedAutoReviewTask = {
     saveRevision: number;
     bypassRateLimit: boolean;
     savedContentHash: string | null;
+    reviewedContentHash?: string | null;
 };
 
 type FileAutoReviewState = {
@@ -61,14 +63,17 @@ type FileAutoReviewState = {
 
 type AutoReviewController = vscode.Disposable & {
     reviewCurrentFileNow: () => Promise<void>;
+    persistLastReviewedHash: (filePath: string, hash: string) => void;
 };
 
 /**
  * 注册保存/空闲/手动触发的自动复审逻辑，管理队列、限频与状态。
  * 返回带 reviewCurrentFileNow 与 dispose 的控制器。
  */
+const LAST_REVIEWED_HASH_STORAGE_KEY = 'agentReview.lastReviewedContentHashByPath';
+
 const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController => {
-    const { reviewEngine, reviewPanel, statusBar, logger, configManager } = deps;
+    const { reviewEngine, reviewPanel, statusBar, logger, configManager, workspaceState } = deps;
     const fileScanner = new FileScanner();
     const runtimeTraceLogger = RuntimeTraceLogger.getInstance();
     const fileStates = new Map<string, FileAutoReviewState>();
@@ -109,17 +114,28 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         return next;
     };
 
+    const persistLastReviewedHash = (normalizedPath: string, hash: string): void => {
+        if (!workspaceState) return;
+        const map = (workspaceState.get(LAST_REVIEWED_HASH_STORAGE_KEY) as Record<string, string> | undefined) ?? {};
+        map[normalizedPath] = hash;
+        void workspaceState.update(LAST_REVIEWED_HASH_STORAGE_KEY, { ...map });
+    };
+
     const ensureState = (filePath: string): FileAutoReviewState => {
         const normalizedPath = normalizeFilePath(filePath);
         const hit = fileStates.get(normalizedPath);
         if (hit) {
             return hit;
         }
+        const persistedHash =
+            (workspaceState?.get(LAST_REVIEWED_HASH_STORAGE_KEY) as Record<string, string> | undefined)?.[
+                normalizedPath
+            ] ?? null;
         const created: FileAutoReviewState = {
             editRevision: 0,
             latestSavedRevision: 0,
             latestRequestSeq: 0,
-            lastReviewedContentHash: null,
+            lastReviewedContentHash: persistedHash,
             inFlight: false,
             queuedTask: null,
             saveDebounceTimer: null,
@@ -285,6 +301,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
 
     const enqueueTask = (filePath: string, task: QueuedAutoReviewTask): void => {
         const normalizedPath = normalizeFilePath(filePath);
+        (deps as { __captureEnqueue?: (path: string, task: QueuedAutoReviewTask) => void }).__captureEnqueue?.(normalizedPath, task);
         const state = ensureState(normalizedPath);
         state.queuedTask = task; // coalesce：同文件仅保留最后一次任务
         if (!state.inFlight) {
@@ -330,7 +347,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             logger.important('[SaveTrace] 保存门控已强制放行', { filePath });
             return { skip: false, effectiveChangedLines: 0, riskMatched: false };
         }
-        if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+        if (!getEffectiveWorkspaceRoot()) {
             return { skip: false, effectiveChangedLines: 0, riskMatched: false };
         }
         const state = ensureState(filePath);
@@ -445,8 +462,14 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
                                         updateCompletedStatus('已丢弃过期结果');
                                         return;
                                     }
-                                    if (task.trigger === 'save' && task.savedContentHash) {
+                                    if ((task.trigger === 'manual' || task.trigger === 'idle') && !task.reviewedContentHash) {
+                                        // manual/idle 无 reviewedContentHash 时仅打点，不写 lastReviewedContentHash
+                                    } else if (task.trigger === 'save' && task.savedContentHash) {
                                         latestState.lastReviewedContentHash = task.savedContentHash;
+                                        persistLastReviewedHash(normalizeFilePath(nextPath), task.savedContentHash);
+                                    } else if ((task.trigger === 'manual' || task.trigger === 'idle') && task.reviewedContentHash) {
+                                        latestState.lastReviewedContentHash = task.reviewedContentHash;
+                                        persistLastReviewedHash(normalizeFilePath(nextPath), task.reviewedContentHash);
                                     }
                                     readyReviewPanel.applyFileReviewPatch({
                                         filePath: nextPath,
@@ -534,12 +557,15 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
             if (!reviewPanel.isFileStale(filePath)) {
                 return;
             }
+            const idleContent = typeof editor.document.getText === 'function' ? editor.document.getText() : '';
+            const reviewedContentHash = createContentHash(idleContent);
             enqueueTask(filePath, {
                 trigger: 'idle',
                 editRevision: state.editRevision,
                 saveRevision: state.latestSavedRevision,
                 bypassRateLimit: false,
                 savedContentHash: null,
+                reviewedContentHash,
             });
             void flushQueue();
         }, options.idleRecheckMs);
@@ -566,12 +592,15 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
         }
         const state = ensureState(filePath);
         state.latestSavedRevision = Math.max(state.latestSavedRevision, state.editRevision);
+        const manualContent = typeof editor.document.getText === 'function' ? editor.document.getText() : '';
+        const reviewedContentHash = createContentHash(manualContent);
         enqueueTask(filePath, {
             trigger: 'manual',
             editRevision: state.editRevision,
             saveRevision: state.latestSavedRevision,
             bypassRateLimit: options.manualBypassRateLimit,
             savedContentHash: null,
+            reviewedContentHash,
         });
         void flushQueue();
     };
@@ -659,8 +688,15 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
 
     syncReviewPanelOptions();
 
+    const persistLastReviewedHashForRun = (filePath: string, hash: string): void => {
+        const state = ensureState(filePath);
+        state.lastReviewedContentHash = hash;
+        persistLastReviewedHash(normalizeFilePath(filePath), hash);
+    };
+
     return {
         reviewCurrentFileNow,
+        persistLastReviewedHash: persistLastReviewedHashForRun,
         dispose: () => {
             onDidChangeDisposable.dispose();
             onDidSaveDisposable.dispose();
@@ -678,7 +714,7 @@ const registerAutoReviewOnSave = (deps: CommandContext): AutoReviewController =>
 };
 
 const getGitRoot = (): string | null => {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const workspaceRoot = getEffectiveWorkspaceRoot()?.uri.fsPath;
     if (!workspaceRoot) return null;
     let currentPath = workspaceRoot;
     while (currentPath !== path.dirname(currentPath)) {
@@ -721,9 +757,17 @@ export const activate = async (context: vscode.ExtensionContext) => {
             statusBar,
             logger,
             getGitRoot,
+            workspaceState: context.workspaceState,
         };
+        const captureEnqueue = (context as { __agentReviewCaptureEnqueue?: (path: string, task: unknown) => void }).__agentReviewCaptureEnqueue;
+        if (captureEnqueue) {
+            (commandDeps as { __captureEnqueue?: (path: string, task: unknown) => void }).__captureEnqueue = captureEnqueue;
+        }
 
         const autoReviewController = registerAutoReviewOnSave(commandDeps);
+        commandDeps.persistLastReviewedHash = autoReviewController.persistLastReviewedHash;
+        const capturePersist = (context as { __agentReviewCapturePersist?: (fn: (path: string, hash: string) => void) => void }).__agentReviewCapturePersist;
+        if (capturePersist) capturePersist(autoReviewController.persistLastReviewedHash);
         const reviewCurrentFileNowDisposable = vscode.commands.registerCommand(
             'agentreview.reviewCurrentFileNow',
             async () => {

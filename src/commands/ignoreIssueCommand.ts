@@ -12,6 +12,7 @@ import type { ReviewTreeItem } from '../ui/reviewPanel';
 import type { ReviewIssue } from '../types/review';
 import { computeIssueFingerprint } from '../utils/issueFingerprint';
 import { addIgnoredFingerprint } from '../config/ignoreStore';
+import { getEffectiveWorkspaceRoot } from '../utils/workspaceRoot';
 
 const getIssue = (deps: CommandContext, treeItem?: ReviewTreeItem): ReviewIssue | null => {
     if (treeItem?.issue) {
@@ -32,7 +33,7 @@ export const registerIgnoreIssueCommand = (deps: CommandContext): vscode.Disposa
             return;
         }
 
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = getEffectiveWorkspaceRoot()?.uri.fsPath;
         if (workspaceRoot) {
             let content: string;
             try {

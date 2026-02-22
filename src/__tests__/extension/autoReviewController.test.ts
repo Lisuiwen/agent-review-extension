@@ -1,4 +1,9 @@
+import { createHash } from 'crypto';
+import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const createContentHash = (content: string): string =>
+    createHash('sha1').update(content, 'utf8').digest('hex');
 
 const mocked = vi.hoisted(() => {
     const commandRegistry = new Map<string, (...args: unknown[]) => unknown>();
@@ -245,11 +250,12 @@ const flushPromises = async (): Promise<void> => {
     await new Promise(resolve => setTimeout(resolve, 0));
 };
 
-const createContext = () =>
+const createContext = (overrides?: Record<string, unknown>) =>
     ({
         subscriptions: [] as Array<{ dispose?: () => void }>,
         extensionPath: 'd:/ext',
         globalStorageUri: { fsPath: 'd:/tmp/ar' },
+        ...overrides,
     }) as any;
 
 describe('autoReviewController', () => {
@@ -418,7 +424,7 @@ describe('autoReviewController', () => {
             listener({ uri: { scheme: 'file', fsPath: 'd:/ws/a.ts' }, getText: () => 'const v=2;' })
         );
 
-        resolveFirst?.({
+        (resolveFirst as ((value: unknown) => void) | null)?.({
             result: { passed: true, errors: [], warnings: [], info: [] },
             reviewedRanges: [],
             mode: 'full',
@@ -474,4 +480,283 @@ describe('autoReviewController', () => {
         expect(mocked.configDisposeMock).toHaveBeenCalled();
         expect(mocked.runtimeFlushMock).toHaveBeenCalled();
     });
+
+    // --- manual-review-store-hash: manual/idle 鐢?reviewedContentHash 鏇存柊 lastReviewedContentHash ---
+
+    it('1.1 manual 浠诲姟瀹屾垚鏃剁敤 reviewedContentHash 鏇存柊 lastReviewedContentHash', async () => {
+        const content = 'const manual=1;';
+        mocked.mockConfig = {
+            ...mocked.mockConfig,
+            ai_review: { ...mocked.mockConfig.ai_review, enabled: true },
+        };
+        mocked.activeTextEditor = {
+            document: {
+                uri: { scheme: 'file', fsPath: 'd:/ws/manual.ts' },
+                isDirty: false,
+                getText: () => content,
+            },
+        };
+        await activate(createContext());
+        const runNow = mocked.commandRegistry.get('agentreview.reviewCurrentFileNow');
+        await runNow!();
+        await flushPromises();
+        expect(mocked.reviewSavedFileWithPendingDiffContextMock).toHaveBeenCalledTimes(1);
+
+        mocked.clearFileStaleMarkersMock.mockClear();
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: {
+                    uri: { scheme: 'file', fsPath: 'd:/ws/manual.ts' },
+                    getText: () => content,
+                },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'x' }],
+            })
+        );
+        expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith('d:\\ws\\manual.ts');
+    });
+
+    it('1.2 idle 浠诲姟瀹屾垚鏃剁敤 reviewedContentHash 鏇存柊 lastReviewedContentHash', async () => {
+        const content = 'const idle=1;';
+        const changePath = 'd:/ws/a.ts';
+        const visiblePath = 'd:\\ws\\a.ts';
+        mocked.mockConfig = {
+            ...mocked.mockConfig,
+            ai_review: {
+                ...mocked.mockConfig.ai_review,
+                enabled: true,
+                idle_recheck_enabled: true,
+                idle_recheck_ms: 300,
+                large_change_line_threshold: 20,
+            },
+        };
+        await activate(createContext());
+        mocked.visibleTextEditors = [
+            {
+                document: {
+                    uri: { scheme: 'file', fsPath: visiblePath },
+                    isDirty: false,
+                    getText: () => content,
+                },
+            },
+        ];
+        mocked.isFileStaleMock.mockReturnValue(true);
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: { uri: { scheme: 'file', fsPath: changePath }, getText: () => content },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'x' }],
+            })
+        );
+        await new Promise(resolve => setTimeout(resolve, 350));
+        await flushPromises();
+        await flushPromises();
+        expect(mocked.reviewSavedFileWithPendingDiffContextMock).toHaveBeenCalledTimes(1);
+
+        mocked.clearFileStaleMarkersMock.mockClear();
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: {
+                    uri: { scheme: 'file', fsPath: changePath },
+                    getText: () => content,
+                },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'y' }],
+            })
+        );
+        expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith(path.normalize(changePath));
+    });
+
+    it('1.3 save 浠诲姟瀹屾垚鏃朵粎鐢?savedContentHash 鏇存柊銆佷笉鍙?reviewedContentHash 褰卞搷', async () => {
+        const content = 'const saveOnly=1;';
+        mocked.mockConfig = {
+            ...mocked.mockConfig,
+            ai_review: {
+                ...mocked.mockConfig.ai_review,
+                enabled: true,
+                run_on_save: true,
+                run_on_save_debounce_ms: 0,
+            },
+        };
+        await activate(createContext());
+        mocked.saveListeners.forEach(listener =>
+            listener({
+                uri: { scheme: 'file', fsPath: 'd:/ws/saveOnly.ts' },
+                getText: () => content,
+            })
+        );
+        await flushPromises();
+        expect(mocked.reviewSavedFileWithPendingDiffContextMock).toHaveBeenCalledTimes(1);
+
+        mocked.clearFileStaleMarkersMock.mockClear();
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: {
+                    uri: { scheme: 'file', fsPath: 'd:/ws/saveOnly.ts' },
+                    getText: () => content,
+                },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'z' }],
+            })
+        );
+        expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith('d:\\ws\\saveOnly.ts');
+    });
+
+    it('1.4 鎵嬪姩鍏ラ槦鏃朵换鍔″甫鏈?reviewedContentHash锛堢瓑浜庡綋鍓嶆枃妗ｅ唴瀹瑰搱甯岋級', async () => {
+        const content = 'const hashMe=42;';
+        const expectedHash = createContentHash(content);
+        const captured: Array<{ path: string; task: { reviewedContentHash?: string | null } }> = [];
+        const ctx = createContext();
+        (ctx as any).__agentReviewCaptureEnqueue = (path: string, task: any) => {
+            captured.push({ path, task });
+        };
+        mocked.mockConfig = {
+            ...mocked.mockConfig,
+            ai_review: { ...mocked.mockConfig.ai_review, enabled: true },
+        };
+        mocked.activeTextEditor = {
+            document: {
+                uri: { scheme: 'file', fsPath: 'd:/ws/hashMe.ts' },
+                isDirty: false,
+                getText: () => content,
+            },
+        };
+        await activate(ctx);
+        const runNow = mocked.commandRegistry.get('agentreview.reviewCurrentFileNow');
+        await runNow!();
+        expect(captured.length).toBeGreaterThanOrEqual(1);
+        expect(captured[0].task.reviewedContentHash).toBe(expectedHash);
+    });
+
+    it('1.5 褰?lastReviewedContentHash 宸茶涓旀枃妗ｅ彉鏇村唴瀹瑰搱甯屼笌涔嬬浉绛夋椂 clearFileStaleMarkers 琚皟鐢?', async () => {
+        const content = 'const same=1;';
+        mocked.mockConfig = {
+            ...mocked.mockConfig,
+            ai_review: {
+                ...mocked.mockConfig.ai_review,
+                enabled: true,
+                run_on_save: true,
+                run_on_save_debounce_ms: 0,
+            },
+        };
+        await activate(createContext());
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: { uri: { scheme: 'file', fsPath: 'd:/ws/same.ts' }, getText: () => content },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'a' }],
+            })
+        );
+        mocked.saveListeners.forEach(listener =>
+            listener({ uri: { scheme: 'file', fsPath: 'd:/ws/same.ts' }, getText: () => content })
+        );
+        await flushPromises();
+        mocked.clearFileStaleMarkersMock.mockClear();
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: {
+                    uri: { scheme: 'file', fsPath: 'd:/ws/same.ts' },
+                    getText: () => content,
+                },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'b' }],
+            })
+        );
+        expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith('d:\\ws\\same.ts');
+    });
+    it('2.4 run 路径下编辑后撤销未保存改动可触发 clearFileStaleMarkers', async () => {
+        let persistFn: ((path: string, hash: string) => void) | null = null;
+        const ctx = createContext({
+            __agentReviewCapturePersist: (fn: (path: string, hash: string) => void) => { persistFn = fn; },
+        });
+        await activate(ctx);
+        expect(persistFn).not.toBeNull();
+
+        const content = 'const runUndo = 1;';
+        const filePath = 'd:/ws/run-undo.ts';
+        persistFn!(filePath, createContentHash(content));
+
+        mocked.clearFileStaleMarkersMock.mockClear();
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: { uri: { scheme: 'file', fsPath: filePath }, getText: () => content },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'x' }],
+            })
+        );
+        expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith(path.normalize(filePath));
+    });
+
+    it('2.5 runStaged 路径下编辑后撤销未保存改动可触发 clearFileStaleMarkers', async () => {
+        let persistFn: ((path: string, hash: string) => void) | null = null;
+        const ctx = createContext({
+            __agentReviewCapturePersist: (fn: (path: string, hash: string) => void) => { persistFn = fn; },
+        });
+        await activate(ctx);
+        expect(persistFn).not.toBeNull();
+
+        const content = 'const stagedUndo = 1;';
+        const filePath = 'd:/ws/staged-undo.ts';
+        persistFn!(filePath, createContentHash(content));
+
+        mocked.clearFileStaleMarkersMock.mockClear();
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: { uri: { scheme: 'file', fsPath: filePath }, getText: () => content },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'y' }],
+            })
+        );
+        expect(mocked.clearFileStaleMarkersMock).toHaveBeenCalledWith(path.normalize(filePath));
+    });
+
+    it('stale dropped result should not persist lastReviewedContentHash', async () => {
+        mocked.mockConfig = {
+            ...mocked.mockConfig,
+            ai_review: {
+                ...mocked.mockConfig.ai_review,
+                enabled: true,
+                run_on_save: true,
+                run_on_save_debounce_ms: 0,
+            },
+        };
+        let resolveFirst: ((value: any) => void) | null = null;
+        mocked.reviewSavedFileWithPendingDiffContextMock.mockImplementationOnce(
+            () =>
+                new Promise(resolve => {
+                    resolveFirst = resolve;
+                }) as any
+        );
+
+        await activate(createContext());
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: { uri: { scheme: 'file', fsPath: 'd:/ws/stale-hash.ts' }, getText: () => 'const v=1;' },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'v1' }],
+            })
+        );
+        mocked.saveListeners.forEach(listener =>
+            listener({ uri: { scheme: 'file', fsPath: 'd:/ws/stale-hash.ts' }, getText: () => 'const v=1;' })
+        );
+        await flushPromises();
+
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: { uri: { scheme: 'file', fsPath: 'd:/ws/stale-hash.ts' }, getText: () => 'const v=2;' },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'v2' }],
+            })
+        );
+
+        (resolveFirst as ((value: unknown) => void) | null)?.({
+            result: { passed: true, errors: [], warnings: [], info: [] },
+            reviewedRanges: [],
+            mode: 'full',
+            reason: 'fallback_full',
+        });
+        await flushPromises();
+        await flushPromises();
+
+        mocked.clearFileStaleMarkersMock.mockClear();
+        mocked.changeListeners.forEach(listener =>
+            listener({
+                document: { uri: { scheme: 'file', fsPath: 'd:/ws/stale-hash.ts' }, getText: () => 'const v=1;' },
+                contentChanges: [{ range: { start: { line: 0 }, end: { line: 0 } }, text: 'back' }],
+            })
+        );
+        expect(mocked.clearFileStaleMarkersMock).not.toHaveBeenCalled();
+    });
 });
+
+

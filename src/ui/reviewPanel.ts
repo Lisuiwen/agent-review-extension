@@ -12,6 +12,7 @@
  * const reviewPanel = new ReviewPanel(context);
  * reviewPanel.showReviewResult(result);
  */
+import { platform } from 'os';
 
 import * as vscode from 'vscode';
 import * as path from 'path';

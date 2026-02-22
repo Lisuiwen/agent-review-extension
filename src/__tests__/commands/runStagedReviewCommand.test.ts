@@ -1,6 +1,11 @@
+import * as path from 'path';
+import { createHash } from 'crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { registerRunStagedReviewCommand } from '../../commands/runStagedReviewCommand';
+
+const createContentHash = (content: string): string =>
+    createHash('sha1').update(content, 'utf8').digest('hex');
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -49,7 +54,9 @@ describe('runStagedReviewCommand', () => {
             warnings: [],
             info: [],
         };
-        const reviewEngine = { reviewStagedFiles: vi.fn(async () => result) };
+        const reviewEngine = {
+            reviewStagedFilesWithContext: vi.fn(async () => ({ result, stagedFiles: ['a.ts'] })),
+        };
         const reviewPanel = {
             setStatus: vi.fn(),
             reveal: vi.fn(),
@@ -77,13 +84,13 @@ describe('runStagedReviewCommand', () => {
         expect(statusBar.updateStatus).toHaveBeenCalledWith('reviewing');
         expect(reviewPanel.setStatus).toHaveBeenCalledWith('reviewing');
         expect(reviewPanel.reveal).toHaveBeenCalledTimes(1);
-        expect(reviewEngine.reviewStagedFiles).toHaveBeenCalledTimes(1);
+        expect(reviewEngine.reviewStagedFilesWithContext).toHaveBeenCalledTimes(1);
         expect(reviewPanel.showReviewResult).toHaveBeenCalledWith(result, 'completed', '', '没有staged文件需要审查');
         expect(statusBar.updateWithResult).toHaveBeenCalledWith(result);
     });
 
     it('异常路径应设置错误状态并提示', async () => {
-        const reviewEngine = { reviewStagedFiles: vi.fn(async () => { throw new Error('boom'); }) };
+        const reviewEngine = { reviewStagedFilesWithContext: vi.fn(async () => { throw new Error('boom'); }) };
         const reviewPanel = {
             setStatus: vi.fn(),
             reveal: vi.fn(),
@@ -111,5 +118,84 @@ describe('runStagedReviewCommand', () => {
         expect(statusBar.updateStatus).toHaveBeenCalledWith('error');
         expect(reviewPanel.setStatus).toHaveBeenCalledWith('error');
         expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('staged 审查失败，请查看输出日志');
+    });
+
+    it('2.2 runStaged 成功应用结果后会更新 lastReviewedContentHash', async () => {
+        const result = { passed: true, errors: [], warnings: [], info: [] };
+        const content = 'const staged = 1;';
+        const expectedHash = createContentHash(content);
+        const persist = vi.fn();
+        const doc = {
+            uri: { scheme: 'file' as const, fsPath: path.normalize('d:/ws/staged-file.ts') },
+            getText: () => content,
+        };
+        const workspace = {
+            textDocuments: [doc],
+            openTextDocument: vi.fn(async () => doc),
+        };
+        (vscode as any).workspace = workspace;
+
+        const reviewEngine = {
+            reviewStagedFilesWithContext: vi.fn(async () => ({ result, stagedFiles: ['d:/ws/staged-file.ts'] })),
+        };
+        const reviewPanel = { setStatus: vi.fn(), reveal: vi.fn(), showReviewResult: vi.fn() };
+        const statusBar = { updateStatus: vi.fn(), updateWithResult: vi.fn() };
+        const logger = { info: vi.fn(), error: vi.fn() };
+
+        registerRunStagedReviewCommand({
+            reviewEngine,
+            configManager: undefined,
+            reviewPanel,
+            statusBar,
+            logger,
+            getGitRoot: () => null,
+            persistLastReviewedHash: persist,
+        } as any);
+
+        const handler = handlers.get('agentreview.runStaged');
+        await handler!();
+
+        expect(persist).toHaveBeenCalledWith('d:/ws/staged-file.ts', expectedHash);
+    });
+
+    it('2.3 runStaged 结果未应用（异常）时不更新 lastReviewedContentHash', async () => {
+        const persist = vi.fn();
+        const reviewEngine = { reviewStagedFilesWithContext: vi.fn(async () => { throw new Error('boom'); }) };
+        registerRunStagedReviewCommand({
+            reviewEngine,
+            configManager: undefined,
+            reviewPanel: { setStatus: vi.fn(), reveal: vi.fn(), showReviewResult: vi.fn() },
+            statusBar: { updateStatus: vi.fn(), updateWithResult: vi.fn() },
+            logger: { info: vi.fn(), error: vi.fn() },
+            getGitRoot: () => null,
+            persistLastReviewedHash: persist,
+        } as any);
+
+        const handler = handlers.get('agentreview.runStaged');
+        await handler!();
+
+        expect(persist).not.toHaveBeenCalled();
+    });
+
+    it('2.3 runStaged 空 stagedFiles 时不更新 lastReviewedContentHash', async () => {
+        const persist = vi.fn();
+        const result = { passed: true, errors: [], warnings: [], info: [] };
+        const reviewEngine = {
+            reviewStagedFilesWithContext: vi.fn(async () => ({ result, stagedFiles: [] })),
+        };
+        registerRunStagedReviewCommand({
+            reviewEngine,
+            configManager: undefined,
+            reviewPanel: { setStatus: vi.fn(), reveal: vi.fn(), showReviewResult: vi.fn() },
+            statusBar: { updateStatus: vi.fn(), updateWithResult: vi.fn() },
+            logger: { info: vi.fn(), error: vi.fn() },
+            getGitRoot: () => null,
+            persistLastReviewedHash: persist,
+        } as any);
+
+        const handler = handlers.get('agentreview.runStaged');
+        await handler!();
+
+        expect(persist).not.toHaveBeenCalled();
     });
 });
