@@ -87,7 +87,7 @@ export class AIReviewer {
         this.logger = new Logger('AIReviewer');
         this.fileScanner = new FileScanner();
         this.runtimeTraceLogger = RuntimeTraceLogger.getInstance();
-        
+
         // 单独创建 axios 实例，统一配置
         this.axiosInstance = axios.create({
             timeout: DEFAULT_TIMEOUT,
@@ -108,7 +108,7 @@ export class AIReviewer {
             },
             (error) => Promise.reject(error)
         );
-        
+
         // 响应拦截器：统一错误处理
         this.axiosInstance.interceptors.response.use(
             (response) => response,

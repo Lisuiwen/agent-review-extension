@@ -1,27 +1,27 @@
 ﻿/**
  * 鏂囦欢鎵弿鍣?
  * 
- * 杩欎釜鏂囦欢璐熻矗涓?Git 浜や簰锛岃幏鍙栭渶瑕佸鏌ョ殑鏂囦欢鍒楄〃
+ * 这个文件负责与Git 浜や簰锛岃幏鍙栭渶瑕佸鏌ョ殑鏂囦欢鍒楄〃
  * 
  * 涓昏鍔熻兘锛?
- * 1. 鑾峰彇 Git staged锛堝凡鏆傚瓨锛夌殑鏂囦欢鍒楄〃
- * 2. 璇诲彇鏂囦欢鍐呭
- * 3. 妫€鏌ユ枃浠舵槸鍚﹀湪鎺掗櫎鍒楄〃涓?
+ * 1. 获取 Git staged（已暂存）的文件列表
+ * 2. 读取文件内容
+ * 3. 检查文件是否在排除列表中
  * 
- * 宸ヤ綔鍘熺悊锛?
- * - 浣跨敤 Git 鍛戒护 'git diff --cached --name-only' 鑾峰彇 staged 鏂囦欢
- * - 杩欎釜鍛戒护浼氳繑鍥炴墍鏈夊凡娣诲姞鍒版殏瀛樺尯鐨勬枃浠惰矾寰?
+ * 工作原理：
+ * - 使用 Git 命令 'git diff --cached --name-only' 获取 staged 文件
+ * - 这个命令会返回所有已添加到暂存区的文件路径
  * 
- * 浣跨敤鍦烘櫙锛?
- * - 鐢ㄦ埛鎵ц瀹℃煡鍛戒护鏃?
- * - Git pre-commit hook 鎵ц鏃?
+ * 使用场景：
+ * - 鐢ㄦ埛鎵ц瀹℃煡鍛戒护无
+ * - Git pre-commit hook 鎵ц无
  */
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
-import { exec } from 'child_process';  // Node.js 鐨勮繘绋嬫墽琛屾ā鍧?
+import { exec } from 'child_process';  // Node.js 的进程执行模块
 import { promisify } from 'util';      // 灏嗗洖璋冨嚱鏁拌浆鎹负 Promise
 import { Logger } from './logger';
 import { parseUnifiedDiff } from './diffParser';
@@ -44,7 +44,7 @@ const COMMENT_ONLY_IGNORE_REGEX = [
 /**
  * 鏂囦欢鎵弿鍣ㄧ被
  * 
- * 浣跨敤鏂瑰紡锛?
+ * 使用方式：
  * ```typescript
  * const scanner = new FileScanner();
  * const stagedFiles = await scanner.getStagedFiles();
@@ -63,24 +63,24 @@ export class FileScanner {
     };
 
     /**
-     * 鑾峰彇 Git staged锛堝凡鏆傚瓨锛夌殑鏂囦欢鍒楄〃
+     * 获取 Git staged（已暂存）的文件列表
      * 
-     * 杩欎釜鏂规硶浣跨敤 Git 鍛戒护鑾峰彇鎵€鏈夊凡娣诲姞鍒版殏瀛樺尯鐨勬枃浠?
+     * 此方法使用 Git 命令获取所有已添加到暂存区的文件
      * 
-     * Git 鍛戒护璇存槑锛?
-     * - git diff --cached: 鏄剧ず宸叉殏瀛橈紙staged锛夌殑鏇存敼
+     * Git 命令说明：
+     * - git diff --cached: 显示已暂存（staged）的修改
      * - --name-only: 鍙樉绀烘枃浠跺悕锛屼笉鏄剧ず鍏蜂綋鏇存敼鍐呭
      * 
      * @returns 鏂囦欢璺緞鏁扮粍锛堢粷瀵硅矾寰勶級
      * 
-     * 绀轰緥锛?
+     * 示例：
      * ```typescript
      * const files = await scanner.getStagedFiles();
-     * // 杩斿洖: ['/path/to/file1.ts', '/path/to/file2.ts']
+     * // 返回: ['/path/to/file1.ts', '/path/to/file2.ts']
      * ```
      */
     async getStagedFiles(workspaceRoot?: string): Promise<string[]> {
-        // 寮哄埗鏄剧ず鏃ュ織閫氶亾锛岀‘淇濇棩蹇楀彲瑙?
+        // 强制显示日志通道，确保日志可见
         this.logger.show();
         this.logger.info('鑾峰彇staged鏂囦欢');
         
@@ -92,11 +92,11 @@ export class FileScanner {
         }
 
         try {
-            // 鎵ц Git 鍛戒护鑾峰彇 staged 鏂囦欢鍒楄〃
+            // 鎵ц Git 鍛戒护获取 staged 文件鍒楄〃
             // execAsync 浼氬湪鎸囧畾鐨勫伐浣滅洰褰曪紙cwd锛変腑鎵ц鍛戒护
             const { stdout, stderr } = await execAsync('git diff --cached --name-only', {
-                cwd: resolvedWorkspaceRoot,  // 鍦ㄥ伐浣滃尯鏍圭洰褰曟墽琛屽懡浠?
-                encoding: 'utf-8',        // 鎸囧畾杈撳嚭缂栫爜涓?UTF-8
+                cwd: resolvedWorkspaceRoot,  // 在工作区根目录执行命令
+                encoding: 'utf-8',        // 指定输出编码为 UTF-8
             });
 
             // 濡傛灉鍙湁 stderr 娌℃湁 stdout锛屽彲鑳芥槸娌℃湁 staged 鏂囦欢鎴栦笉鏄?git 浠撳簱
@@ -105,12 +105,12 @@ export class FileScanner {
                 return [];
             }
 
-            // 瑙ｆ瀽 Git 鍛戒护鐨勮緭鍑?
+            // 解析 Git 命令的输出
             // Git 鍛戒护杩斿洖鐨勬槸姣忚涓€涓枃浠惰矾寰勭殑鏂囨湰
             const files = stdout
                 .split('\n')                    // 鎸夎鍒嗗壊
                 .map(line => line.trim())        // 鍘婚櫎姣忚鐨勯灏剧┖鏍?
-                .filter(line => line.length > 0) // 杩囨护绌鸿
+                .filter(line => line.length > 0) // 过滤空行
                 .map(file => 
                     // 灏嗙浉瀵硅矾寰勮浆鎹负缁濆璺緞
                     // path.isAbsolute 妫€鏌ヨ矾寰勬槸鍚︽槸缁濆璺緞
@@ -120,7 +120,7 @@ export class FileScanner {
                 );
 
             if (files.length > 0) {
-                this.logger.info(`鎵惧埌 ${files.length} 涓猻taged鏂囦欢`);
+                this.logger.info(`找到 ${files.length} 个 staged 文件`);
             }
             return files;
         } catch (error: unknown) {
@@ -131,17 +131,17 @@ export class FileScanner {
                 this.logger.debug('鏈壘鍒癵it浠撳簱鎴栨病鏈塻taged鏂囦欢');
                 return [];
             }
-            this.logger.error('鑾峰彇staged鏂囦欢澶辫触', error);
+            this.logger.error('获取 staged 文件失败', error);
             return [];
         }
     }
 
     /**
-     * 鑾峰彇 Git staged 鐨?diff锛岃В鏋愪负姣忔枃浠剁殑鍙樻洿 hunks
+     * 获取 Git staged 的 diff，解析为每文件的变更 hunks
      * 鐢ㄤ簬澧為噺瀹℃煡锛氫粎瀵瑰彉鏇磋鍋氳鍒欎笌 AI 瀹℃煡
      *
      * @param files - 鍙€夛紝鍙彇杩欎簺鏂囦欢鐨?diff锛涗笉浼犲垯鍙栧叏閮?staged
-     * @returns Map锛氶敭涓烘枃浠剁粷瀵硅矾寰勶紝鍊间负璇ユ枃浠剁殑 FileDiff
+     * @returns Map：键为文件绝对路径，值为该文件的 FileDiff
      */
     async getStagedDiff(workspaceRoot: string | undefined, files?: string[]): Promise<Map<string, FileDiff>> {
         return this.getDiffByMode('staged', workspaceRoot, files);
@@ -157,7 +157,7 @@ export class FileScanner {
     }
 
     /**
-     * 鑾峰彇銆屽緟鎻愪氦澧為噺銆嶇殑 diff锛堝熀浜?HEAD..WorkingTree锛夈€?
+     * 获取「待提交增量」的 diff（基于 HEAD..WorkingTree）。
      * 鐢ㄤ簬榛樿瀹℃煡鍏ュ彛锛氬悓鏃惰鐩?staged + unstaged + untracked銆?
      */
     async getPendingDiff(workspaceRoot: string | undefined, files?: string[]): Promise<Map<string, FileDiff>> {
@@ -165,7 +165,7 @@ export class FileScanner {
     }
 
     /**
-     * 鎸夋ā寮忚幏鍙?diff锛?
+     * 按模式获取 diff：
      * - staged: git diff --cached
      * - working: git diff
      *
@@ -210,7 +210,7 @@ export class FileScanner {
                 maxBuffer: 10 * 1024 * 1024,
             });
             if (rawDiffResult.stderr && !rawDiffResult.stdout) {
-                this.logger.debug('浠呮湁 stderr 鏃?stdout锛岃繑鍥炵┖ Map', rawDiffResult.stderr);
+                this.logger.debug('仅有 stderr 无 stdout，返回空 Map', rawDiffResult.stderr);
                 return new Map();
             }
 
@@ -275,17 +275,17 @@ export class FileScanner {
             }
 
             if (map.size > 0) {
-                this.logger.info(`瑙ｆ瀽鍒?${map.size} 涓枃浠剁殑 ${mode} diff`);
+                this.logger.info(`解析到 ${map.size} 涓枃浠剁殑 ${mode} diff`);
             }
             return map;
         } catch (error: unknown) {
             const code = (error as { code?: number })?.code;
             const msg = (error as Error)?.message ?? String(error);
             if (code === 1 || msg.includes('not a git repository')) {
-                this.logger.debug(`鏃?${mode} diff 鎴栭潪 git 浠撳簱`);
+                this.logger.debug(`无${mode} diff 或非 git 仓库`);
                 return new Map();
             }
-            this.logger.error(`鑾峰彇 ${mode} diff 澶辫触`, error);
+            this.logger.error(`获取 ${mode} diff 失败`, error);
             return new Map();
         }
     }
@@ -354,18 +354,18 @@ export class FileScanner {
     }
 
     async getChangedFiles(): Promise<string[]> {
-        // TODO: 鑾峰彇鍙樻洿鏂囦欢鍒楄〃
-        this.logger.info('鑾峰彇鍙樻洿鏂囦欢');
+        // TODO: 获取变更文件列表
+        this.logger.info('获取变更文件');
         return [];
     }
 
-    /** 璇诲彇鏂囦欢鍐呭锛孶TF-8锛涘け璐ユ椂鎶涘嚭閿欒鐢辫皟鐢ㄦ柟澶勭悊 */
+    /** 读取文件内容锛孶TF-8锛涘け璐ユ椂鎶涘嚭閿欒鐢辫皟鐢ㄦ柟澶勭悊 */
     async readFile(filePath: string): Promise<string> {
         try {
             const content = await fs.promises.readFile(filePath, 'utf-8');
             return content;
         } catch (error) {
-            this.logger.error(`璇诲彇鏂囦欢澶辫触: ${filePath}`, error);
+            this.logger.error(`读取文件失败: ${filePath}`, error);
             throw error;
         }
     }
@@ -374,12 +374,12 @@ export class FileScanner {
      * 妫€鏌ユ枃浠舵槸鍚﹀簲璇ヨ鎺掗櫎
      * 
      * 鏀寔绠€鍗曠殑glob妯″紡鍖归厤锛?
-     * - *.log 鍖归厤鎵€鏈?log鏂囦欢
-     * - test-*.ts 鍖归厤test-寮€澶寸殑.ts鏂囦欢
+     * - *.log 匹配所有 log 文件
+     * - test-*.ts 匹配 test- 开头的 .ts 文件
      * - 鏀寔閫氶厤绗︽ā寮忓尮閰嶇洰褰曞拰鏂囦欢
      * 
      * @param filePath - 鏂囦欢璺緞锛堢粷瀵硅矾寰勬垨鐩稿璺緞锛?
-     * @param exclusions - 鎺掗櫎閰嶇疆
+     * @param exclusions - 排除配置
      * @returns 濡傛灉鏂囦欢搴旇琚帓闄わ紝杩斿洖true
      */
     shouldExclude(filePath: string, exclusions: { files?: string[]; directories?: string[] }): boolean {
@@ -387,7 +387,7 @@ export class FileScanner {
             return false;
         }
 
-        // 灏嗘枃浠惰矾寰勬爣鍑嗗寲锛堢粺涓€浣跨敤姝ｆ枩鏉狅級
+        // 将文件路径标准化（统一使用正斜杠）
         const normalizedPath = filePath.replace(/\\/g, '/');
         const fileName = path.basename(normalizedPath);
         const matchPattern = (pattern: string): boolean => {
@@ -402,7 +402,7 @@ export class FileScanner {
             }) || minimatch(fileName, normalizedPattern, { dot: true });
         };
 
-        // 妫€鏌ユ枃浠舵ā寮?
+        // 检查文件模式
         if (exclusions.files) {
             for (const pattern of exclusions.files) {
                 // 浣跨敤 minimatch 鏀寔瀹屾暣 glob 璇硶锛堝 {a,b}銆乕0-9]锛?
@@ -412,7 +412,7 @@ export class FileScanner {
             }
         }
 
-        // 妫€鏌ョ洰褰?
+        // 检查目录
         if (exclusions.directories && exclusions.directories.length > 0) {
             for (const dir of exclusions.directories) {
                 const normalizedDir = dir.replace(/\\/g, '/').replace(/\/+$/g, '').trim();
@@ -426,7 +426,7 @@ export class FileScanner {
                         return true;
                     }
                 } else {
-                    // 渚嬪: node_modules 浼氬尮閰嶆墍鏈夊寘鍚?node_modules 鐨勮矾寰?
+                    // 例如: node_modules 会匹配所有包含 node_modules 的路径
                     if (normalizedPath.includes(`/${normalizedDir}/`) || normalizedPath.endsWith(`/${normalizedDir}`)) {
                         return true;
                     }
