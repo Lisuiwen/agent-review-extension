@@ -1,14 +1,14 @@
 /**
- * 瀹℃煡寮曟搸
+ * 审查引擎
  *
- * 娴佺▼姒傝锛?
- * 1. 鏍规嵁閰嶇疆杩囨护銆佹帓闄ょ殑鏂囦欢
- * 2. 鏍规嵁閰嶇疆杩囨护鎺掗櫎鐨勬枃浠?
- * 3. 璋冪敤 AI 瀹℃煡鍣ㄨ繘琛?AI 浠ｇ爜瀹℃煡锛堣嫢鍚敤锛?
- * 6. 鏍规嵁閰嶇疆鍐冲畾鏄惁闃绘鎻愪氦
- * 7. 杩斿洖缁撴瀯鍖栫殑瀹℃煡缁撴灉
+ * 流程概述：
+ * 1. 根据配置过滤、排除的文件
+ * 2. 根据配置过滤排除的文件
+ * 3. 调用 AI 审查器进行 AI 代码审查（若启用）
+ * 6. 根据配置决定是否阻止提交
+ * 7. 返回结构化的审查结果
  *
- * - 濡傛灉椤圭洰宸叉湁鑷繁鐨勮鍒欏紩鎿庯紝寤鸿淇濇寔 builtin_rules_enabled: false
+ * - 如果项目已有自己的规则引擎，建议保持 builtin_rules_enabled: false
  */
 
 import * as path from 'path';
@@ -50,22 +50,22 @@ export class ReviewEngine {
     private runtimeTraceLogger: RuntimeTraceLogger;
 
     /**
-     * 鍒濆鍖栧鏌ュ紩鎿庡強鍏朵緷璧栫殑缁勪欢
+     * 初始化审查引擎及其依赖的组件
      *
-     * @param configManager - 閰嶇疆绠＄悊鍣紝鐢ㄤ簬璇诲彇瀹℃煡瑙勫垯閰嶇疆
+     * @param configManager - 配置管理器，用于读取审查规则配置
      */
     constructor(configManager: ConfigManager) {
         this.configManager = configManager;
         this.logger = new Logger('ReviewEngine');
         this.ruleEngine = new RuleEngine(configManager);
-        // AI 瀹℃煡鍣細鐢ㄤ簬 AI 浠ｇ爜瀹℃煡
+        // AI 审查器：用于 AI 代码审查
         this.aiReviewer = new AIReviewer(configManager);
         this.fileScanner = new FileScanner();
         this.runtimeTraceLogger = RuntimeTraceLogger.getInstance();
     }
 
     /**
-     * 鑻ラ厤缃惎鐢?AI 瀹℃煡锛屽垯鍒濆鍖?AI 瀹℃煡鍣ㄣ€?
+     * 若配置启用 AI 审查，则初始化 AI 审查器。
      */
     async initialize(): Promise<void> {
         const config = this.configManager.getConfig();
@@ -75,7 +75,7 @@ export class ReviewEngine {
     }
 
     /**
-     * 搴旂敤杩愯鏃舵棩蹇楅厤缃苟鍚屾 Logger 鏄惁杈撳嚭鍒伴€氶亾銆?
+     * 应用运行时日志配置并同步 Logger 是否输出到通道。
      */
     private applyRuntimeTraceConfig = (config: ReturnType<ConfigManager['getConfig']>): void => {
         this.runtimeTraceLogger.applyConfig(config.runtime_log);
@@ -83,9 +83,9 @@ export class ReviewEngine {
     };
 
     /**
-     * 瀵规寚瀹氭枃浠舵墽琛岃鍒?+ AI 瀹℃煡锛屾敮鎸?diff/ast 绛夐€夐」銆?
-     * @param files - 瑕佸鏌ョ殑鏂囦欢璺緞鏁扮粍
-     * @returns 瀹℃煡缁撴灉瀵硅薄
+     * 对指定文件执行规则 + AI 审查，支持 diff/ast 等选项。
+     * @param files - 要审查的文件路径数组
+     * @returns 审查结果对象
      */
     async review(
         files: string[],
@@ -252,7 +252,7 @@ export class ReviewEngine {
                     return [];
                 }
                 if (aiInputFiles.length === 0) {
-                    this.logger.info('AI 瀹℃煡宸茶烦杩囷細褰撳墠娌℃湁婊¤冻鏉′欢鐨勬枃浠讹紙鍙兘琚牸寮忔垨婕忔枟杩囨护鎺夛級');
+                    this.logger.info('AI 审查已跳过：当前没有满足条件的文件（可能被格式或噪音过滤掉）');
                     return [];
                 }
 
@@ -266,15 +266,15 @@ export class ReviewEngine {
                     };
                     return await this.aiReviewer.review(aiRequest, traceSession);
                 } catch (error) {
-                    this.logger.error('AI 瀹℃煡澶辫触', error);
+                    this.logger.error('AI 审查失败', error);
                     const message = error instanceof Error ? error.message : String(error);
                     const severity = this.actionToSeverity(config.ai_review?.action ?? 'warning');
-                    const isTimeout = /timeout|瓒呮椂/i.test(message);
+                    const isTimeout = /timeout|超时/i.test(message);
                     aiErrorIssues.push({
                         file: '',
                         line: 1,
                         column: 1,
-                        message: isTimeout ? `AI瀹℃煡瓒呮椂: ${message}` : `AI瀹℃煡澶辫触: ${message}`,
+                        message: isTimeout ? `AI审查超时: ${message}` : `AI审查失败: ${message}`,
                         rule: isTimeout ? 'ai_review_timeout' : 'ai_review_error',
                         severity,
                     });
@@ -304,11 +304,11 @@ export class ReviewEngine {
                     : runRuleEngine();
             };
 
-            // 鍥哄畾椤哄簭锛氳鍒欓樁娈?->锛堢‖璺宠繃鍒ゆ柇锛?> AI 闃舵
+            // 固定顺序：规则阶段 ->（先跳过判断）-> AI 阶段
             ruleIssues = await runRules();
             if (aiEnabled) {
                 if (skipOnBlocking && this.hasBlockingErrors(ruleIssues, ruleActionMap)) {
-                    this.logger.warn('妫€娴嬪埌闃绘柇绾ц鍒欓棶棰橈紝宸茶烦杩嘇I瀹℃煡');
+                    this.logger.warn('检测到阻断级规则问题，已跳过 AI 审查');
                 } else {
                     aiIssues = await runAiReview();
                 }
@@ -331,7 +331,7 @@ export class ReviewEngine {
                         const content = await this.fileScanner.readFile(issue.file);
                         issue.fingerprint = computeIssueFingerprint(issue, content, workspaceRoot);
                     } catch {
-                        // 鏂囦欢璇诲彇澶辫触鍒欒烦杩囪鏉℃寚绾癸紝杩囨护鏃朵笉浼氭寜鎸囩汗鍘婚噸
+                        // 文件读取失败则跳过该条指征，过滤时不会按指征去重
                     }
                 }
             }
@@ -351,7 +351,7 @@ export class ReviewEngine {
                 result.passed = !hasBlockingErrors;
             }
 
-            this.logger.info('瀹℃煡娴佺▼瀹屾垚');
+            this.logger.info('审查流程完成');
             await writeRunSummaryIfNeeded('success', { ignoredByFingerprintCount, allowedByLineCount, ignoreAllowEvents });
             return result;
         } catch (error) {
@@ -376,8 +376,8 @@ export class ReviewEngine {
     }
 
     /**
-     * 鍒ゆ柇闂鍒楄〃涓槸鍚﹀瓨鍦ㄦ寜瑙勫垯闇€闃绘柇鎻愪氦鐨勯」锛坧roject_rule 鐪?error锛屽叾浣欑湅 ruleActionMap锛夈€?
-     * @param issues - 闂鍒楄〃
+     * 判断问题列表中是否存在按规则需阻断提交的项（project_rule 看 error，其余看 ruleActionMap）。
+     * @param issues - 问题列表
      */
     private hasBlockingErrors = (
         issues: ReviewIssue[],
@@ -427,8 +427,8 @@ export class ReviewEngine {
     };
 
     /**
-     * 鏍规嵁 astSnippetsByFile 涓洪棶棰樿ˉ鍏?astRange锛堝彇鍖呭惈闂琛屽彿鐨勬渶灏忕墖娈碉級銆?
-     * @param issues - 闇€瑕佽ˉ鍏呰寖鍥寸殑闂鍒楄〃
+     * 根据 astSnippetsByFile 为问题补全 astRange（取包含问题行号的最小片段）。
+     * @param issues - 闇€瑕佽ˉ鍏呰寖鍥寸殑问题列表
      */
     private attachAstRanges = (
         issues: ReviewIssue[],
@@ -485,7 +485,7 @@ export class ReviewEngine {
     };
 
     /**
-     * 浠?VSCode 璇█鏈嶅姟鏀堕泦鍚勬枃浠剁殑璇婃柇淇℃伅锛屽苟瑙勮寖鍖栦负琛屽彿銆佷弗閲嶇▼搴︾瓑銆?
+     * 从 VSCode 语言服务收集各文件的诊断信息，并规范化为行号、严重程度等。
      */
     private collectDiagnosticsByFile = (
         files: string[]
@@ -527,7 +527,7 @@ export class ReviewEngine {
         }
     };
 
-    /** 灏?VSCode DiagnosticSeverity 杞负缁熶竴瀛楃涓诧紝渚?project rule 涓庢紡鏂楅€昏緫浣跨敤 */
+    /** 将 VSCode DiagnosticSeverity 转为统一字符串，供 project rule 与格式化逻辑使用 */
     private toDiagnosticSeverity = (severity: vscode.DiagnosticSeverity | undefined): 'error' | 'warning' | 'info' | 'hint' => {
         const map: Record<number, 'error' | 'warning' | 'info' | 'hint'> = {
             [vscode.DiagnosticSeverity.Error]: 'error',
@@ -562,7 +562,7 @@ export class ReviewEngine {
     };
 
     /**
-     * AI 瀹℃煡鍓嶈繃婊わ細鏍煎紡婕忔枟锛歞iff 妯″紡涓嬭烦杩囦粎鏍煎紡/绌虹櫧鍙樻洿鏂囦欢
+     * AI 审查鍓嶈繃婊わ細格式过滤：diff 模式下跳过仅格式/空白变更文件
      */
     private filterFilesForAiReview = (params: {
         files: string[];
@@ -621,9 +621,9 @@ export class ReviewEngine {
     };
 
     /**
-     * 璇嗗埆骞惰繃婊ゅ凡蹇界暐鐨勯棶棰樸€傞『搴忎笉鍙鍊掞細
-     * 1) 鍏堟寜椤圭洰绾у拷鐣ユ寚绾硅繃婊わ紱2) 鍐嶆寜 @ai-ignore 琛屽彿杩囨护锛堟爣璁拌鍙婁笅涓€闈炵┖琛岋級銆?
-     * 杩斿洖杩囨护鍚庣殑闂鍒楄〃銆佹暟閲忓強鏀捐/蹇界暐浜嬩欢鍒楄〃锛堟瘡鏉″甫鏃跺垎绉掞級锛屼緵杩愯姹囨€荤粺璁＄敤銆?
+     * 识别并过滤已忽略的问题。顺序不可颠倒：
+     * 1) 先按项目级忽略指征过滤；2) 再按 @ai-ignore 行号过滤（标记行及下一非空行）。
+     * 返回过滤后的问题列表、数量及放行/忽略事件列表（每条带时分秒），供运行汇总统计用。
      */
     private filterIgnoredIssues = async (
         issues: ReviewIssue[],
@@ -678,7 +678,7 @@ export class ReviewEngine {
             });
             ignoredByFingerprintCount = ignoredByFp.length;
             if (ignoredByFingerprintCount > 0) {
-                this.logger.info(`宸叉寜鎸囩汗杩囨护 ${ignoredByFingerprintCount} 鏉￠」鐩骇蹇界暐闂`);
+                this.logger.info(`已按指征过滤 ${ignoredByFingerprintCount} 条项目级忽略问题`);
                 const at = formatTimeHms(Date.now());
                 for (const i of ignoredByFp) {
                     ignoreAllowEvents.push({
@@ -725,7 +725,7 @@ export class ReviewEngine {
                     ignoredLinesByFile.set(filePath, ignoredLines);
                 }
             } catch {
-                // 鏂囦欢璇诲彇澶辫触鏃朵笉鍋氳繃婊わ紝閬垮厤璇垽闂
+                // 文件读取失败时不做过滤，避免误判问题
             }
         }));
 
@@ -749,7 +749,7 @@ export class ReviewEngine {
     };
 
     /**
-     * 鏍规嵁 diffByFile 杩囨护鍑烘湰娆″彉鏇磋涓婄殑闂锛涙棤 diff 鏃惰繑鍥炲叏閮ㄩ棶棰樸€傜粨鏋滀腑鍙惈澧為噺锛屼緵鍐欏叆 result銆?
+     * 根据 diffByFile 过滤出本次变更行上的问题；无 diff 时返回全部问题。结果中只含增量，供写入 result。
      */
     private filterIncrementalIssues = (issues: ReviewIssue[], diffByFile?: Map<string, FileDiff>): ReviewIssue[] => {
         if (issues.length === 0) return [];
@@ -856,7 +856,7 @@ export class ReviewEngine {
         };
     };
 
-    /** 姣忔杩斿洖鏂扮殑绌虹粨鏋滃璞★紙鏂版暟缁勶級锛岄伩鍏嶅叡浜紩鐢ㄨ姹℃煋 */
+    /** 每次返回新的空结果对象（新数组），避免共享引用被污染 */
     private createEmptyReviewResult = (): ReviewResult => ({
         passed: true,
         errors: [],
@@ -995,13 +995,13 @@ export class ReviewEngine {
     }
 
     /**
-     * 瀹℃煡 Git staged 鏂囦欢
+     * 审查 Git staged 文件
      *
-     * 杩欐槸鏈€甯哥敤鐨勫鏌ユ柟娉曪紝浼氳嚜鍔ㄨ幏鍙栨墍鏈夊凡鏆傚瓨锛坰taged锛夌殑鏂囦欢
-     * 閫氬父鍦ㄤ互涓嬪満鏅皟鐢細
-     * - 鐢ㄦ埛鎵嬪姩瑙﹀彂瀹℃煡鍛戒护
+     * 这是最常用的审查方法，会自动获取所有已暂存（staged）的文件
+     * 通常在以下场景调用：
+     * - 用户手动触发审查命令
      *
-     * @returns 瀹℃煡缁撴灉瀵硅薄
+     * @returns 审查结果对象
      */
     async reviewPendingChangesWithContext(options?: ReviewContextOptions): Promise<PendingReviewContext> {
         this.logger.show();
@@ -1160,8 +1160,8 @@ export class ReviewEngine {
 
     /**
      *
-     * 涓昏鐢ㄤ簬銆屼繚瀛樿Е鍙戝鏌ャ€嶏細
-     * - 鏂囦欢灏氭湭 staged 鏃讹紝涔熷彲鑳藉懡涓?diff_only / formatOnly 闄嶅櫔閫昏緫
+     * 主要用于「保存触发审查」：
+     * - 文件尚未 staged 时，也可命为 diff_only / formatOnly 降噪逻辑
      */
     async reviewFilesWithWorkingDiff(files: string[]): Promise<ReviewResult> {
         const config = this.configManager.getConfig();

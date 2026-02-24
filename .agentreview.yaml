@@ -9,16 +9,16 @@ rules:
     max_complexity: 10               # 复杂度阈值（预留，当前未实现）
     action: "block_commit"           # 违反时行为：block_commit=阻止提交，warning=警告，log=仅记录
     no_debugger: true                # 是否检查并禁止 debugger 语句
-  
+
   security:
     enabled: true                    # 是否启用安全规则组
     scan_secrets: true               # 是否扫描敏感信息（预留，当前未实现）
     action: "block_commit"
-  
+
   naming_convention:
     enabled: true                    # 是否启用命名规范（如文件名不含空格）
     action: "warning"
-  
+
   business_logic:
     enabled: true                    # 是否启用业务逻辑规则组（预留）
     action: "block_commit"
@@ -93,6 +93,10 @@ exclusions:
   files:
     - "**/*.min.js"
     - "**/node_modules/**"
+    - "**/yarn.lock"
+    - "**/package-lock.json"
+    - "**/pnpm-lock.yaml"
   directories:
     - ".git"
     - "dist"
+    - ".agentreview.yaml"
