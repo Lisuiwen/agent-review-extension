@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 瀹℃煡寮曟搸
  *
  * 娴佺▼姒傝锛?
@@ -33,7 +33,7 @@ import { getEffectiveWorkspaceRoot, getWorkspaceFolderByFile } from '../utils/wo
 export type { ReviewIssue, ReviewResult } from '../types/review';
 
 /**
- * 
+ *
  * ```typescript
  * const reviewEngine = new ReviewEngine(configManager);
  * const result = await reviewEngine.reviewStagedFiles();
@@ -325,6 +325,8 @@ export class ReviewEngine {
             if (workspaceRoot) {
                 for (const issue of deduplicatedIssues) {
                     if (issue.fingerprint) continue;
+                    const normalized = issue.file ? path.normalize(issue.file) : '';
+                    if (!normalized || normalized === '.' || normalized === '..') continue;
                     try {
                         const content = await this.fileScanner.readFile(issue.file);
                         issue.fingerprint = computeIssueFingerprint(issue, content, workspaceRoot);
@@ -690,7 +692,13 @@ export class ReviewEngine {
             }
         }
 
-        const issueFiles = Array.from(new Set(afterFingerprint.map(item => path.normalize(item.file))));
+        const issueFiles = Array.from(
+            new Set(
+                afterFingerprint
+                    .map((item) => path.normalize(item.file))
+                    .filter((p) => p && p !== '.' && p !== '..')
+            )
+        );
         const ignoredLinesByFile = new Map<string, Set<number>>();
 
         await Promise.all(issueFiles.map(async (filePath) => {
