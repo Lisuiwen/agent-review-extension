@@ -6,3 +6,25 @@ tsconfig.json
 **/*.map
 **/*.ts
 !out/**/*.js
+.env
+
+# 编译产物中的测试代码（不参与插件运行）
+out/__tests__/**
+
+# 版本控制与 IDE 专用
+.git/**
+.cursor/**
+
+# 打包产物与开发脚本
+*.vsix
+scripts/**
+
+# 设计/规范文档与内部文档（运行时不需要）
+openspec/**
+docs/**
+
+# 开发期配置
+.cursorrules
+.agentreview.yaml
+.editorconfig
+pnpm-lock.yaml
