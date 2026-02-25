@@ -337,6 +337,18 @@
           "default": true,
           "description": "忽略仅注释变更的 diff，减少无效 AI 调用"
         },
+        "agentreview.exclusions.files": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string" },
+          "description": "审查时排除的文件 Glob 列表（如 **/*.min.js、**/node_modules/**）。优先级高于 .agentreview.yaml 中的 exclusions.files"
+        },
+        "agentreview.exclusions.directories": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string" },
+          "description": "审查时排除的目录名列表（如 .git、dist）。优先级高于 .agentreview.yaml 中的 exclusions.directories"
+        },
         "agentreview.runtimeLog.enabled": {
           "type": "boolean",
           "default": true,

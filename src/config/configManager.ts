@@ -251,6 +251,21 @@ export class ConfigManager implements vscode.Disposable {
     }
 
     /**
+     * 从 VSCode Settings 加载排除配置（忽略文件/目录）
+     * 优先级：Settings > YAML；仅当至少有一项被设置时才返回对象
+     */
+    private loadExclusionsFromSettings(): Partial<NonNullable<AgentReviewConfig['exclusions']>> | undefined {
+        const settings = vscode.workspace.getConfiguration('agentreview');
+        const files = this.getExplicitSetting<string[]>(settings, 'exclusions.files');
+        const directories = this.getExplicitSetting<string[]>(settings, 'exclusions.directories');
+        if (files === undefined && directories === undefined) return undefined;
+        return {
+            ...(files !== undefined && { files: Array.isArray(files) ? files : [] }),
+            ...(directories !== undefined && { directories: Array.isArray(directories) ? directories : [] }),
+        };
+    }
+
+    /**
      * 加载配置文件
      *
      * 1. 获取默认配置作为基础
@@ -265,7 +280,7 @@ export class ConfigManager implements vscode.Disposable {
         await this.loadEnvFile();
         // 获取默认配置作为基础
         const defaultConfig = this.getDefaultConfig();
-        
+
         try {
             let yamlConfig = await loadYamlFromPath(this.configPath);
             if (Object.keys(yamlConfig).length > 0) {
@@ -292,20 +307,20 @@ export class ConfigManager implements vscode.Disposable {
                     timeout: 30000 as number,
                     action: 'warning' as const
                 };
-                
+
                 const existingAIConfig = yamlConfig.ai_review || null;
-                
-                const enabledValue = settingsAIConfig.enabled !== undefined 
-                    ? settingsAIConfig.enabled 
+
+                const enabledValue = settingsAIConfig.enabled !== undefined
+                    ? settingsAIConfig.enabled
                     : (existingAIConfig?.enabled ?? defaultAIConfig.enabled);
                 // 若未配置端点，尝试使用环境变量占位符，便于从 .env 解析
                 const apiEndpointValue = (settingsAIConfig.api_endpoint ?? existingAIConfig?.api_endpoint ?? defaultAIConfig.api_endpoint)
                     || '${AGENTREVIEW_AI_API_ENDPOINT}';
-                const timeoutValue = settingsAIConfig.timeout !== undefined 
-                    ? settingsAIConfig.timeout 
+                const timeoutValue = settingsAIConfig.timeout !== undefined
+                    ? settingsAIConfig.timeout
                     : (existingAIConfig?.timeout ?? defaultAIConfig.timeout);
                 const actionValue = settingsAIConfig.action || existingAIConfig?.action || defaultAIConfig.action;
-                
+
                 // 构建合并后的配置对象
                 const mergedAIConfig: AgentReviewConfig['ai_review'] = {
                     // 必填字段（已确保有值）
@@ -433,13 +448,23 @@ export class ConfigManager implements vscode.Disposable {
                 };
             }
 
+            const settingsExclusions = this.loadExclusionsFromSettings();
+            if (settingsExclusions && (settingsExclusions.files !== undefined || settingsExclusions.directories !== undefined)) {
+                this.logger.info('从 VSCode Settings 加载排除配置（exclusions）');
+                const existing = yamlConfig.exclusions;
+                yamlConfig.exclusions = {
+                    files: settingsExclusions.files ?? existing?.files ?? [],
+                    directories: settingsExclusions.directories ?? existing?.directories ?? [],
+                };
+            }
+
             const resolvedUserConfig = resolveEnvInConfig(yamlConfig, this.envVars, this.logger) as Partial<AgentReviewConfig>;
             this.config = mergeConfigFn(defaultConfig, resolvedUserConfig, (s) =>
                 resolveEnvVariables(s, this.envVars, this.logger)
             );
 
             this.logger.info('配置文件加载成功');
-            
+
             return this.config;
         } catch (error) {
             // 步骤5：如果出错（文件格式错误、权限问题等），使用默认配置
