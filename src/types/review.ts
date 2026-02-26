@@ -26,6 +26,11 @@ export interface ReviewIssue {
     };
     /** 内容寻址指征，用于项目级忽略（抗行号偏移）；见 utils/issueFingerprint.ts */
     fingerprint?: string;
+    lineTrace?: {
+        originalLine: number;
+        rebasedLine: number;
+        reason: 'local_rebase' | 'ignore_insert_shift';
+    };
     ignored?: boolean;          // 是否被 @ai-ignore 覆盖（仅用于当前面板展示态）
     ignoreReason?: string;      // 忽略原因（从 @ai-ignore 注释中提取，可选）
     stale?: boolean;            // 位置已同步但语义待复验（编辑期本地重映射后标记）

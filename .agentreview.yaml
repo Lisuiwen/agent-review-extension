@@ -89,14 +89,22 @@ runtime_log:
     granularity: "summary_with_key_events"
     auto_generate_on_run_end: true
 
-exclusions:
+# 只审查以下类型的源码；未列出的文件（如 lock、min.js）自动忽略
+inclusions:
   files:
-    - "**/*.min.js"
-    - "**/node_modules/**"
-    - "**/yarn.lock"
-    - "**/package-lock.json"
-    - "**/pnpm-lock.yaml"
+    - "**/*.js"
+    - "**/*.ts"
+    - "**/*.jsx"
+    - "**/*.tsx"
+    - "**/*.vue"
+    - "**/*.mjs"
+    - "**/*.cjs"
+    - "**/*.mts"
+    - "**/*.cts"
+    - "**/*.svelte"
+
+exclusions:
   directories:
     - ".git"
     - "dist"
-    - ".agentreview.yaml"
+    - "node_modules"

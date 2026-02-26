@@ -30,6 +30,11 @@ import {
     isSameIssue,
 } from './reviewPanel.helpers';
 import { collectIgnoredLineMeta } from './reviewPanel.ignoreMeta';
+import {
+    rebaseLineByContentChanges,
+    rebaseRangeByContentChanges,
+    type LineMappingChange,
+} from './rebaseLineMapping';
 
 export { ReviewTreeItem } from './reviewTreeItem';
 export { ReviewPanelProvider } from './reviewPanelProvider';
@@ -118,7 +123,7 @@ export class ReviewPanel {
         const result = this.provider.getCurrentResult();
         if (status === 'reviewing') {
             this.treeView.description = '$(sync~spin)';
-            this.treeView.badge = { value: 0, tooltip: '审查中…' };
+            this.treeView.badge = { value: 0, tooltip: '审查中' };
             return;
         }
         if (!result) {
@@ -339,11 +344,19 @@ export class ReviewPanel {
                 if (normalizedIssuePath !== normalizedTarget) return issue;
                 const shiftedLine = issue.line >= params.insertedLine ? issue.line + 1 : issue.line;
                 const ignored = ignoredMeta.ignoredLines.has(shiftedLine);
+                const shiftedByIgnoreInsert = shiftedLine !== issue.line;
                 return {
                     ...issue,
                     line: shiftedLine,
                     ignored,
                     ignoreReason: ignored ? ignoredMeta.reasonByLine.get(shiftedLine) : undefined,
+                    lineTrace: shiftedByIgnoreInsert
+                        ? {
+                            originalLine: issue.line,
+                            rebasedLine: shiftedLine,
+                            reason: 'ignore_insert_shift',
+                        }
+                        : issue.lineTrace,
                 };
             });
         const nextResult: ReviewResult = {
@@ -390,6 +403,10 @@ export class ReviewPanel {
             const endLine1 = change.range.end.line + 1;
             return { removed, added, delta: added - removed, startLine1, endLine1 };
         };
+        const lineMappingChanges: LineMappingChange[] = event.contentChanges.map(change => {
+            const { removed, added, startLine1, endLine1 } = getChangeDelta(change);
+            return { removed, added, startLine1, endLine1 };
+        });
         const changeImpactLines = event.contentChanges.reduce((sum, change) => {
             const { removed, added } = getChangeDelta(change);
             return sum + Math.max(removed, added) + 1;
@@ -408,36 +425,35 @@ export class ReviewPanel {
         };
         const isIssueAffected = (issue: ReviewIssue): boolean =>
             onlyMarkStale || (issue.astRange ? intersectsAffectedRanges(issue.astRange.startLine, issue.astRange.endLine) : intersectsAffectedRanges(issue.line, issue.line));
-        const rebaseLineByChanges = (line: number): number => {
-            let rebased = line;
-            for (const change of event.contentChanges) {
-                const { removed, added, delta, startLine1, endLine1 } = getChangeDelta(change);
-                const isPureInsert = removed === 0 && added > 0;
-                if (rebased > endLine1) rebased += delta;
-                else if (isPureInsert && rebased === startLine1) rebased += added;
-                else if (rebased >= startLine1 && rebased <= endLine1) rebased = Math.max(1, startLine1);
-            }
-            return Math.max(1, rebased);
-        };
+        const rebaseLineByChanges = (line: number): number =>
+            rebaseLineByContentChanges(line, lineMappingChanges, { maxLine: event.document.lineCount });
         const markIssueStale = (issue: ReviewIssue): ReviewIssue => {
             const affected = isIssueAffected(issue);
             if (onlyMarkStale) return { ...issue, stale: true };
             const rebasedLine = rebaseLineByChanges(issue.line);
             const rebasedAstRange = issue.astRange
-                ? (() => {
-                    const rebasedStart = rebaseLineByChanges(issue.astRange.startLine);
-                    const rebasedEnd = rebaseLineByChanges(issue.astRange.endLine);
-                    return {
-                        startLine: Math.min(rebasedStart, rebasedEnd),
-                        endLine: Math.max(rebasedStart, rebasedEnd),
-                    };
-                })()
+                ? rebaseRangeByContentChanges(issue.astRange, lineMappingChanges, {
+                    maxLine: event.document.lineCount,
+                })
                 : undefined;
+            const lineChanged = rebasedLine !== issue.line;
+            const astRangeChanged = !!issue.astRange && !!rebasedAstRange
+                && (
+                    issue.astRange.startLine !== rebasedAstRange.startLine
+                    || issue.astRange.endLine !== rebasedAstRange.endLine
+                );
             return {
                 ...issue,
                 line: rebasedLine,
                 astRange: rebasedAstRange,
                 stale: affected ? true : issue.stale,
+                lineTrace: lineChanged || astRangeChanged
+                    ? {
+                        originalLine: issue.line,
+                        rebasedLine,
+                        reason: 'local_rebase',
+                    }
+                    : issue.lineTrace,
             };
         };
         const mapIssues = (issues: ReviewIssue[]): ReviewIssue[] =>
@@ -532,7 +548,7 @@ export class ReviewPanel {
     private buildIssueHoverMarkdown = (issue: ReviewIssue): vscode.MarkdownString => {
         const md = new vscode.MarkdownString();
         md.isTrusted = true;
-        const severityLabel = issue.severity === 'error' ? '错' : issue.severity === 'warning' ? '警告' : '信息';
+        const severityLabel = issue.severity === 'error' ? '错误' : issue.severity === 'warning' ? '警告' : '信息';
         md.appendMarkdown(`${severityLabel}: `);
         md.appendText(issue.message);
         if (issue.ignored) {
@@ -540,7 +556,11 @@ export class ReviewPanel {
             if (issue.ignoreReason) md.appendMarkdown(`\n放行原因: ${issue.ignoreReason}`);
         }
         if (issue.stale) {
-            md.appendMarkdown('\n\n状态: 已同步位置待审，参考过期');
+            md.appendMarkdown('\n\n状态: 已同步位置待审，参考可能过期');
+        }
+        if (issue.lineTrace) {
+            md.appendMarkdown('\n\n');
+            md.appendMarkdown(`行号同步: ${issue.lineTrace.originalLine} -> ${issue.lineTrace.rebasedLine}`);
         }
         md.appendMarkdown('\n\n');
         md.appendMarkdown(`规则: ${issue.rule}`);
@@ -617,7 +637,7 @@ export class ReviewPanel {
         md.appendMarkdown('\n\n');
         md.appendMarkdown('[放行](command:agentreview.allowIssueIgnore)');
         if (issue.severity !== 'error') {
-            md.appendMarkdown(' · [忽略](command:agentreview.ignoreIssue)');
+            md.appendMarkdown(' | [忽略](command:agentreview.ignoreIssue)');
         }
         return md;
     };

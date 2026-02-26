@@ -44,6 +44,7 @@ export const mergeConfig = (
             security: userRules?.security ? { ...defaultRules.security, ...userRules.security } : defaultRules.security,
             business_logic: userRules?.business_logic ? { ...defaultRules.business_logic, ...userRules.business_logic } : defaultRules.business_logic,
         },
+        inclusions: resolvedUserConfig.inclusions ?? defaultConfig.inclusions,
         exclusions: {
             files: resolvedUserConfig.exclusions?.files ?? defaultConfig.exclusions?.files ?? [],
             directories: resolvedUserConfig.exclusions?.directories ?? defaultConfig.exclusions?.directories ?? [],

@@ -80,7 +80,6 @@ export class FileScanner {
      */
     async getStagedFiles(workspaceRoot?: string): Promise<string[]> {
         // 强制显示日志通道，确保日志可见
-        this.logger.show();
         this.logger.info('获取 staged 文件');
 
         const resolvedWorkspaceRoot = this.resolveWorkspaceRoot(workspaceRoot);
@@ -434,6 +433,27 @@ export class FileScanner {
         }
 
         return false;
+    }
+
+    /**
+     * 判断文件是否在包含列表中（仅当配置了 inclusions.files 时生效，未配置则视为包含所有文件）
+     */
+    matchesInclusion(filePath: string, inclusions: { files?: string[] } | undefined): boolean {
+        if (!inclusions?.files?.length) {
+            return true;
+        }
+        const normalizedPath = filePath.replace(/\\/g, '/');
+        const fileName = path.basename(normalizedPath);
+        const matchPattern = (pattern: string): boolean => {
+            const normalizedPattern = pattern.replace(/\\/g, '/').trim();
+            if (!normalizedPattern) return false;
+            const hasPathSeparator = normalizedPattern.includes('/');
+            return minimatch(normalizedPath, normalizedPattern, {
+                dot: true,
+                matchBase: !hasPathSeparator,
+            }) || minimatch(fileName, normalizedPattern, { dot: true });
+        };
+        return inclusions.files.some(p => matchPattern(p));
     }
 }
 

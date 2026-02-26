@@ -3,11 +3,11 @@
  *
  * 目标：
  * 1. 覆盖当前已实现的“定位/高亮/命令注册”
- * 2. 验证关键边界：越界列、无效路径
+ * 2. 验证关键边界：越界行列、无效路径
  *
  * 说明：
  * - 使用 vi.mock('vscode') 做最小化模拟
- * - 取关键调用与参数，不依赖真实 VSCode
+ * - 仅关注关键调用与参数，不依赖真实 VSCode
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -113,6 +113,17 @@ vi.mock('vscode', () => {
         public dispose = () => {
             this.handlers = [];
         };
+    }
+
+    class MarkdownString {
+        public value = '';
+        public isTrusted = false;
+        appendMarkdown(text: string): void {
+            this.value += text;
+        }
+        appendText(text: string): void {
+            this.value += text;
+        }
     }
 
     const TextEditorRevealType = {
@@ -246,6 +257,7 @@ vi.mock('vscode', () => {
         Selection,
         WorkspaceEdit,
         EventEmitter,
+        MarkdownString,
         TextEditorRevealType,
         TreeItemCollapsibleState,
         Uri,
@@ -405,7 +417,7 @@ describe('Phase3: 侧边栏面板定位能力', () => {
         expect(lastEditor).toBeDefined();
         expect(lastEditor?.revealRange).toHaveBeenCalled();
         expect((lastEditor?.decorationCalls?.length ?? 0)).toBeGreaterThan(0);
-        // 定位到行 2（0-based 为 1）、列 4（0-based 为 3）所在行
+        // 定位到行 2（1-based 中为 1）、列 4（1-based 中为 3）所在行
         const revealCall = (lastEditor?.revealRange as ReturnType<typeof vi.fn>)?.mock?.calls?.[0];
         expect(revealCall?.[0]?.start?.line).toBe(1);
         expect(revealCall?.[0]?.start?.character).toBe(0);
@@ -483,6 +495,69 @@ describe('Phase3: 放行后本地同步与标记', () => {
         expect(next?.info[0].ignored).toBe(false);
     });
 
+    it('文档变更后应记录本地重映射的 lineTrace', async () => {
+        const panel = new ReviewPanel(createContext());
+        const filePath = 'd:/demo/rebase.ts';
+        panel.showReviewResult({
+            passed: false,
+            errors: [],
+            warnings: [
+                {
+                    file: filePath,
+                    line: 5,
+                    column: 1,
+                    message: 'line should move',
+                    rule: 'ai_review',
+                    severity: 'warning',
+                },
+            ],
+            info: [],
+        }, 'completed');
+
+        changeListeners.forEach(listener => listener({
+            document: { uri: { scheme: 'file', fsPath: filePath } },
+            contentChanges: [
+                {
+                    range: {
+                        start: { line: 0 },
+                        end: { line: 0 },
+                    },
+                    text: 'inserted\n',
+                },
+            ],
+        }));
+        await flushPromises();
+
+        const next = panel.getCurrentResult();
+        expect(next).not.toBeNull();
+        const issue = next?.warnings[0];
+        expect(issue?.line).toBe(6);
+        expect(issue?.lineTrace).toEqual({
+            originalLine: 5,
+            rebasedLine: 6,
+            reason: 'local_rebase',
+        });
+    });
+
+    it('Hover 详情应展示行号同步信息', () => {
+        const panel = new ReviewPanel(createContext());
+        const md = (panel as any).buildIssueHoverMarkdown({
+            file: 'd:/demo/hover.ts',
+            line: 10,
+            column: 1,
+            message: 'hover trace',
+            rule: 'ai_review',
+            severity: 'warning',
+            stale: true,
+            lineTrace: {
+                originalLine: 8,
+                rebasedLine: 10,
+                reason: 'local_rebase',
+            },
+        });
+        expect(md.value).toContain('行号同步: 8 -> 10');
+    });
+
     it('removeIssue 应从当前结果移除匹配问题并刷新', () => {
         const provider = new ReviewPanelProvider(createContext());
         const filePath = 'd:/demo/a.ts';
@@ -514,7 +589,7 @@ describe('Phase3: 放行后本地同步与标记', () => {
         expect(next?.passed).toBe(false);
     });
 
-    it('removeIssue 移除唯一 error 后 passed 应变 true', () => {
+    it('removeIssue 移除唯一 error 后 passed 应变为 true', () => {
         const provider = new ReviewPanelProvider(createContext());
         provider.updateResult({
             passed: false,
@@ -825,7 +900,7 @@ describe('Phase3: 保存复审文件级补丁合并', () => {
         expect(issues.some(issue => issue.file === targetFile && issue.message === 'stale should keep')).toBe(true);
     });
 
-    it('stale_only + diff 应覆盖复审范围内旧 AI 问题，避免保存后重复叠加', () => {
+    it('stale_only + diff 应覆盖复审范围内的 AI 问题，避免保存后重复叠加', () => {
         const panel = new ReviewPanel(createContext());
         const targetFile = 'd:/demo/save-dedupe.ts';
         panel.showReviewResult({
@@ -1045,7 +1120,7 @@ describe('Phase3: 侧边栏面板选中高亮', () => {
         lastTreeView?.fireSelection([new ReviewTreeItem('', 0, issue)]);
         await flushPromises();
 
-        // 行列越界时安全夹取：line 99 -> safeLine 1，仍打开并高亮
+        // 行列越界时安全夹取：line 99 -> safeLine 1，仍应打开并高亮
         expect(lastEditor).toBeDefined();
         expect(lastEditor?.revealRange).toHaveBeenCalled();
         const revealCall = (lastEditor?.revealRange as ReturnType<typeof vi.fn>)?.mock?.calls?.[0];

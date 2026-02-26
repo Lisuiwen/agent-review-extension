@@ -91,7 +91,6 @@ export class ReviewEngine {
         files: string[],
         options?: ReviewRunOptions
     ): Promise<ReviewResult> {
-        this.logger.show();
         const reviewStartAt = Date.now();
         const result = this.createEmptyReviewResult();
 
@@ -127,10 +126,14 @@ export class ReviewEngine {
                 return result;
             }
 
+            const inclusions = config.inclusions;
             const exclusions = config.exclusions;
-            const filteredFiles = exclusions
-                ? files.filter(file => !this.fileScanner.shouldExclude(file, exclusions))
+            let filteredFiles = inclusions?.files?.length
+                ? files.filter(file => this.fileScanner.matchesInclusion(file, inclusions))
                 : [...files];
+            if (exclusions) {
+                filteredFiles = filteredFiles.filter(file => !this.fileScanner.shouldExclude(file, exclusions));
+            }
 
             if (filteredFiles.length === 0) {
                 await writeRunSummaryIfNeeded('success', emptySummaryOpts);
@@ -1004,7 +1007,6 @@ export class ReviewEngine {
      * @returns 审查结果对象
      */
     async reviewPendingChangesWithContext(options?: ReviewContextOptions): Promise<PendingReviewContext> {
-        this.logger.show();
         const config = this.configManager.getConfig();
         this.applyRuntimeTraceConfig(config);
         const traceSession = this.runtimeTraceLogger.startRunSession('manual');
@@ -1131,7 +1133,6 @@ export class ReviewEngine {
     }
 
     async reviewStagedFilesWithContext(options?: ReviewContextOptions): Promise<StagedReviewContext> {
-        this.logger.show();
         const config = this.configManager.getConfig();
         this.applyRuntimeTraceConfig(config);
         const traceSession = this.runtimeTraceLogger.startRunSession('staged');

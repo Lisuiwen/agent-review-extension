@@ -12,6 +12,7 @@ context: |
 rules:
   proposal:
     - 保持简洁，明确 Why 与 What；若对测试有影响可一句话说明。
+    - Capabilities的创建尽量合并到已有的specs里面，除非完全不相关
   specs:
     - 涉及行为变更时，每个 Requirement 下应有可验证的 Scenario（WHEN/THEN/AND），便于后续对应到测试任务。
   design:

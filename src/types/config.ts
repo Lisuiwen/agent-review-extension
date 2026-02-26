@@ -81,6 +81,8 @@ export interface AgentReviewConfig {
         vue_include_related_blocks?: boolean;   // Vue：审 script 时带 template、审 template 时带 script（默认 true），不送 style
         vue_related_blocks_max_lines?: number;   // Vue 附带块最大行数，超出截断（默认 60）
     };
+    /** 仅审查匹配这些模式的文件；未配置或为空则不过滤（即全部视为包含） */
+    inclusions?: { files?: string[] };
     exclusions?: {
         files?: string[];
         directories?: string[];
