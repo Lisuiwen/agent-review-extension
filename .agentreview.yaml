@@ -89,7 +89,7 @@ runtime_log:
     granularity: "summary_with_key_events"
     auto_generate_on_run_end: true
 
-# 只审查以下类型的源码；未列出的文件（如 lock、min.js）自动忽略
+# 审查范围：仅以下类型参与规则+AI 审查（staged/待提交/保存触发均生效）；未匹配到的文件（如 .gitignore、.yaml）不会送审
 inclusions:
   files:
     - "**/*.js"
@@ -103,6 +103,7 @@ inclusions:
     - "**/*.cts"
     - "**/*.svelte"
 
+# 排除的目录/文件：命中后不进入规则与 AI 审查（与 inclusions 共同生效，先按 inclusions 过滤再按 exclusions 排除）
 exclusions:
   directories:
     - ".git"

@@ -647,9 +647,16 @@ export class ConfigManager implements vscode.Disposable {
                 vue_include_related_blocks: true,  // Vue 审 script 时带 template、审 template 时带 script，不送 style
                 vue_related_blocks_max_lines: 60,  // Vue 附带块最大行数，超出截断
             },
+            /** 默认只审查源码；未配置或加载失败时也仅审查这些类型，避免 .gitignore、.yaml 等被送审 */
+            inclusions: {
+                files: [
+                    '**/*.js', '**/*.ts', '**/*.jsx', '**/*.tsx', '**/*.vue',
+                    '**/*.mjs', '**/*.cjs', '**/*.mts', '**/*.cts', '**/*.svelte',
+                ],
+            },
             exclusions: {
                 files: [],
-                directories: [],
+                directories: ['.git', 'dist', 'node_modules'],
             },
             runtime_log: {
                 enabled: true,
