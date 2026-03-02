@@ -539,6 +539,69 @@ describe('Phase3: 放行后本地同步与标记', () => {
         });
     });
 
+    it('同一文件连续编辑时不应出现累计漂移', async () => {
+        const panel = new ReviewPanel(createContext());
+        const filePath = 'd:/demo/rebase-drift.ts';
+        panel.showReviewResult({
+            passed: false,
+            errors: [],
+            warnings: [
+                {
+                    file: filePath,
+                    line: 10,
+                    column: 1,
+                    message: 'line should stay anchored',
+                    rule: 'ai_review',
+                    severity: 'warning',
+                },
+            ],
+            info: [],
+        }, 'completed');
+
+        // 第一次编辑：在问题行之前插入两行，10 -> 12
+        changeListeners.forEach(listener => listener({
+            document: { uri: { scheme: 'file', fsPath: filePath } },
+            contentChanges: [
+                {
+                    range: {
+                        start: { line: 4 },
+                        end: { line: 4 },
+                    },
+                    text: 'a\nb\n',
+                },
+            ],
+        }));
+        await flushPromises();
+
+        // 第二次编辑：同一起始行先插入两行再删除两行，理论上应回到同一锚点（保持 12）
+        changeListeners.forEach(listener => listener({
+            document: { uri: { scheme: 'file', fsPath: filePath } },
+            contentChanges: [
+                {
+                    range: {
+                        start: { line: 11 },
+                        end: { line: 11 },
+                    },
+                    text: 'x\ny\n',
+                },
+                {
+                    range: {
+                        start: { line: 11 },
+                        end: { line: 13 },
+                    },
+                    text: '',
+                },
+            ],
+        }));
+        await flushPromises();
+
+        const next = panel.getCurrentResult();
+        expect(next).not.toBeNull();
+        const issue = next?.warnings[0];
+        expect(issue?.line).toBe(12);
+        expect(issue?.lineTrace?.rebasedLine).toBe(12);
+    });
+
     it('Hover 详情应展示行号同步信息', () => {
         const panel = new ReviewPanel(createContext());
         const md = (panel as any).buildIssueHoverMarkdown({
@@ -1099,10 +1162,11 @@ describe('Phase3: 侧边栏面板选中高亮', () => {
         expect(messages.some(message => message.type === 'warning' && message.message.includes('无法打开文件'))).toBe(true);
     });
 
-    it('行列越界时安全降级', async () => {
+    it('定位置信度过低时应降级为待复查而非误高亮', async () => {
         openTextDocumentBehavior = async (path: string) => ({
             uri: { fsPath: path },
             lineCount: 1,
+            version: 12,
             lineAt: () => ({ text: 'abc' })
         });
 
@@ -1114,17 +1178,21 @@ describe('Phase3: 侧边栏面板选中高亮', () => {
             column: 99,
             message: 'm',
             rule: 'r',
-            severity: 'info' as const
+            severity: 'info' as const,
+            stale: true,
+            lineTrace: {
+                originalLine: 8,
+                rebasedLine: 99,
+                reason: 'local_rebase' as const,
+            },
         };
 
         lastTreeView?.fireSelection([new ReviewTreeItem('', 0, issue)]);
         await flushPromises();
 
-        // 行列越界时安全夹取：line 99 -> safeLine 1，仍应打开并高亮
         expect(lastEditor).toBeDefined();
-        expect(lastEditor?.revealRange).toHaveBeenCalled();
-        const revealCall = (lastEditor?.revealRange as ReturnType<typeof vi.fn>)?.mock?.calls?.[0];
-        expect(revealCall?.[0]?.start?.line).toBe(0);
+        expect(lastEditor?.revealRange).not.toHaveBeenCalled();
+        expect(messages.some(message => message.type === 'info' && message.message.includes('待复查'))).toBe(true);
     });
 });
 

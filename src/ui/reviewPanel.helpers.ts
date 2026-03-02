@@ -10,6 +10,42 @@ import type { ReviewResult, ReviewIssue } from '../types/review';
 import type { StaleScopeHint, ReviewedRange } from './reviewPanel.types';
 import { IssueDeduplicator } from '../core/issueDeduplicator';
 
+export type IssuePositionConfidence = 'high' | 'medium' | 'low';
+
+export type HighlightGuardResult = {
+    precise: boolean;
+    reason: 'ok' | 'low_confidence' | 'version_mismatch';
+};
+
+export const normalizePathForComparison = (filePath: string): string => {
+    const normalized = path.normalize(filePath).replace(/\\/g, '/');
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+};
+
+export const isSameFilePath = (a: string, b: string): boolean =>
+    normalizePathForComparison(a) === normalizePathForComparison(b);
+
+export const evaluateHighlightGuard = (params: {
+    confidence?: IssuePositionConfidence;
+    hasReanchorCandidate: boolean;
+    issueDocumentVersion?: number;
+    documentVersion?: number;
+}): HighlightGuardResult => {
+    const { issueDocumentVersion, documentVersion, hasReanchorCandidate } = params;
+    void hasReanchorCandidate;
+    if (
+        typeof issueDocumentVersion === 'number'
+        && typeof documentVersion === 'number'
+        && issueDocumentVersion < documentVersion
+    ) {
+        return { precise: false, reason: 'version_mismatch' };
+    }
+    if ((params.confidence ?? 'high') === 'low') {
+        return { precise: false, reason: 'low_confidence' };
+    }
+    return { precise: true, reason: 'ok' };
+};
+
 /** 从 ReviewResult 合并出全部 issues（errors + warnings + info） */
 export const getAllIssuesFromResult = (result: ReviewResult): ReviewIssue[] => [
     ...result.errors,
@@ -48,7 +84,7 @@ export const deduplicateIssues = (issues: ReviewIssue[]): ReviewIssue[] => {
     const deduplicated: ReviewIssue[] = [];
     for (const issue of issues) {
         const key = [
-            path.normalize(issue.file),
+            normalizePathForComparison(issue.file),
             issue.line,
             issue.column,
             issue.rule,
@@ -128,7 +164,7 @@ export const isLineInReviewedRanges = (line: number, reviewedRanges: ReviewedRan
 
 /** 判断两个问题是否为同一条（file/line/column/rule/severity 一致），供 Panel 与 Provider 复用 */
 export const isSameIssue = (a: ReviewIssue, b: ReviewIssue): boolean =>
-    path.normalize(a.file) === path.normalize(b.file) &&
+    isSameFilePath(a.file, b.file) &&
     a.line === b.line &&
     a.column === b.column &&
     a.rule === b.rule &&

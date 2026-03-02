@@ -57,6 +57,7 @@ vi.mock('vscode', () => {
 
 import { ReviewPanelProvider } from '../../ui/reviewPanel';
 import type { ReviewResult } from '../../types/review';
+import { evaluateHighlightGuard } from '../../ui/reviewPanel.helpers';
 
 const createResult = (): ReviewResult => ({
     passed: false,
@@ -304,5 +305,31 @@ describe('ReviewPanelProvider 来源分栏', () => {
         const projectBFiles = provider.getChildren(projectBGroup).map(item => item.filePath);
         expect(projectAFiles).toEqual(['d:/workspace/project-a/src/index.ts']);
         expect(projectBFiles).toEqual(['d:/workspace/project-b/src/index.ts']);
+    });
+});
+
+describe('定位置信度降级决策', () => {
+    it('低置信度且无重定位候选时应阻止精确高亮', () => {
+        const guard = evaluateHighlightGuard({
+            confidence: 'low',
+            hasReanchorCandidate: false,
+            documentVersion: 5,
+            issueDocumentVersion: 5,
+        });
+
+        expect(guard.precise).toBe(false);
+        expect(guard.reason).toBe('low_confidence');
+    });
+
+    it('结果版本落后当前文档版本时应阻止精确高亮', () => {
+        const guard = evaluateHighlightGuard({
+            confidence: 'high',
+            hasReanchorCandidate: false,
+            documentVersion: 9,
+            issueDocumentVersion: 8,
+        });
+
+        expect(guard.precise).toBe(false);
+        expect(guard.reason).toBe('version_mismatch');
     });
 });

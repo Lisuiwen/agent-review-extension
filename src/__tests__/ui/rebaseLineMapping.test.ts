@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     rebaseLineByContentChanges,
+    rebaseIssuePositionByContentChanges,
     rebaseRangeByContentChanges,
     type LineMappingChange,
 } from '../../ui/rebaseLineMapping';
@@ -50,5 +51,58 @@ describe('rebaseLineByContentChanges', () => {
         expect(range.startLine).toBeLessThanOrEqual(range.endLine);
         expect(range.startLine).toBeGreaterThanOrEqual(1);
         expect(range.endLine).toBeLessThanOrEqual(9);
+    });
+
+    it('同一起始行插入后删除组合应按事件顺序重放', () => {
+        const issueLine = 10;
+        const changes: LineMappingChange[] = [
+            { startLine1: 10, endLine1: 10, added: 2, removed: 0 },
+            { startLine1: 10, endLine1: 12, added: 0, removed: 2 },
+        ];
+
+        const mapped = rebaseLineByContentChanges(issueLine, changes);
+
+        // 先插入两行再删除两行，目标应回到原始锚点行
+        expect(mapped).toBe(10);
+    });
+
+    it('纯插入在问题行之前应按新增行数下移', () => {
+        const issueLine = 20;
+        const changes: LineMappingChange[] = [
+            { startLine1: 6, endLine1: 6, added: 3, removed: 0 },
+        ];
+
+        const mapped = rebaseLineByContentChanges(issueLine, changes);
+
+        expect(mapped).toBe(23);
+    });
+
+    it('问题行落在删除区间内时应映射到区间起始行', () => {
+        const issueLine = 9;
+        const changes: LineMappingChange[] = [
+            { startLine1: 8, endLine1: 11, added: 0, removed: 3 },
+        ];
+
+        const mapped = rebaseLineByContentChanges(issueLine, changes, { maxLine: 30 });
+
+        expect(mapped).toBe(8);
+    });
+
+    it('line/astRange 重映射后应返回合法性诊断信息', () => {
+        const changes: LineMappingChange[] = [];
+        const rebased = rebaseIssuePositionByContentChanges(
+            {
+                line: 20,
+                astRange: { startLine: 19, endLine: 24 },
+            },
+            changes,
+            { maxLine: 3 }
+        );
+
+        expect(rebased.line).toBeGreaterThanOrEqual(1);
+        expect(rebased.line).toBeLessThanOrEqual(3);
+        expect(rebased.astRange?.startLine).toBeLessThanOrEqual(rebased.astRange?.endLine ?? 0);
+        expect(rebased.diagnostics.lineClamped).toBe(true);
+        expect(rebased.diagnostics.rangeClamped).toBe(true);
     });
 });

@@ -12,8 +12,6 @@
  * const reviewPanel = new ReviewPanel(context);
  * reviewPanel.showReviewResult(result);
  */
-import { platform } from 'os';
-
 import * as vscode from 'vscode';
 import * as path from 'path';
 import type { ReviewResult, ReviewIssue } from '../types/review';
@@ -28,11 +26,14 @@ import {
     isLineInReviewedRanges,
     buildResultFromIssues,
     isSameIssue,
+    normalizePathForComparison,
+    evaluateHighlightGuard,
+    type IssuePositionConfidence,
 } from './reviewPanel.helpers';
 import { collectIgnoredLineMeta } from './reviewPanel.ignoreMeta';
 import {
-    rebaseLineByContentChanges,
-    rebaseRangeByContentChanges,
+    rebaseIssuePositionByContentChanges,
+    type RebasedIssuePosition,
     type LineMappingChange,
 } from './rebaseLineMapping';
 
@@ -47,6 +48,12 @@ const createLineHighlightDecoration = (bgKey: string, borderKey: string): vscode
         border: '1px solid',
         borderColor: new vscode.ThemeColor(borderKey),
     });
+
+type IssueRebaseMeta = {
+    confidence: IssuePositionConfidence;
+    reason: string;
+    documentVersion?: number;
+};
 
 export class ReviewPanel {
     private treeView: vscode.TreeView<import('./reviewTreeItem').ReviewTreeItem>;
@@ -65,6 +72,7 @@ export class ReviewPanel {
     private activeIssueForActions: ReviewIssue | null = null;
     private enableLocalRebase = true;
     private largeChangeLineThreshold = 40;
+    private issueRebaseMeta = new WeakMap<ReviewIssue, IssueRebaseMeta>();
 
     constructor(context: vscode.ExtensionContext) {
         this.provider = new ReviewPanelProvider(context);
@@ -109,8 +117,8 @@ export class ReviewPanel {
                 this.clearHighlight();
                 return;
             }
-            const activePath = path.normalize(editor.document.uri.fsPath);
-            const highlightedPath = path.normalize(this.lastHighlightedEditor.document.uri.fsPath);
+            const activePath = normalizePathForComparison(editor.document.uri.fsPath);
+            const highlightedPath = normalizePathForComparison(this.lastHighlightedEditor.document.uri.fsPath);
             if (activePath !== highlightedPath) this.clearHighlight();
         });
         context.subscriptions.push(this.documentChangeDisposable);
@@ -188,11 +196,11 @@ export class ReviewPanel {
     clearFileStaleMarkers(filePath: string): void {
         const currentResult = this.provider.getCurrentResult();
         if (!currentResult) return;
-        const normalizedTarget = path.normalize(filePath);
+        const normalizedTarget = normalizePathForComparison(filePath);
         let changed = false;
         const clearInIssues = (issues: ReviewIssue[]): ReviewIssue[] =>
             issues.map(issue => {
-                if (path.normalize(issue.file) !== normalizedTarget || issue.stale !== true) return issue;
+                if (normalizePathForComparison(issue.file) !== normalizedTarget || issue.stale !== true) return issue;
                 changed = true;
                 return { ...issue, stale: false };
             });
@@ -205,7 +213,7 @@ export class ReviewPanel {
         if (!changed) return;
         if (
             this.activeIssueForActions &&
-            path.normalize(this.activeIssueForActions.file) === normalizedTarget &&
+            normalizePathForComparison(this.activeIssueForActions.file) === normalizedTarget &&
             this.activeIssueForActions.stale === true
         ) {
             this.activeIssueForActions = { ...this.activeIssueForActions, stale: false };
@@ -217,9 +225,9 @@ export class ReviewPanel {
     clearIssuesForFile(filePath: string): void {
         const currentResult = this.provider.getCurrentResult();
         if (!currentResult) return;
-        const normalizedTarget = path.normalize(filePath);
+        const normalizedTarget = normalizePathForComparison(filePath);
         const allIssues = getAllIssuesFromResult(currentResult);
-        const filtered = allIssues.filter(issue => path.normalize(issue.file) !== normalizedTarget);
+        const filtered = allIssues.filter(issue => normalizePathForComparison(issue.file) !== normalizedTarget);
         if (filtered.length === allIssues.length) return;
         const nextResult = normalizeResultForDisplay(buildResultFromIssues(filtered));
         this.provider.updateResult(nextResult, this.provider.getStatus());
@@ -240,19 +248,19 @@ export class ReviewPanel {
     isFileStale(filePath: string): boolean {
         const result = this.provider.getCurrentResult();
         if (!result) return false;
-        const normalizedTarget = path.normalize(filePath);
+        const normalizedTarget = normalizePathForComparison(filePath);
         const allIssues = getAllIssuesFromResult(result);
-        return allIssues.some(issue => path.normalize(issue.file) === normalizedTarget && issue.stale === true);
+        return allIssues.some(issue => normalizePathForComparison(issue.file) === normalizedTarget && issue.stale === true);
     }
 
     getStaleScopeHints(filePath: string): Array<{ startLine: number; endLine: number; source: 'ast' | 'line' }> {
         const result = this.provider.getCurrentResult();
         if (!result) return [];
-        const normalizedTarget = path.normalize(filePath);
+        const normalizedTarget = normalizePathForComparison(filePath);
         const allIssues = getAllIssuesFromResult(result);
         const rawHints: StaleScopeHint[] = [];
         for (const issue of allIssues) {
-            if (path.normalize(issue.file) !== normalizedTarget || issue.stale !== true) continue;
+            if (normalizePathForComparison(issue.file) !== normalizedTarget || issue.stale !== true) continue;
             if (issue.astRange) {
                 const startLine = Math.max(1, Math.floor(issue.astRange.startLine));
                 const endLine = Math.max(startLine, Math.floor(issue.astRange.endLine));
@@ -277,7 +285,7 @@ export class ReviewPanel {
         reviewedRanges?: Array<{ startLine: number; endLine: number }>;
         reviewedMode?: 'diff' | 'full';
     }): void {
-        const normalizedTarget = path.normalize(params.filePath);
+        const normalizedTarget = normalizePathForComparison(params.filePath);
         const reviewedMode = params.reviewedMode ?? 'full';
         const reviewedRanges = normalizeReviewedRanges(params.reviewedRanges ?? []);
         const currentResult = this.provider.getCurrentResult() ?? {
@@ -287,9 +295,9 @@ export class ReviewPanel {
             info: [],
         };
         const incomingBySeverity = {
-            errors: params.newResult.errors.filter(issue => path.normalize(issue.file) === normalizedTarget),
-            warnings: params.newResult.warnings.filter(issue => path.normalize(issue.file) === normalizedTarget),
-            info: params.newResult.info.filter(issue => path.normalize(issue.file) === normalizedTarget),
+            errors: params.newResult.errors.filter(issue => normalizePathForComparison(issue.file) === normalizedTarget),
+            warnings: params.newResult.warnings.filter(issue => normalizePathForComparison(issue.file) === normalizedTarget),
+            info: params.newResult.info.filter(issue => normalizePathForComparison(issue.file) === normalizedTarget),
         };
         const incomingIssueCount =
             incomingBySeverity.errors.length +
@@ -301,7 +309,7 @@ export class ReviewPanel {
             incomingIssueCount === 0;
 
         const shouldKeepExistingIssue = (issue: ReviewIssue): boolean => {
-            const isTargetFile = path.normalize(issue.file) === normalizedTarget;
+            const isTargetFile = normalizePathForComparison(issue.file) === normalizedTarget;
             if (!isTargetFile) return true;
             if (keepTargetStaleIssues) return true;
             if (params.replaceMode === 'all_in_file') return false;
@@ -336,11 +344,11 @@ export class ReviewPanel {
     async syncAfterIssueIgnore(params: { filePath: string; insertedLine: number }): Promise<void> {
         const currentResult = this.provider.getCurrentResult();
         if (!currentResult) return;
-        const normalizedTarget = path.normalize(params.filePath);
+        const normalizedTarget = normalizePathForComparison(params.filePath);
         const ignoredMeta = await collectIgnoredLineMeta(params.filePath);
         const mapIssues = (issues: ReviewIssue[]): ReviewIssue[] =>
             issues.map(issue => {
-                const normalizedIssuePath = path.normalize(issue.file);
+                const normalizedIssuePath = normalizePathForComparison(issue.file);
                 if (normalizedIssuePath !== normalizedTarget) return issue;
                 const shiftedLine = issue.line >= params.insertedLine ? issue.line + 1 : issue.line;
                 const ignored = ignoredMeta.ignoredLines.has(shiftedLine);
@@ -375,6 +383,52 @@ export class ReviewPanel {
         this.syncTreeViewBadgeAndDescription();
     }
 
+    private setIssueMeta(issue: ReviewIssue, meta: IssueRebaseMeta): void {
+        this.issueRebaseMeta.set(issue, meta);
+    }
+
+    private getIssueMeta(issue: ReviewIssue): IssueRebaseMeta | undefined {
+        return this.issueRebaseMeta.get(issue);
+    }
+
+    private resolveIssueConfidence(params: {
+        issue: ReviewIssue;
+        rebased: RebasedIssuePosition;
+        affected: boolean;
+        onlyMarkStale: boolean;
+        documentLineCount: number;
+    }): IssueRebaseMeta {
+        if (params.onlyMarkStale) {
+            return { confidence: 'low', reason: 'large_change_threshold' };
+        }
+        if (params.rebased.diagnostics.lineClamped || params.rebased.diagnostics.rangeClamped) {
+            return { confidence: 'low', reason: 'clamped_boundary' };
+        }
+        if (params.rebased.astRange) {
+            const inRange = params.rebased.line >= params.rebased.astRange.startLine
+                && params.rebased.line <= params.rebased.astRange.endLine;
+            if (!inRange) {
+                return { confidence: 'low', reason: 'line_outside_ast_range' };
+            }
+        }
+        if (params.affected && params.rebased.line !== params.issue.line) {
+            return { confidence: 'medium', reason: 'affected_line_shift' };
+        }
+        if (params.rebased.line < 1 || params.rebased.line > params.documentLineCount) {
+            return { confidence: 'low', reason: 'line_out_of_document' };
+        }
+        return { confidence: 'high', reason: 'stable_mapping' };
+    }
+
+    private tryReanchorLine(issue: ReviewIssue, document: vscode.TextDocument): number | undefined {
+        if (!issue.astRange) return undefined;
+        const startLine = Math.max(1, Math.min(document.lineCount, Math.floor(issue.astRange.startLine)));
+        const endLine = Math.max(startLine, Math.min(document.lineCount, Math.floor(issue.astRange.endLine)));
+        if (endLine < startLine) return undefined;
+        if (issue.line >= startLine && issue.line <= endLine) return issue.line;
+        return startLine;
+    }
+
     private clearHighlight = (): void => {
         if (this.lastHighlightedEditor) {
             this.lastHighlightedEditor.setDecorations(this.highlightDecoration, []);
@@ -392,9 +446,9 @@ export class ReviewPanel {
         if (event.contentChanges.some(change => /@ai-ignore\b/i.test(change.text))) return;
         const currentResult = this.provider.getCurrentResult();
         if (!currentResult) return;
-        const changedFilePath = path.normalize(event.document.uri.fsPath);
+        const changedFilePath = normalizePathForComparison(event.document.uri.fsPath);
         const allIssues = [...currentResult.errors, ...currentResult.warnings, ...currentResult.info];
-        if (!allIssues.some(issue => path.normalize(issue.file) === changedFilePath)) return;
+        if (!allIssues.some(issue => normalizePathForComparison(issue.file) === changedFilePath)) return;
 
         const getChangeDelta = (change: vscode.TextDocumentContentChangeEvent) => {
             const removed = Math.max(0, change.range.end.line - change.range.start.line);
@@ -425,24 +479,31 @@ export class ReviewPanel {
         };
         const isIssueAffected = (issue: ReviewIssue): boolean =>
             onlyMarkStale || (issue.astRange ? intersectsAffectedRanges(issue.astRange.startLine, issue.astRange.endLine) : intersectsAffectedRanges(issue.line, issue.line));
-        const rebaseLineByChanges = (line: number): number =>
-            rebaseLineByContentChanges(line, lineMappingChanges, { maxLine: event.document.lineCount });
         const markIssueStale = (issue: ReviewIssue): ReviewIssue => {
             const affected = isIssueAffected(issue);
-            if (onlyMarkStale) return { ...issue, stale: true };
-            const rebasedLine = rebaseLineByChanges(issue.line);
-            const rebasedAstRange = issue.astRange
-                ? rebaseRangeByContentChanges(issue.astRange, lineMappingChanges, {
-                    maxLine: event.document.lineCount,
-                })
-                : undefined;
+            if (onlyMarkStale) {
+                const staleIssue = { ...issue, stale: true };
+                this.setIssueMeta(staleIssue, {
+                    confidence: 'low',
+                    reason: 'large_change_threshold',
+                    documentVersion: event.document.version,
+                });
+                return staleIssue;
+            }
+            const rebased = rebaseIssuePositionByContentChanges(
+                { line: issue.line, astRange: issue.astRange },
+                lineMappingChanges,
+                { maxLine: event.document.lineCount }
+            );
+            const rebasedLine = rebased.line;
+            const rebasedAstRange = rebased.astRange;
             const lineChanged = rebasedLine !== issue.line;
             const astRangeChanged = !!issue.astRange && !!rebasedAstRange
                 && (
                     issue.astRange.startLine !== rebasedAstRange.startLine
                     || issue.astRange.endLine !== rebasedAstRange.endLine
                 );
-            return {
+            const nextIssue: ReviewIssue = {
                 ...issue,
                 line: rebasedLine,
                 astRange: rebasedAstRange,
@@ -455,15 +516,27 @@ export class ReviewPanel {
                     }
                     : issue.lineTrace,
             };
+            const confidenceMeta = this.resolveIssueConfidence({
+                issue,
+                rebased,
+                affected,
+                onlyMarkStale: false,
+                documentLineCount: event.document.lineCount,
+            });
+            this.setIssueMeta(nextIssue, {
+                ...confidenceMeta,
+                documentVersion: event.document.version,
+            });
+            return nextIssue;
         };
         const mapIssues = (issues: ReviewIssue[]): ReviewIssue[] =>
             issues.map(issue => {
-                if (path.normalize(issue.file) !== changedFilePath) return issue;
+                if (normalizePathForComparison(issue.file) !== changedFilePath) return issue;
                 return markIssueStale(issue);
             });
         if (
             this.activeIssueForActions &&
-            path.normalize(this.activeIssueForActions.file) === changedFilePath
+            normalizePathForComparison(this.activeIssueForActions.file) === changedFilePath
         ) {
             this.activeIssueForActions = markIssueStale(this.activeIssueForActions);
         }
@@ -488,7 +561,35 @@ export class ReviewPanel {
                 preserveFocus: false,
                 preview: true
             });
-            const safeLine = Math.min(Math.max(issue.line, 1), document.lineCount);
+            const issueMeta = this.getIssueMeta(issue);
+            const fallbackLowConfidence = issue.stale === true
+                && !!issue.lineTrace
+                && (issue.line < 1 || issue.line > document.lineCount);
+            const guard = evaluateHighlightGuard({
+                confidence: fallbackLowConfidence ? 'low' : issueMeta?.confidence,
+                hasReanchorCandidate: !!issue.astRange,
+                issueDocumentVersion: issueMeta?.documentVersion,
+                documentVersion: (document as vscode.TextDocument & { version?: number }).version,
+            });
+            let targetLine = issue.line;
+            if (!guard.precise) {
+                const reanchoredLine = this.tryReanchorLine(issue, document);
+                if (typeof reanchoredLine === 'number') {
+                    targetLine = reanchoredLine;
+                    this.setIssueMeta(issue, {
+                        confidence: 'medium',
+                        reason: 'reanchor_ast_range',
+                        documentVersion: (document as vscode.TextDocument & { version?: number }).version,
+                    });
+                } else {
+                    this.clearHighlight();
+                    if (options?.reveal) {
+                        void vscode.window.showInformationMessage('该问题定位置信度较低，已降级为待复查，请重新触发审查确认位置。');
+                    }
+                    return;
+                }
+            }
+            const safeLine = Math.min(Math.max(targetLine, 1), document.lineCount);
             const lineText = document.lineAt(safeLine - 1).text;
             if (options?.reveal) {
                 const revealRange = new vscode.Range(safeLine - 1, 0, safeLine - 1, lineText.length);
@@ -534,10 +635,9 @@ export class ReviewPanel {
         const result = this.provider.getCurrentResult();
         if (!result) return undefined;
         const line1 = position.line + 1;
-        const norm = (p: string) => p.replace(/\\/g, '/');
-        const docPath = norm(document.uri.fsPath);
+        const docPath = normalizePathForComparison(document.uri.fsPath);
         const issues = [...result.errors, ...result.warnings, ...result.info].filter(
-            i => norm(i.file) === docPath && i.line === line1
+            i => normalizePathForComparison(i.file) === docPath && i.line === line1
         );
         const issue = issues[0];
         if (!issue) return undefined;
@@ -561,6 +661,11 @@ export class ReviewPanel {
         if (issue.lineTrace) {
             md.appendMarkdown('\n\n');
             md.appendMarkdown(`行号同步: ${issue.lineTrace.originalLine} -> ${issue.lineTrace.rebasedLine}`);
+        }
+        const issueMeta = this.getIssueMeta(issue);
+        if (issueMeta && issueMeta.confidence !== 'high') {
+            md.appendMarkdown('\n');
+            md.appendMarkdown(`定位置信度: ${issueMeta.confidence}（${issueMeta.reason}）`);
         }
         md.appendMarkdown('\n\n');
         md.appendMarkdown(`规则: ${issue.rule}`);
