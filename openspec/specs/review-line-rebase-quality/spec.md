@@ -66,6 +66,37 @@
 - **THEN** 映射后的 `astRange.startLine` 与 `astRange.endLine` MUST 保持有效顺序
 - **AND** 映射后范围 MUST 位于文档有效行号区间内
 
+#### Scenario: `@ai-ignore` 与普通编辑混合时不跳过重映射
+- **WHEN** 单次 `TextDocumentChangeEvent` 同时包含 `@ai-ignore` 注释插入与其他普通文本变更
+- **THEN** 系统 MUST 对非 ignore 变更继续执行本地行号重映射
+- **AND** 不得因命中 `@ai-ignore` 文本而整次跳过该事件的映射处理
+
+### Requirement: stale_only diff 覆盖判定支持范围重叠
+系统在 `stale_only + reviewedMode=diff` 场景下 MUST 以“行号命中或范围重叠”判定是否覆盖旧问题，避免范围内旧问题残留导致定位错位。
+
+#### Scenario: reviewedRanges 与 astRange 重叠时覆盖旧问题
+- **WHEN** 旧问题带有 `astRange`，且其范围与 `reviewedRanges` 存在重叠，但 `issue.line` 未直接命中复审行
+- **THEN** 系统 MUST 将该旧问题视为“已覆盖”并按补丁替换语义处理
+- **AND** 不得因仅按单行命中判断而错误保留旧问题
+
+#### Scenario: 无行号命中且无范围重叠时保留旧问题
+- **WHEN** 旧问题的 `line` 与 `astRange` 均未与 `reviewedRanges` 发生命中或重叠
+- **THEN** 系统 MUST 保留该旧问题
+- **AND** 现有 `stale_only` 语义 MUST 保持兼容
+
+### Requirement: AI diff 行号须经过二次可信校验
+系统在 diff 模式下使用 AI 返回行号时 MUST 执行二次可信校验，避免重复片段或基线差异导致的错误定位。
+
+#### Scenario: 重复 snippet 场景选择稳定候选
+- **WHEN** 同一 snippet 在文件中出现多个候选位置，且 AI 返回目标行号
+- **THEN** 系统 MUST 选择与目标行号最接近且满足允许范围约束的候选位置
+- **AND** 不得固定使用首次匹配位置作为唯一结果
+
+#### Scenario: 低可信且越界的 AI 行号被过滤
+- **WHEN** AI 行号无法通过候选复核，且最终定位不在允许行范围内
+- **THEN** 系统 MUST 过滤该问题或降级为不可精确定位状态
+- **AND** 不得将该问题作为精确高亮目标直接展示
+
 ### Requirement: 等量删除场景应保持映射一致性
 系统对“删除空行”与“删除非空行”等等量行删除输入 MUST 产生一致的行号重映射结果；映射行为 MUST 基于结构性行变化而非被删除文本内容差异。
 

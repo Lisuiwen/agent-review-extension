@@ -46,6 +46,14 @@ export const evaluateHighlightGuard = (params: {
     return { precise: true, reason: 'ok' };
 };
 
+/** 按严重程度排序（error → warning → info）后取前 max 条，用于展示层每文件上限 */
+export const capIssuesBySeverity = (issues: ReviewIssue[], max: number): ReviewIssue[] => {
+    const order: Record<string, number> = { error: 0, warning: 1, info: 2 };
+    return [...issues]
+        .sort((a, b) => (order[a.severity] ?? 2) - (order[b.severity] ?? 2))
+        .slice(0, max);
+};
+
 /** 从 ReviewResult 合并出全部 issues（errors + warnings + info） */
 export const getAllIssuesFromResult = (result: ReviewResult): ReviewIssue[] => [
     ...result.errors,
@@ -160,6 +168,17 @@ export const isLineInReviewedRanges = (line: number, reviewedRanges: ReviewedRan
     if (reviewedRanges.length === 0) return false;
     const normalizedLine = Math.max(1, Math.floor(line));
     return reviewedRanges.some(r => normalizedLine >= r.startLine && normalizedLine <= r.endLine);
+};
+
+/** stale_only + diff 下统一覆盖判定：issue 行命中或 astRange 与 reviewedRanges 重叠均视为覆盖 */
+export const isIssueCoveredByReviewedRanges = (issue: ReviewIssue, reviewedRanges: ReviewedRange[]): boolean => {
+    if (reviewedRanges.length === 0) return false;
+    if (isLineInReviewedRanges(issue.line, reviewedRanges)) return true;
+    if (!issue.astRange) return false;
+
+    const issueStart = Math.max(1, Math.floor(issue.astRange.startLine));
+    const issueEnd = Math.max(issueStart, Math.floor(issue.astRange.endLine));
+    return reviewedRanges.some(range => issueStart <= range.endLine && issueEnd >= range.startLine);
 };
 
 /** 判断两个问题是否为同一条（file/line/column/rule/severity 一致），供 Panel 与 Provider 复用 */

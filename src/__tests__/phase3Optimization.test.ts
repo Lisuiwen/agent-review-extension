@@ -539,6 +539,57 @@ describe('Phase3: 放行后本地同步与标记', () => {
         });
     });
 
+    it('@ai-ignore 与普通编辑混合时应继续对非 ignore 变更做重映射', async () => {
+        const panel = new ReviewPanel(createContext());
+        const filePath = 'd:/demo/rebase-ignore-mixed.ts';
+        panel.showReviewResult({
+            passed: false,
+            errors: [],
+            warnings: [
+                {
+                    file: filePath,
+                    line: 5,
+                    column: 1,
+                    message: 'line should still move',
+                    rule: 'ai_review',
+                    severity: 'warning',
+                },
+            ],
+            info: [],
+        }, 'completed');
+
+        changeListeners.forEach(listener => listener({
+            document: { uri: { scheme: 'file', fsPath: filePath } },
+            contentChanges: [
+                {
+                    range: {
+                        start: { line: 0 },
+                        end: { line: 0 },
+                    },
+                    text: '<!-- @ai-ignore: 仅忽略这条注释 -->\n',
+                },
+                {
+                    range: {
+                        start: { line: 2 },
+                        end: { line: 2 },
+                    },
+                    text: 'const inserted = 1;\n',
+                },
+            ],
+        }));
+        await flushPromises();
+
+        const next = panel.getCurrentResult();
+        expect(next).not.toBeNull();
+        const issue = next?.warnings[0];
+        expect(issue?.line).toBe(6);
+        expect(issue?.lineTrace).toEqual({
+            originalLine: 5,
+            rebasedLine: 6,
+            reason: 'local_rebase',
+        });
+    });
+
     it('同一文件连续编辑时不应出现累计漂移', async () => {
         const panel = new ReviewPanel(createContext());
         const filePath = 'd:/demo/rebase-drift.ts';

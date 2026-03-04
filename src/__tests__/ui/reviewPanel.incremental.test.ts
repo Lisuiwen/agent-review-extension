@@ -57,7 +57,8 @@ vi.mock('vscode', () => {
 
 import { ReviewPanelProvider } from '../../ui/reviewPanel';
 import type { ReviewResult } from '../../types/review';
-import { evaluateHighlightGuard } from '../../ui/reviewPanel.helpers';
+import type { ReviewIssue } from '../../types/review';
+import { evaluateHighlightGuard, isIssueCoveredByReviewedRanges } from '../../ui/reviewPanel.helpers';
 
 const createResult = (): ReviewResult => ({
     passed: false,
@@ -331,5 +332,23 @@ describe('定位置信度降级决策', () => {
 
         expect(guard.precise).toBe(false);
         expect(guard.reason).toBe('version_mismatch');
+    });
+});
+
+describe('stale_only + diff 覆盖判定', () => {
+    it('issue.line 未命中但 astRange 与 reviewedRanges 重叠时应视为已覆盖', () => {
+        const issue: ReviewIssue = {
+            file: 'd:/workspace/project-single/src/demo.ts',
+            line: 30,
+            column: 1,
+            message: '跨行问题',
+            rule: 'ai_review',
+            severity: 'warning',
+            stale: true,
+            astRange: { startLine: 11, endLine: 15 },
+        };
+
+        const covered = isIssueCoveredByReviewedRanges(issue, [{ startLine: 14, endLine: 18 }]);
+        expect(covered).toBe(true);
     });
 });

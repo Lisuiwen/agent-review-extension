@@ -60,7 +60,67 @@ describe('aiReviewer.transform', () => {
         expect(bySnippet[0].severity).toBe('warning'); // warning action 将 error 降为 warning
 
         const byDiff = transformToReviewIssues(config, response, files, { useDiffLineNumbers: true });
-        expect(byDiff[0].line).toBe(10);
-        expect(byDiff[0].column).toBe(8);
+        expect(byDiff[0].line).toBe(2);
+        expect(byDiff[0].column).toBe(1);
+        expect(byDiff[1].line).toBe(3);
+        expect(byDiff[1].column).toBe(1);
+    });
+
+    it('diff 模式下重复 snippet 应选择最接近模型行号的候选位置', () => {
+        const config = { action: 'warning' } as any;
+        const response = {
+            issues: [
+                {
+                    file: 'a.ts',
+                    line: 7,
+                    column: 1,
+                    snippet: 'const repeated = compute();',
+                    message: 'duplicate snippet',
+                    severity: 'warning',
+                },
+            ],
+        } as any;
+        const files = [{
+            path: 'a.ts',
+            content: [
+                'const top = 0;',
+                'const repeated = compute();',
+                'const a = 1;',
+                'const b = 2;',
+                'const repeated = compute();',
+                'const c = 3;',
+                'const d = 4;',
+                'const repeated = compute();',
+            ].join('\n'),
+        }];
+
+        const issues = transformToReviewIssues(config, response, files, { useDiffLineNumbers: true });
+        expect(issues[0].line).toBe(8);
+    });
+
+    it('低可信且不在允许范围的 diff 行号应被过滤', () => {
+        const config = { action: 'warning' } as any;
+        const response = {
+            issues: [
+                {
+                    file: 'a.ts',
+                    line: 50,
+                    column: 1,
+                    snippet: 'const notFound = 1;',
+                    message: 'out of range low confidence',
+                    severity: 'warning',
+                },
+            ],
+        } as any;
+        const files = [{ path: 'a.ts', content: 'const x = 1;\nconst y = 2;\nconst z = 3;' }];
+        const allowedLinesByFile = new Map<string, Set<number>>([
+            ['a.ts', new Set([1, 2, 3])],
+        ]);
+
+        const issues = transformToReviewIssues(config, response, files, {
+            useDiffLineNumbers: true,
+            allowedLinesByFile,
+        } as any);
+        expect(issues.length).toBe(0);
     });
 });

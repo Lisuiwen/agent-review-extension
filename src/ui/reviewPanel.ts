@@ -23,7 +23,7 @@ import {
     mergeScopeHints,
     normalizeResultForDisplay,
     normalizeReviewedRanges,
-    isLineInReviewedRanges,
+    isIssueCoveredByReviewedRanges,
     buildResultFromIssues,
     isSameIssue,
     normalizePathForComparison,
@@ -315,12 +315,12 @@ export class ReviewPanel {
             if (params.replaceMode === 'all_in_file') return false;
             if (isAiIssue(issue) && reviewedMode === 'diff') {
                 if (reviewedRanges.length === 0) return false;
-                if (isLineInReviewedRanges(issue.line, reviewedRanges)) return false;
+                if (isIssueCoveredByReviewedRanges(issue, reviewedRanges)) return false;
             }
             if (issue.stale !== true) return true;
             if (reviewedMode === 'full') return false;
             if (reviewedRanges.length === 0) return true;
-            return !isLineInReviewedRanges(issue.line, reviewedRanges);
+            return !isIssueCoveredByReviewedRanges(issue, reviewedRanges);
         };
         const mergedIssues = [
             ...incomingBySeverity.errors,
@@ -443,7 +443,19 @@ export class ReviewPanel {
 
     private syncAfterDocumentChange = async (event: vscode.TextDocumentChangeEvent): Promise<void> => {
         if (!this.enableLocalRebase || event.document.uri.scheme !== 'file' || !event.contentChanges.length) return;
-        if (event.contentChanges.some(change => /@ai-ignore\b/i.test(change.text))) return;
+        const isIgnoreOnlyInsertChange = (change: vscode.TextDocumentContentChangeEvent): boolean => {
+            if (!change.text || !/@ai-ignore\b/i.test(change.text)) return false;
+            const normalizedText = change.text.replace(/\r\n/g, '\n').trim();
+            if (!normalizedText || normalizedText.includes('\n')) return false;
+            return (
+                /^<!--\s*@ai-ignore\b[\s\S]*?-->$/i.test(normalizedText)
+                || /^\/\/\s*@ai-ignore\b[\s\S]*$/i.test(normalizedText)
+                || /^\/\*\s*@ai-ignore\b[\s\S]*?\*\/$/i.test(normalizedText)
+                || /^@ai-ignore\b[\s\S]*$/i.test(normalizedText)
+            );
+        };
+        const effectiveChanges = event.contentChanges.filter(change => !isIgnoreOnlyInsertChange(change));
+        if (effectiveChanges.length === 0) return;
         const currentResult = this.provider.getCurrentResult();
         if (!currentResult) return;
         const changedFilePath = normalizePathForComparison(event.document.uri.fsPath);
@@ -457,16 +469,16 @@ export class ReviewPanel {
             const endLine1 = change.range.end.line + 1;
             return { removed, added, delta: added - removed, startLine1, endLine1 };
         };
-        const lineMappingChanges: LineMappingChange[] = event.contentChanges.map(change => {
+        const lineMappingChanges: LineMappingChange[] = effectiveChanges.map(change => {
             const { removed, added, startLine1, endLine1 } = getChangeDelta(change);
             return { removed, added, startLine1, endLine1 };
         });
-        const changeImpactLines = event.contentChanges.reduce((sum, change) => {
+        const changeImpactLines = effectiveChanges.reduce((sum, change) => {
             const { removed, added } = getChangeDelta(change);
             return sum + Math.max(removed, added) + 1;
         }, 0);
         const onlyMarkStale = changeImpactLines > this.largeChangeLineThreshold;
-        const affectedRanges = event.contentChanges.map(change => {
+        const affectedRanges = effectiveChanges.map(change => {
             const { removed, added, startLine1, endLine1 } = getChangeDelta(change);
             const isPureInsert = removed === 0 && added > 0;
             return isPureInsert ? { startLine: startLine1, endLine: startLine1 } : { startLine: startLine1, endLine: Math.max(startLine1, endLine1) };

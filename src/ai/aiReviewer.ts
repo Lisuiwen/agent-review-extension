@@ -676,7 +676,10 @@ export class AIReviewer {
                 traceSession
             );
             const batchIssues = this.config
-                ? transformToReviewIssues(this.config, response, batchFiles, { useDiffLineNumbers: options.useDiffContent })
+                ? transformToReviewIssues(this.config, response, batchFiles, {
+                    useDiffLineNumbers: options.useDiffContent,
+                    allowedLinesByFile: options.allowedLinesByFile,
+                })
                 : [];
             const issuesInScope = filterIssuesByAllowedLines(batchIssues, options, this.logger);
             attachAstRangesForBatch(issuesInScope, options.astSnippetsByFile);

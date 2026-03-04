@@ -11,7 +11,7 @@ import * as path from 'path';
 import type { ReviewResult, ReviewIssue } from '../types/review';
 import { ReviewTreeItem } from './reviewTreeItem';
 import { isAiIssue } from './reviewPanel.types';
-import { isSameIssue } from './reviewPanel.helpers';
+import { isSameIssue, capIssuesBySeverity } from './reviewPanel.helpers';
 
 export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeItem> {
     private _onDidChangeTreeData: vscode.EventEmitter<ReviewTreeItem | undefined | null | void> =
@@ -162,7 +162,8 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
                 ? this.getIssuesByProjectAndGroup(element.projectRoot ?? ReviewPanelProvider.UNASSIGNED_PROJECT_KEY, element.groupKey)
                 : this.getIssuesByProject(element.projectRoot ?? ReviewPanelProvider.UNASSIGNED_PROJECT_KEY);
             const fileIssues = groupIssues.filter(issue => path.normalize(issue.file) === path.normalize(element.filePath!));
-            return fileIssues.map(issue =>
+            const capped = capIssuesBySeverity(fileIssues, 3);
+            return capped.map(issue =>
                 new ReviewTreeItem(
                     `${issue.ignored ? '【已放行】' : ''}${issue.stale ? '【待复审】' : ''}${issue.message} [${issue.rule}]`,
                     vscode.TreeItemCollapsibleState.None,
@@ -315,16 +316,12 @@ export class ReviewPanelProvider implements vscode.TreeDataProvider<ReviewTreeIt
             return [e, w, i] as const;
         };
         const items: ReviewTreeItem[] = [];
+        const maxIssuesPerFile = 3;
         for (const [filePath, fileIssues] of fileMap.entries()) {
+            const capped = capIssuesBySeverity(fileIssues, maxIssuesPerFile);
             const fileName = path.basename(filePath);
-            const [errorCount, warningCount, infoCount] = countBySeverity(fileIssues);
-            const countText = [
-                errorCount > 0 ? `${errorCount}` : '',
-                warningCount > 0 ? `${warningCount}` : '',
-                infoCount > 0 ? `${infoCount}` : '',
-            ]
-                .filter(Boolean)
-                .join(', ');
+            const [errorCount, warningCount, infoCount] = countBySeverity(capped);
+            const countText = `${errorCount}, ${warningCount}, ${infoCount}`;
             items.push(
                 new ReviewTreeItem(
                     `${fileName} (${countText})`,
